@@ -13,17 +13,18 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Cinewave — Movies with Sinhala Subtitles',
-  description: 'Discover cinema, TV series, and fresh weekly releases with Sinhala subtitles.',
+  metadataBase: new URL('https://sublyra-cinema.alive-stoat-6821.chatgpt.site'),
+  title: 'Sublyra — One Film. Many Languages.',
+  description: 'Discover global cinema through 10+ subtitle languages in a calm, premium movie experience.',
   openGraph: {
-    title: 'Cinewave — Cinema, discovered differently.',
-    description: 'Discover cinema, TV series, and fresh weekly releases with Sinhala subtitles.',
-    images: [{ url: '/og.png', width: 1680, height: 945, alt: 'Cinewave cinematic desert artwork' }],
+    title: 'Sublyra — One Film. Many Languages. Global Audience.',
+    description: 'Discover global cinema through 10+ subtitle languages.',
+    images: [{ url: '/og.png', width: 1680, height: 945, alt: 'Sublyra cinematic coastline and lantern' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Cinewave — Cinema, discovered differently.',
-    description: 'Discover cinema, TV series, and fresh weekly releases with Sinhala subtitles.',
+    title: 'Sublyra — One Film. Many Languages.',
+    description: 'Discover global cinema through 10+ subtitle languages.',
     images: ['/og.png'],
   },
 };
@@ -34,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
