@@ -3,7 +3,7 @@ import { sanitizeUploadedImage } from '../../../../lib/admin/image-sanitizer';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest } from '../../../../lib/security/admin-api';
 import { logSecurityEvent } from '../../../../lib/security/security-events';
 
-const MAX_MULTIPART_BYTES = 25 * 1024 * 1024 + 64 * 1024;
+const MAX_MULTIPART_BYTES = 5 * 1024 * 1024 + 64 * 1024;
 
 export async function POST(request: Request) {
   const authorization = await authorizeAdminRequest(request, true);
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     const file = form.get('file');
     if (!(file instanceof File)) return Response.json({ error: 'Choose an image file.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
     if (form.get('kind') === 'subtitle') {
-      if (file.size > 25 * 1024 * 1024) return Response.json({ error: 'Subtitle bundles must be no larger than 25 MB.' }, { status: 413, headers: ADMIN_NO_STORE_HEADERS });
+      if (file.size > 5 * 1024 * 1024) return Response.json({ error: 'Subtitle bundles must be no larger than 5 MB.' }, { status: 413, headers: ADMIN_NO_STORE_HEADERS });
       const lowerName = file.name.toLowerCase();
       const extension = lowerName.endsWith('.vtt') ? 'vtt' : lowerName.endsWith('.srt') ? 'srt' : lowerName.endsWith('.zip') ? 'zip' : lowerName.endsWith('.7z') ? '7z' : '';
       if (!extension) return Response.json({ error: 'Upload an SRT, VTT, ZIP, or 7Z subtitle file.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
