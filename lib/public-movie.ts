@@ -14,6 +14,7 @@ export type PublicMovie = Pick<
   | 'year'
   | 'runtime'
   | 'rating'
+  | 'contentType'
   | 'genre'
   | 'director'
   | 'cast'
@@ -32,6 +33,7 @@ export function toPublicMovie(movie: Movie): PublicMovie {
     year: movie.year,
     runtime: movie.runtime,
     rating: movie.rating,
+    contentType: movie.contentType ?? 'movie',
     genre: movie.genre,
     director: movie.director,
     cast: [...movie.cast],

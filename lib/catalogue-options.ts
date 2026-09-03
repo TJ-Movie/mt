@@ -21,3 +21,4 @@ export const genres: readonly string[] = [
   'Thriller',
   'Action',
 ];
+export const contentTypes = ['movie', 'series'] as const;

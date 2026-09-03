@@ -9,6 +9,7 @@ export const moviesTable = sqliteTable('movies', {
   releaseYear: integer('release_year').notNull(),
   runtime: text('runtime').notNull(),
   rating: real('rating').notNull(),
+  contentType: text('content_type').notNull().default('movie'),
   genre: text('genre').notNull(),
   director: text('director').notNull(),
   castJson: text('cast_json').notNull(),

@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Archive, CheckCircle2, ImagePlus, Loader2, Plus, Save, ShieldAlert } from 'lucide-react';
 import type { AdminMovie, AuditEvent } from '../../db';
 import type { RuntimeControls } from '../../lib/security/runtime-controls';
-import { allLanguages, genres } from '../../lib/catalogue-options';
+import { allLanguages, contentTypes, genres } from '../../lib/catalogue-options';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
@@ -17,7 +17,7 @@ type DraftMovie = Omit<AdminMovie, 'id' | 'createdAt' | 'updatedAt'> & { id?: nu
 type FieldErrors = Record<string, string>;
 
 const emptyMovie: DraftMovie = {
-  revision: 1, slug: '', title: '', tagline: '', description: '', year: new Date().getUTCFullYear(), runtime: '1h 30m', rating: 0,
+  revision: 1, slug: '', title: '', contentType: 'movie', tagline: '', description: '', year: new Date().getUTCFullYear(), runtime: '1h 30m', rating: 0,
   genre: 'Drama', director: '', cast: [], languages: ['English'], poster: '/og.png', backdrop: '/og.png', featured: false,
   publicationStatus: 'draft', rightsStatus: 'pending', rightsVerifiedAt: undefined, rightsExpiresAt: undefined,
   rightsReviewer: undefined, rightsReference: undefined, officialWatchUrl: undefined, telegramUrl: undefined, telegramChannel: undefined, subtitleUrl: undefined,
@@ -96,6 +96,7 @@ export function MovieStudio({ initialMovies, initialAuditEvents, controls }: { i
             <UploadField label="Poster" value={draft.poster} accept="image/jpeg,image/png" onUpload={(file) => upload(file, 'poster')}/><UploadField label="Backdrop" value={draft.backdrop} accept="image/jpeg,image/png" onUpload={(file) => upload(file, 'backdrop')}/><UploadField label="Subtitle ZIP / 7Z / SRT / VTT" value={draft.subtitleUrl ?? ''} accept=".zip,.7z,.srt,.vtt,application/zip,application/x-7z-compressed,text/plain,text/vtt" onUpload={(file) => upload(file, 'subtitleUrl')}/><label className="flex items-center gap-3 text-sm text-white/65"><input type="checkbox" checked={draft.featured} onChange={(e) => update('featured', e.target.checked)} className="size-4 accent-[#ef796d]"/> Featured film</label>
             <Field label="Subtitle languages" wide><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{allLanguages.map((language) => <label key={language} className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"><input type="checkbox" checked={draft.languages.includes(language)} onChange={(e) => update('languages', e.target.checked ? [...draft.languages, language] : draft.languages.filter((item) => item !== language))} className="accent-[#ef796d]"/>{language}</label>)}</div></Field>
           </div>
+          <div className="mt-5 grid gap-5 border-t border-white/10 pt-5 md:grid-cols-2"><Field label="Content type"><NativeSelect value={draft.contentType ?? 'movie'} onChange={(e) => update('contentType', e.target.value as DraftMovie['contentType'])} className="w-full">{contentTypes.map((type) => <NativeSelectOption key={type} value={type}>{type === 'series' ? 'TV Series' : 'Movie'}</NativeSelectOption>)}</NativeSelect></Field><Field label="Multiple categories"><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{genres.filter((genre) => genre !== 'All').map((genre) => { const selectedGenres = draft.genre.split(',').map((item) => item.trim()).filter(Boolean); return <label key={genre} className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"><input type="checkbox" checked={selectedGenres.includes(genre)} onChange={(e) => update('genre', e.target.checked ? [...new Set([...selectedGenres, genre])].join(', ') : selectedGenres.filter((item) => item !== genre).join(', '))} className="accent-[#ef796d]"/>{genre}</label>; })}</div></Field></div>
         </section></div></TabsContent>
       <TabsContent value="audit" className="mt-6 rounded-2xl border border-white/10 bg-white/[.035] p-4 sm:p-6"><Table><TableHeader><TableRow className="border-white/10"><TableHead className="text-white/45">Time</TableHead><TableHead className="text-white/45">Action</TableHead><TableHead className="text-white/45">Movie</TableHead><TableHead className="text-white/45">Editor</TableHead></TableRow></TableHeader><TableBody>{initialAuditEvents.map((event) => <TableRow key={event.id} className="border-white/8 hover:bg-white/[.03]"><TableCell className="text-white/45">{new Date(event.createdAt).toLocaleString()}</TableCell><TableCell>{event.action}</TableCell><TableCell>{event.movieSlug ?? '—'}</TableCell><TableCell className="text-white/45">{event.actorEmail}</TableCell></TableRow>)}</TableBody></Table></TabsContent>
     </Tabs>

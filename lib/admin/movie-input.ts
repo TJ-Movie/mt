@@ -1,8 +1,9 @@
-import { allLanguages, genres } from '../catalogue-options.ts';
+import { allLanguages, contentTypes, genres } from '../catalogue-options.ts';
 import { publicationStatuses, rightsStatuses, type PublicationStatus, type RightsStatus } from '../movies.ts';
 import { validateOutboundDestination } from '../security/outbound-links.ts';
 
 export type AdminMovieInput = {
+  contentType: 'movie' | 'series';
   slug: string;
   title: string;
   tagline: string;
@@ -100,9 +101,12 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const tagline = textField(source, 'tagline', 0, 200, errors);
   const description = textField(source, 'description', 0, 2_000, errors);
   const runtime = textField(source, 'runtime', 0, 30, errors);
-  const genre = textField(source, 'genre', 2, 40, errors);
+  const contentType = source.contentType;
+  if (typeof contentType !== 'string' || !contentTypes.includes(contentType as 'movie' | 'series')) errors.contentType = 'Select Movie or TV Series.';
+  const genre = textField(source, 'genre', 2, 200, errors);
   const director = textField(source, 'director', 0, 160, errors);
-  if (genre === 'All' || !genres.includes(genre)) errors.genre = 'Select a supported genre.';
+  const selectedGenres = genre.split(',').map((item) => item.trim()).filter(Boolean);
+  if (!selectedGenres.length || selectedGenres.length > 8 || selectedGenres.some((item) => item === 'All' || !genres.includes(item))) errors.genre = 'Select one or more supported genres.';
 
   const year = source.year;
   const rating = source.rating;
@@ -145,7 +149,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
 
   if (Object.keys(errors).length) return { ok: false, errors };
   return { ok: true, value: {
-    slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), genre, director,
+    slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), contentType: contentType as 'movie' | 'series', genre: [...new Set(selectedGenres)].join(', '), director,
     cast, languages, poster, backdrop, featured: source.featured as boolean,
     publicationStatus: publicationStatus as PublicationStatus, rightsStatus: rightsStatus as RightsStatus,
     rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel, subtitleUrl,

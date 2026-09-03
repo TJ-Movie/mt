@@ -3,18 +3,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, Globe2, Menu, Play, Search, Sparkles, Star, X } from 'lucide-react';
 import type { PublicMovie } from '../lib/public-movie';
-import { allLanguages, genres } from '../lib/catalogue-options';
+import { allLanguages, contentTypes, genres } from '../lib/catalogue-options';
 
 export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; adsEnabled: boolean }) {
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState('All');
   const [language, setLanguage] = useState('All languages');
+  const [contentType, setContentType] = useState('all');
   const [menu, setMenu] = useState(false);
   const featured = movies.find((movie) => movie.featured) ?? movies[0];
   const filtered = useMemo(() => movies.filter((movie) => {
     const matchesQuery = `${movie.title} ${movie.director} ${movie.cast.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
-    return matchesQuery && (genre === 'All' || movie.genre === genre) && (language === 'All languages' || movie.languages.includes(language));
-  }), [movies, query, genre, language]);
+    const movieGenres = movie.genre.split(',').map((item) => item.trim());
+    return matchesQuery && (genre === 'All' || movieGenres.includes(genre)) && (language === 'All languages' || movie.languages.includes(language)) && (contentType === 'all' || movie.contentType === contentType);
+  }), [movies, query, genre, language, contentType]);
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
@@ -22,16 +24,20 @@ export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; ad
     const lifecycle = new AbortController();
     void Promise.resolve(context.registerTool({
       name: 'filter_sublyra_movies', title: 'Filter Sublyra movies',
-      description: 'Filter the visible movie catalogue by search text, genre, or subtitle language.',
-      inputSchema: { type: 'object', properties: { query: { type: 'string' }, genre: { type: 'string' }, language: { type: 'string' } }, additionalProperties: false },
+      description: 'Filter the visible catalogue by search text, title type, genre, or subtitle language.',
+      inputSchema: { type: 'object', properties: { query: { type: 'string' }, type: { type: 'string' }, genre: { type: 'string' }, language: { type: 'string' } }, additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: false },
       execute(input: unknown) {
         if (!input || typeof input !== 'object') throw new Error('Filter input must be an object.');
-        const values = input as { query?: unknown; genre?: unknown; language?: unknown };
+        const values = input as { query?: unknown; type?: unknown; genre?: unknown; language?: unknown };
         if (typeof values.query === 'string') setQuery(values.query.slice(0, 80));
         if (typeof values.genre === 'string') {
           if (!genres.includes(values.genre)) throw new Error('Unknown genre.');
           setGenre(values.genre);
+        }
+        if (typeof values.type === 'string') {
+          if (values.type !== 'all' && !contentTypes.includes(values.type as typeof contentTypes[number])) throw new Error('Unknown title type.');
+          setContentType(values.type);
         }
         if (typeof values.language === 'string') {
           if (values.language !== 'All languages' && !allLanguages.includes(values.language)) throw new Error('Unknown subtitle language.');
@@ -41,7 +47,7 @@ export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; ad
       },
     }, { signal: lifecycle.signal })).catch(() => undefined);
     return () => lifecycle.abort();
-  }, [query, genre, language]);
+  }, [query, genre, language, contentType]);
 
   if (!featured) return <main className="grid min-h-screen place-items-center bg-[#f2efe9] px-5 text-center text-[#181916]"><div><p className="font-serif text-4xl">Sublyra<span className="text-[#b43a2e]">.</span></p><h1 className="mt-8 font-serif text-5xl tracking-[-.04em]">The next collection is being prepared.</h1><p className="mx-auto mt-4 max-w-lg text-base leading-7 text-black/50">Please return soon for newly curated multilingual cinema.</p></div></main>;
 
@@ -68,6 +74,8 @@ export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; ad
     <section id="discover" className="mx-auto max-w-[1480px] px-5 py-20 sm:px-8 lg:px-12">
       <div className="grid gap-10 lg:grid-cols-[.65fr_1.35fr] lg:items-end"><div><p className="section-kicker">Curated cinema</p><h2 className="mt-3 max-w-lg font-serif text-5xl leading-[.98] tracking-[-.04em] sm:text-6xl">Find your next story.</h2></div><div className="grid gap-3 sm:grid-cols-[1fr_180px_210px]"><label className="flex items-center gap-3 border-b border-black/25 py-3"><Search size={18} className="text-black/40"/><input value={query} maxLength={80} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, director or cast" className="w-full bg-transparent text-sm outline-none placeholder:text-black/35"/></label><FilterSelect label="Genre" value={genre} options={genres} onChange={setGenre}/><FilterSelect label="Subtitle" value={language} options={['All languages', ...allLanguages]} onChange={setLanguage}/></div></div>
     </section>
+
+    <div className="mx-auto max-w-[1480px] px-5 sm:px-8 lg:px-12"><div className="max-w-[180px]"><FilterSelect label="Type" value={contentType} options={['all', ...contentTypes]} onChange={setContentType}/></div></div>
 
     <section id="collection" className="mx-auto max-w-[1480px] px-5 pb-20 sm:px-8 lg:px-12">
       <div className="mb-8 flex items-end justify-between border-b border-black/15 pb-4"><p className="text-sm text-black/50">{filtered.length} {filtered.length === 1 ? 'film' : 'films'} found</p><span className="text-xs uppercase tracking-[.2em] text-black/40">Updated weekly</span></div>

@@ -16,6 +16,7 @@ type MovieRow = {
   release_year: number;
   runtime: string;
   rating: number;
+  content_type: 'movie' | 'series';
   genre: string;
   director: string;
   cast_json: string;
@@ -87,6 +88,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     year: row.release_year,
     runtime: row.runtime,
     rating: row.rating,
+    contentType: row.content_type === 'series' ? 'series' : 'movie',
     genre: row.genre,
     director: row.director,
     cast: safeStringArray(row.cast_json),
@@ -110,7 +112,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
   };
 }
 
-const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runtime, rating,
+const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runtime, rating, content_type,
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
@@ -146,12 +148,12 @@ export async function initializeStarterCatalogue(user: ChatGPTUser): Promise<voi
   if (setting?.value === '1') return;
   const now = new Date().toISOString();
   const statements = starterMovies.map((movie) => database.prepare(`INSERT OR IGNORE INTO movies (
-    slug, title, tagline, description, release_year, runtime, rating, genre,
+    slug, title, tagline, description, release_year, runtime, rating, content_type, genre,
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
     telegram_channel, subtitle_url, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 29 }, () => '?').join(', ')})`).bind(
+  ) VALUES (${Array.from({ length: 30 }, () => '?').join(', ')})`).bind(
     ...movieValues(movie, user.userId, now),
   ));
   statements.push(
@@ -184,7 +186,7 @@ export async function listAuditEvents(): Promise<AuditEvent[]> {
 function movieValues(movie: Movie | AdminMovieInput, actorId: string, now: string): unknown[] {
   return [
     movie.slug, movie.title, movie.tagline, movie.description, movie.year,
-    movie.runtime, movie.rating, movie.genre, movie.director, JSON.stringify(movie.cast),
+    movie.runtime, movie.rating, movie.contentType ?? 'movie', movie.genre, movie.director, JSON.stringify(movie.cast),
     JSON.stringify(movie.languages), movie.poster, movie.backdrop, movie.featured ? 1 : 0,
     movie.publicationStatus, movie.rightsStatus, movie.rightsVerifiedAt ?? null,
     movie.rightsExpiresAt ?? null, movie.rightsReviewer ?? null, movie.rightsReference ?? null,
@@ -205,12 +207,12 @@ export async function createAdminMovie(input: AdminMovieInput, user: ChatGPTUser
   const database = getDatabase();
   const now = new Date().toISOString();
   const result = await database.prepare(`INSERT INTO movies (
-    slug, title, tagline, description, release_year, runtime, rating, genre,
+    slug, title, tagline, description, release_year, runtime, rating, content_type, genre,
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
     telegram_channel, subtitle_url, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 29 }, () => '?').join(', ')})`).bind(
+  ) VALUES (${Array.from({ length: 30 }, () => '?').join(', ')})`).bind(
     ...movieValues(input, user.userId, now),
   ).run();
   const movieId = Number(result.meta.last_row_id);
@@ -245,7 +247,7 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     : input;
   const now = new Date().toISOString();
   const result = await database.prepare(`UPDATE movies SET
-    slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = ?,
+    slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, content_type = ?, genre = ?,
     director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?,
     publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?,
     rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?,

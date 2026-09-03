@@ -1,6 +1,7 @@
 import { toPublicMovie } from '../../../lib/public-movie';
 import { logSecurityEvent } from '../../../lib/security/security-events';
 import { listPublishedMovies } from '../../../db';
+import { contentTypes } from '../../../lib/catalogue-options';
 
 const MAX_QUERY_LENGTH = 80;
 const MAX_FILTER_LENGTH = 30;
@@ -44,15 +45,18 @@ export async function GET(request: Request) {
   const query = safeText(url.searchParams.get('q'), MAX_QUERY_LENGTH);
   const genre = safeText(url.searchParams.get('genre'), MAX_FILTER_LENGTH);
   const language = safeText(url.searchParams.get('language'), MAX_FILTER_LENGTH);
+  const type = safeText(url.searchParams.get('type'), MAX_FILTER_LENGTH);
   const page = boundedInteger(url.searchParams.get('page'), 1, MAX_PAGE_NUMBER);
   const limit = boundedInteger(url.searchParams.get('limit'), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
-  if (query === null || genre === null || language === null) return badRequest('text_limit');
+  if (query === null || genre === null || language === null || type === null) return badRequest('text_limit');
+  if (type && type !== 'all' && !contentTypes.includes(type as typeof contentTypes[number])) return badRequest('content_type');
   if (page === null || limit === null) return badRequest('pagination_bounds');
 
   const movies = await listPublishedMovies();
   const filtered = movies.filter((movie) => {
     const text = `${movie.title} ${movie.director} ${movie.cast.join(' ')}`.toLowerCase();
-    return (!query || text.includes(query)) && (!genre || movie.genre.toLowerCase() === genre) && (!language || movie.languages.some((item) => item.toLowerCase() === language));
+    const movieGenres = movie.genre.toLowerCase().split(',').map((item) => item.trim());
+    return (!query || text.includes(query)) && (!genre || genre === 'all' || movieGenres.includes(genre)) && (!language || language === 'all languages' || movie.languages.some((item) => item.toLowerCase() === language)) && (!type || type === 'all' || movie.contentType === type);
   });
   const start = (page - 1) * limit;
   const results = filtered.slice(start, start + limit).map(toPublicMovie);
