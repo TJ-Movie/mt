@@ -67,7 +67,8 @@ non-sensitive identifier only.
 ## Outbound destination rules
 
 - YouTube: `https://www.youtube.com/watch?v=<11-char-id>` or
-  `https://youtu.be/<11-char-id>`; only the optional `t` parameter is accepted.
+  `https://youtu.be/<11-char-id>`; optional `t` and bounded alphanumeric `si`
+  share parameters are accepted, with no other query keys.
 - Telegram: `https://t.me/<approved-channel>` with an optional numeric message
   ID. The channel must match the record's `telegramChannel` field.
 - User information, custom ports, fragments, insecure HTTP, lookalike domains,

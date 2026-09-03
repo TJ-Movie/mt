@@ -15,6 +15,7 @@ export type OutboundResolution =
   | Readonly<{ ok: false; reason: OutboundDenialReason }>;
 
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+const YOUTUBE_SHARE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const TELEGRAM_CHANNEL = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
 const TELEGRAM_MESSAGE_ID = /^\d{1,20}$/;
 
@@ -35,7 +36,9 @@ function validateYouTube(url: URL): boolean {
     return (
       !videoId.includes('/') &&
       YOUTUBE_VIDEO_ID.test(videoId) &&
-      hasOnlySearchParameters(url, new Set(['t']))
+      hasOnlySearchParameters(url, new Set(['t', 'si'])) &&
+      url.searchParams.getAll('si').length <= 1 &&
+      (!url.searchParams.get('si') || YOUTUBE_SHARE_ID.test(url.searchParams.get('si')!))
     );
   }
 
@@ -44,7 +47,9 @@ function validateYouTube(url: URL): boolean {
   return (
     videoIds.length === 1 &&
     YOUTUBE_VIDEO_ID.test(videoIds[0]) &&
-    hasOnlySearchParameters(url, new Set(['v', 't']))
+    hasOnlySearchParameters(url, new Set(['v', 't', 'si'])) &&
+    url.searchParams.getAll('si').length <= 1 &&
+    (!url.searchParams.get('si') || YOUTUBE_SHARE_ID.test(url.searchParams.get('si')!))
   );
 }
 

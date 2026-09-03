@@ -65,11 +65,13 @@ void test('runtime switches fail closed and require explicit true', () => {
 void test('outbound destinations accept only the exact approved shapes', () => {
   assert.ok(validateOutboundDestination('watch', verifiedMovie.officialWatchUrl!));
   assert.ok(validateOutboundDestination('watch', 'https://youtu.be/abcdefghijk?t=30'));
+  assert.ok(validateOutboundDestination('watch', 'https://youtu.be/abcdefghijk?si=shareToken_123'));
   assert.ok(validateOutboundDestination('telegram', verifiedMovie.telegramUrl!, 'sublyra_test'));
 
   assert.equal(validateOutboundDestination('watch', 'http://www.youtube.com/watch?v=abcdefghijk'), null);
   assert.equal(validateOutboundDestination('watch', 'https://youtube.com.evil.example/watch?v=abcdefghijk'), null);
   assert.equal(validateOutboundDestination('watch', 'https://www.youtube.com/embed/abcdefghijk'), null);
+  assert.equal(validateOutboundDestination('watch', 'https://youtu.be/abcdefghijk?si=bad.token'), null);
   assert.equal(validateOutboundDestination('telegram', 'https://t.me/another_channel/123', 'sublyra_test'), null);
   assert.equal(validateOutboundDestination('telegram', 'https://telegram.me/sublyra_test/123', 'sublyra_test'), null);
 });
