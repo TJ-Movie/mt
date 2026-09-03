@@ -73,6 +73,14 @@ export const movies: Movie[] = [
     slug: 'after-midnight', title: 'After Midnight', tagline: 'The city speaks when everyone sleeps.',
     description: 'A radio host receives a call from tomorrow and races to change one impossible night.', year: 2025, runtime: '1h 52m', rating: 7.8, publicationStatus: 'published', rightsStatus: 'pending', genre: 'Thriller', director: 'Nora Flint', cast: ['Evan Cole', 'Sana Mir', 'Hugo Lane'], languages: ['English', 'Sinhala', 'Hindi', 'Spanish', 'French', 'Portuguese', 'Japanese'], poster: '/og.png', backdrop: '/og.png'
   },
+  {
+    contentType: 'series', slug: 'the-signal-house', title: 'The Signal House', tagline: 'Every episode carries a message.',
+    description: 'A coastal radio team follows a chain of mysterious broadcasts that connect strangers across oceans.', year: 2026, runtime: '8 episodes', rating: 8.6, publicationStatus: 'published', rightsStatus: 'pending', genre: 'Mystery, Thriller', director: 'Mira Senanayake', cast: ['Asha Fernando', 'Noah Park', 'Lina Ortiz'], languages: ['English', 'Sinhala', 'Tamil', 'Hindi', 'Spanish', 'French'], poster: '/og.png', backdrop: '/og.png'
+  },
+  {
+    contentType: 'series', slug: 'letters-from-kandy', title: 'Letters from Kandy', tagline: 'The past is still writing back.',
+    description: 'Three friends restore a forgotten archive and uncover a family story told in many languages.', year: 2025, runtime: '6 episodes', rating: 8.3, publicationStatus: 'published', rightsStatus: 'pending', genre: 'Drama, Romance', director: 'Ishani Rao', cast: ['Maya Dias', 'Kabir Bose', 'Sora Kim'], languages: ['English', 'Sinhala', 'Hindi', 'Tamil', 'Portuguese'], poster: '/og.png', backdrop: '/og.png'
+  },
 ];
 
 export function getMovie(slug: string) {
