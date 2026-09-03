@@ -230,14 +230,17 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
       telegram_channel: string | null;
     }>();
   if (!current) return false;
-  if (requiresRightsReset({
+  const rightsResetRequired = requiresRightsReset({
     rightsStatus: current.rights_status,
     rightsExpiresAt: current.rights_expires_at,
     rightsReference: current.rights_reference,
     officialWatchUrl: current.official_watch_url,
     telegramUrl: current.telegram_url,
     telegramChannel: current.telegram_channel,
-  }, input)) throw new Error('RIGHTS_REVERIFICATION_REQUIRED');
+  }, input);
+  const persistedInput = rightsResetRequired
+    ? { ...input, rightsStatus: 'pending' as const, rightsVerifiedAt: null, rightsExpiresAt: null, rightsReviewer: null, rightsReference: null }
+    : input;
   const now = new Date().toISOString();
   const result = await database.prepare(`UPDATE movies SET
     slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = ?,
@@ -246,11 +249,11 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?,
     updated_by = ?, updated_at = ?, revision = revision + 1
     WHERE id = ? AND revision = ?`).bind(
-      ...movieValues(input, user.userId, now).slice(0, 23), user.userId, now, id, revision,
+      ...movieValues(persistedInput, user.userId, now).slice(0, 23), user.userId, now, id, revision,
     ).run();
   if (result.meta.changes !== 1) return false;
-  await auditStatement(database, user, 'movie_updated', id, input.slug, ['movie_record'], now).run();
-  logSecurityEvent('admin_movie_changed', 'info', { action: 'updated', slug: input.slug });
+  await auditStatement(database, user, rightsResetRequired ? 'movie_updated_rights_reset' : 'movie_updated', id, persistedInput.slug, rightsResetRequired ? ['movie_record', 'rights_reset'] : ['movie_record'], now).run();
+  logSecurityEvent('admin_movie_changed', 'info', { action: rightsResetRequired ? 'updated_rights_reset' : 'updated', slug: persistedInput.slug });
   return true;
 }
 
