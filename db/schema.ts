@@ -57,3 +57,12 @@ export const appSettingsTable = sqliteTable('app_settings', {
   value: text('value').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const movieCommentsTable = sqliteTable('movie_comments', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  movieSlug: text('movie_slug').notNull(),
+  displayName: text('display_name').notNull(),
+  body: text('body').notNull(),
+  status: text('status').notNull().default('visible'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('idx_movie_comments_slug_status').on(table.movieSlug, table.status)]);
