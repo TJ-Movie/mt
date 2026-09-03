@@ -1,15 +1,37 @@
 import { getMovie } from '../../../../lib/movies';
+import { resolveOutboundDestination, type OutboundAction } from '../../../../lib/security/outbound-links';
+import { getRuntimeControls } from '../../../../lib/security/runtime-controls';
+import { logSecurityEvent } from '../../../../lib/security/security-events';
 
-const ALLOWED_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'youtu.be', 't.me', 'telegram.me']);
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, max-age=0',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Robots-Tag': 'noindex, nofollow, noarchive',
+};
 
-export async function GET(request: Request, context: { params: Promise<{ slug: string; action: string }> }) {
+export async function GET(_request: Request, context: { params: Promise<{ slug: string; action: string }> }) {
   const { slug, action } = await context.params;
   const movie = getMovie(slug);
-  if (!movie || !['watch', 'telegram'].includes(action)) return new Response('Not found', { status: 404 });
-  const destination = action === 'watch' ? movie.officialWatchUrl : movie.telegramUrl;
-  if (!destination) return new Response('This verified link is not available yet.', { status: 404 });
-  let target: URL;
-  try { target = new URL(destination); } catch { return new Response('Invalid destination', { status: 400 }); }
-  if (target.protocol !== 'https:' || !ALLOWED_HOSTS.has(target.hostname.toLowerCase())) return new Response('Blocked destination', { status: 400 });
-  return Response.redirect(target, 302);
+  if (!movie || (action !== 'watch' && action !== 'telegram')) {
+    logSecurityEvent('outbound_redirect_denied', 'warn', { slug, action, reason: 'not_found' });
+    return new Response('Not found', { status: 404, headers: NO_STORE_HEADERS });
+  }
+
+  const resolution = resolveOutboundDestination(
+    movie,
+    action as OutboundAction,
+    getRuntimeControls(),
+  );
+  if (!resolution.ok) {
+    logSecurityEvent('outbound_redirect_denied', 'warn', { slug, action, reason: resolution.reason });
+    return new Response('Not found', { status: 404, headers: NO_STORE_HEADERS });
+  }
+
+  logSecurityEvent('outbound_redirect_allowed', 'info', { slug, action });
+  return new Response(null, {
+    status: 302,
+    headers: { ...NO_STORE_HEADERS, Location: resolution.target.toString() },
+  });
 }
