@@ -11,7 +11,7 @@ import {
 import { getRuntimeControls } from '../lib/security/runtime-controls.ts';
 import { requiresRightsReset, validateAdminMovieInput } from '../lib/admin/movie-input.ts';
 import { sanitizeUploadedImage } from '../lib/admin/image-sanitizer.ts';
-import { isAdminUserId } from '../lib/security/admin-allowlist.ts';
+import { isAdminEmail, isAdminUserId } from '../lib/security/admin-allowlist.ts';
 
 const verifiedMovie: Movie = {
   ...movies[0],
@@ -114,6 +114,8 @@ void test('admin authorization is an explicit bounded allowlist', () => {
   assert.equal(isAdminUserId('owner-c', 'owner-a, owner-b'), false);
   assert.equal(isAdminUserId('owner-a', ''), false);
   assert.equal(isAdminUserId('eleventh', '1,2,3,4,5,6,7,8,9,10,eleventh'), false);
+  assert.equal(isAdminEmail('Owner@Example.com', 'owner@example.com'), true);
+  assert.equal(isAdminEmail('attacker@example.com', 'owner@example.com'), false);
 });
 
 const validAdminMovie = {
@@ -149,9 +151,10 @@ void test('admin movie validation rejects missing rights evidence and hostile de
 });
 
 void test('verified delivery changes require a fresh pending-to-verified cycle', () => {
-  assert.equal(requiresRightsReset(validAdminMovie, { ...validAdminMovie, telegramUrl: 'https://t.me/sublyra_test/456' }), true);
-  assert.equal(requiresRightsReset(validAdminMovie, { ...validAdminMovie, rightsStatus: 'pending' }), false);
-  assert.equal(requiresRightsReset({ ...validAdminMovie, rightsStatus: 'pending' }, validAdminMovie), false);
+  const current = { rightsStatus: validAdminMovie.rightsStatus, rightsExpiresAt: validAdminMovie.rightsExpiresAt, rightsReference: validAdminMovie.rightsReference, officialWatchUrl: validAdminMovie.officialWatchUrl ?? null, telegramUrl: validAdminMovie.telegramUrl ?? null, telegramChannel: validAdminMovie.telegramChannel ?? null };
+  assert.equal(requiresRightsReset(current, { ...current, telegramUrl: 'https://t.me/sublyra_test/456' }), true);
+  assert.equal(requiresRightsReset(current, { ...current, rightsStatus: 'pending' }), false);
+  assert.equal(requiresRightsReset({ ...current, rightsStatus: 'pending' }, current), false);
 });
 
 function pngChunk(type: string, data: Uint8Array): Uint8Array {
