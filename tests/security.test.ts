@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { movies, type Movie } from '../lib/movies.ts';
 import { toPublicMovie } from '../lib/public-movie.ts';
@@ -95,4 +96,12 @@ void test('catalogue artwork is self-hosted', () => {
     assert.ok(movie.poster.startsWith('/'));
     assert.ok(movie.backdrop.startsWith('/'));
   }
+});
+
+void test('private movie records are protected from Client Component imports', async () => {
+  const movieSource = await readFile(new URL('../lib/movies.ts', import.meta.url), 'utf8');
+  const browserSource = await readFile(new URL('../components/movie-browser.tsx', import.meta.url), 'utf8');
+  assert.match(movieSource, /^import ['"]server-only['"];?/m);
+  assert.doesNotMatch(browserSource, /from ['"]\.\.\/lib\/movies(?:\.ts)?['"]/);
+  assert.match(browserSource, /from ['"]\.\.\/lib\/catalogue-options['"]/);
 });

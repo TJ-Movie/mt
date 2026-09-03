@@ -1,3 +1,6 @@
+import 'server-only';
+import { allLanguages } from './catalogue-options.ts';
+
 export const rightsStatuses = ['pending', 'verified', 'blocked'] as const;
 export type RightsStatus = (typeof rightsStatuses)[number];
 
@@ -12,7 +15,7 @@ export type Movie = {
   genre: string;
   director: string;
   cast: string[];
-  languages: string[];
+  languages: readonly string[];
   poster: string;
   backdrop: string;
   featured?: boolean;
@@ -25,9 +28,6 @@ export type Movie = {
   telegramUrl?: string;
   telegramChannel?: string;
 };
-
-export const allLanguages = ['English', 'Sinhala', 'Hindi', 'Tamil', 'Spanish', 'French', 'Portuguese', 'Arabic', 'Japanese', 'Korean', 'German'];
-export const genres = ['All', 'Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action'];
 
 export const movies: Movie[] = [
   {

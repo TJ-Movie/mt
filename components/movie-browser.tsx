@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, Globe2, Menu, Play, Search, Sparkles, Star, X } from 'lucide-react';
 import type { PublicMovie } from '../lib/public-movie';
-import { allLanguages, genres } from '../lib/movies';
+import { allLanguages, genres } from '../lib/catalogue-options';
 
 export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; adsEnabled: boolean }) {
   const [query, setQuery] = useState('');
@@ -78,6 +78,6 @@ export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; ad
   </main>;
 }
 
-function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (value: string) => void }) {
   return <label className="relative border-b border-black/25 py-3"><span className="sr-only">{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full appearance-none bg-transparent pr-7 text-sm outline-none">{options.map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown size={15} className="pointer-events-none absolute right-0 top-3.5 text-black/45"/></label>;
 }

@@ -11,6 +11,7 @@ The hardened compatibility set is pinned exactly in `package.json`:
 - `@cloudflare/vite-plugin`: `1.54.3`
 - `wrangler`: `4.128.0`
 - `@cloudflare/workers-types`: `5.20260903.1`
+- `server-only`: `0.0.1`
 
 Update React, React DOM, RSC, Vinext, Vite, and the RSC plugin as one tested set.
 Never use `npm audit fix --force` or `--legacy-peer-deps` to bypass peer checks.
@@ -19,10 +20,19 @@ After an approved update:
 1. Use a clean npm cache and run `npm install` to regenerate `package-lock.json`.
 2. Verify `npm ci` in a clean workspace.
 3. Run `npm audit --omit=dev`, `npm run lint`, `npm run security:test`, the
-   TypeScript no-emit check, and `npm run build`.
+   TypeScript no-emit check, `npm run build`, and the compiled-Worker integration
+   test.
 4. Review the lockfile diff for unexpected registries, Git dependencies,
    lifecycle scripts, duplicate React/RSC versions, or unexplained package jumps.
 5. Commit `package.json` and `package-lock.json` together.
+
+## Server/client data boundary
+
+`lib/movies.ts` is marked with `server-only`. Client Components must import
+presentation constants from `lib/catalogue-options.ts`, never from the movie
+record module. Public movie data crosses the RSC or API boundary only through
+the explicit `toPublicMovie` allowlist. The build, unit test, integration test,
+and client-bundle scan must all pass before publication.
 
 ## Fail-closed production switches
 
