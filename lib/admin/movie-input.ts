@@ -72,9 +72,10 @@ function optionalText(source: Record<string, unknown>, key: string, maximum: num
   return value || null;
 }
 
-function listField(source: Record<string, unknown>, key: string, allowed: readonly string[] | null, errors: Record<string, string>): string[] {
+function listField(source: Record<string, unknown>, key: string, allowed: readonly string[] | null, errors: Record<string, string>, required = true): string[] {
   const raw = source[key];
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 20) { errors[key] = 'Select between 1 and 20 values.'; return []; }
+  if (raw === undefined || raw === null || raw === '') return required ? (errors[key] = 'Select at least one value.', []) : [];
+  if (!Array.isArray(raw) || raw.length < (required ? 1 : 0) || raw.length > 20) { errors[key] = required ? 'Select between 1 and 20 values.' : 'Select no more than 20 values.'; return []; }
   const values = raw.map((item) => typeof item === 'string' ? item.normalize('NFKC').trim() : '');
   if (values.some((item) => !item || item.length > 100 || hasControlCharacter(item))) errors[key] = 'Contains an invalid value.';
   if (allowed && values.some((item) => !allowed.includes(item))) errors[key] = 'Contains an unsupported value.';
@@ -95,11 +96,11 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const slug = textField(source, 'slug', 2, 80, errors).toLowerCase();
   if (!SLUG.test(slug)) errors.slug = 'Use lowercase letters, numbers, and single hyphens.';
   const title = textField(source, 'title', 1, 160, errors);
-  const tagline = textField(source, 'tagline', 1, 200, errors);
-  const description = textField(source, 'description', 20, 2_000, errors);
-  const runtime = textField(source, 'runtime', 2, 30, errors);
+  const tagline = textField(source, 'tagline', 0, 200, errors);
+  const description = textField(source, 'description', 0, 2_000, errors);
+  const runtime = textField(source, 'runtime', 0, 30, errors);
   const genre = textField(source, 'genre', 2, 40, errors);
-  const director = textField(source, 'director', 1, 160, errors);
+  const director = textField(source, 'director', 0, 160, errors);
   if (genre === 'All' || !genres.includes(genre)) errors.genre = 'Select a supported genre.';
 
   const year = source.year;
@@ -108,7 +109,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   if (!Number.isInteger(year) || Number(year) < 1888 || Number(year) > maximumYear) errors.year = `Use a year from 1888 to ${maximumYear}.`;
   if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0 || rating > 10) errors.rating = 'Use a rating from 0 to 10.';
 
-  const cast = listField(source, 'cast', null, errors);
+  const cast = listField(source, 'cast', null, errors, false);
   const languages = listField(source, 'languages', allLanguages, errors);
   const poster = textField(source, 'poster', 1, 200, errors);
   const backdrop = textField(source, 'backdrop', 1, 200, errors);

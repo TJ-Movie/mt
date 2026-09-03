@@ -134,6 +134,11 @@ void test('admin movie validation accepts a complete rights-cleared record', () 
   assert.equal(result.ok, true);
 });
 
+void test('admin movie validation allows optional editorial fields to remain blank', () => {
+  const result = validateAdminMovieInput({ ...validAdminMovie, tagline: '', description: '', runtime: '', director: '', cast: [] }, Date.parse('2026-09-03T00:00:00.000Z'));
+  assert.equal(result.ok, true);
+});
+
 void test('admin movie validation rejects missing rights evidence and hostile destinations', () => {
   const result = validateAdminMovieInput({
     ...validAdminMovie,
