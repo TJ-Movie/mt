@@ -131,7 +131,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const telegramUrl = optionalText(source, 'telegramUrl', 500, errors);
   const telegramChannel = optionalText(source, 'telegramChannel', 32, errors);
   const subtitleUrl = optionalText(source, 'subtitleUrl', 240, errors);
-  if (subtitleUrl && !/^\/media\/subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip)$/.test(subtitleUrl)) errors.subtitleUrl = 'Upload a subtitle SRT, VTT, or ZIP file.';
+  if (subtitleUrl && !/^\/media\/subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)$/.test(subtitleUrl)) errors.subtitleUrl = 'Upload a subtitle SRT, VTT, ZIP, or 7Z file.';
 
   if (officialWatchUrl && !validateOutboundDestination('watch', officialWatchUrl)) errors.officialWatchUrl = 'Use an approved YouTube watch URL.';
   if ((telegramUrl || telegramChannel) && (!telegramUrl || !telegramChannel || !validateOutboundDestination('telegram', telegramUrl, telegramChannel))) errors.telegramUrl = 'Telegram URL and channel must match the approved format.';

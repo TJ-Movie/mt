@@ -1,6 +1,6 @@
 import { getMediaBucket } from '../../../db';
 
-const SAFE_KEY = /^(?:movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip))$/;
+const SAFE_KEY = /^(?:movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z))$/;
 
 export async function GET(_request: Request, context: { params: Promise<{ key: string[] }> }) {
   const keyParts = (await context.params).key;
