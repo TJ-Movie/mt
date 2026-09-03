@@ -30,6 +30,7 @@ export type Movie = {
   officialWatchUrl?: string;
   telegramUrl?: string;
   telegramChannel?: string;
+  subtitleUrl?: string;
 };
 
 export const movies: Movie[] = [

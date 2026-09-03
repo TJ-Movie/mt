@@ -25,6 +25,7 @@ export const moviesTable = sqliteTable('movies', {
   officialWatchUrl: text('official_watch_url'),
   telegramUrl: text('telegram_url'),
   telegramChannel: text('telegram_channel'),
+  subtitleUrl: text('subtitle_url'),
   revision: integer('revision').notNull().default(1),
   createdBy: text('created_by').notNull(),
   updatedBy: text('updated_by').notNull(),
