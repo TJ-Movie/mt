@@ -1,4 +1,4 @@
-import { getMovie } from '../../../../lib/movies';
+import { getPublishedMovie } from '../../../../db';
 import { resolveOutboundDestination, type OutboundAction } from '../../../../lib/security/outbound-links';
 import { getRuntimeControls } from '../../../../lib/security/runtime-controls';
 import { logSecurityEvent } from '../../../../lib/security/security-events';
@@ -13,7 +13,7 @@ const NO_STORE_HEADERS = {
 
 export async function GET(_request: Request, context: { params: Promise<{ slug: string; action: string }> }) {
   const { slug, action } = await context.params;
-  const movie = getMovie(slug);
+  const movie = await getPublishedMovie(slug);
   if (!movie || (action !== 'watch' && action !== 'telegram')) {
     logSecurityEvent('outbound_redirect_denied', 'warn', { slug, action, reason: 'not_found' });
     return new Response('Not found', { status: 404, headers: NO_STORE_HEADERS });

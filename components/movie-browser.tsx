@@ -43,6 +43,8 @@ export function MovieBrowser({ movies, adsEnabled }: { movies: PublicMovie[]; ad
     return () => lifecycle.abort();
   }, [query, genre, language]);
 
+  if (!featured) return <main className="grid min-h-screen place-items-center bg-[#f2efe9] px-5 text-center text-[#181916]"><div><p className="font-serif text-4xl">Sublyra<span className="text-[#b43a2e]">.</span></p><h1 className="mt-8 font-serif text-5xl tracking-[-.04em]">The next collection is being prepared.</h1><p className="mx-auto mt-4 max-w-lg text-base leading-7 text-black/50">Please return soon for newly curated multilingual cinema.</p></div></main>;
+
   return <main className="min-h-screen overflow-hidden bg-[#f2efe9] text-[#181916]">
     <header className="fixed inset-x-0 top-0 z-50 border-b border-black/10 bg-[#f2efe9]/90 backdrop-blur-xl">
       <div className="mx-auto flex h-20 max-w-[1480px] items-center px-5 sm:px-8 lg:px-12">

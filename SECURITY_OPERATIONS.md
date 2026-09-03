@@ -42,6 +42,7 @@ Production environment values are managed by Sites, not committed to source:
 |---|---|---|
 | `SUBLYRA_EXTERNAL_LINKS_ENABLED` | `false` | Denies every watch/Telegram redirect. |
 | `SUBLYRA_ADS_ENABLED` | `false` | Removes all advertisement placements. |
+| `SUBLYRA_ADMIN_USER_IDS` | owner user ID only | Allows the private `/studio` and admin APIs. |
 
 Only the exact case-insensitive value `true` enables a feature. Missing, empty,
 or malformed values remain disabled. A switch change requires a saved-version
@@ -122,3 +123,25 @@ Alert on destination/config changes, repeated redirect denials, rate-limit spike
 incident: set both switches to `false`, set affected records to `blocked`, deploy,
 preserve sanitized logs and version IDs, investigate, rotate any exposed secret,
 and restore only after a new rights/security approval.
+
+## Private studio and database
+
+The studio is intentionally absent from public navigation. Open `/studio`
+directly and authenticate with ChatGPT. Production access then requires an exact
+match in `SUBLYRA_ADMIN_USER_IDS`; authenticated non-admin users receive a 404.
+Every write API also requires a same-origin request, `Sec-Fetch-Site`, and the
+`x-sublyra-action: admin-write` header. Request bodies are bounded and validated
+again on the server. Movie deletion is a recoverable soft archive.
+
+D1 stores catalogue records, rights metadata, optimistic revision numbers, and
+an append-only audit trail. R2 stores only randomized same-origin JPG/PNG keys.
+Uploads are size/dimension bounded, parsed by file signature, stripped of PNG
+ancillary or JPEG metadata segments, and served through an allowlisted media
+route with `nosniff` and same-origin resource policy.
+
+Schema changes must be generated as a new file under `drizzle/`, reviewed to
+ensure they contain schema changes only, and deployed with the Sites bundle.
+Never edit an already-applied migration. Take a database backup before a
+destructive schema transition. If D1 is unavailable in production, the public
+catalogue fails closed instead of restoring static records that an administrator
+may already have archived.

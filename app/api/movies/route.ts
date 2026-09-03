@@ -1,6 +1,6 @@
-import { movies } from '../../../lib/movies';
 import { toPublicMovie } from '../../../lib/public-movie';
 import { logSecurityEvent } from '../../../lib/security/security-events';
+import { listPublishedMovies } from '../../../db';
 
 const MAX_QUERY_LENGTH = 80;
 const MAX_FILTER_LENGTH = 30;
@@ -49,6 +49,7 @@ export async function GET(request: Request) {
   if (query === null || genre === null || language === null) return badRequest('text_limit');
   if (page === null || limit === null) return badRequest('pagination_bounds');
 
+  const movies = await listPublishedMovies();
   const filtered = movies.filter((movie) => {
     const text = `${movie.title} ${movie.director} ${movie.cast.join(' ')}`.toLowerCase();
     return (!query || text.includes(query)) && (!genre || movie.genre.toLowerCase() === genre) && (!language || movie.languages.some((item) => item.toLowerCase() === language));

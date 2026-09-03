@@ -3,6 +3,8 @@ import test from 'node:test';
 
 process.env.SUBLYRA_EXTERNAL_LINKS_ENABLED = 'false';
 process.env.SUBLYRA_ADS_ENABLED = 'false';
+process.env.SUBLYRA_ADMIN_USER_IDS = 'test-owner';
+globalThis.__SUBLYRA_TEST_ENV__ = {};
 
 const worker = (await import('../dist/server/index.js')).default;
 const executionContext = {
@@ -42,8 +44,10 @@ void test('catalogue API enforces DTO and resource bounds', async () => {
   const data = JSON.parse(body);
 
   assert.equal(response.status, 200);
-  assert.equal(data.results.length, 2);
-  assert.equal(data.pagination.total, 6);
+  // The production bundle is deliberately tested without a D1 binding: it must
+  // return an empty catalogue rather than resurrecting static/archived records.
+  assert.equal(data.results.length, 0);
+  assert.equal(data.pagination.total, 0);
   assert.equal(response.headers.get('ratelimit-policy'), '60;w=60');
   assert.doesNotMatch(
     body,
@@ -70,4 +74,28 @@ void test('external links fail closed and unsupported methods are denied', async
 
   const unsupportedMethod = await request('/api/movies', { method: 'POST' });
   assert.equal(unsupportedMethod.status, 405);
+});
+
+void test('studio and admin APIs deny unauthenticated or cross-site access', async () => {
+  const studio = await request('/studio');
+  assert.ok(studio.status === 307 || studio.status === 308);
+  assert.match(studio.headers.get('location') ?? '', /^\/signin-with-chatgpt\?return_to=/);
+
+  const unauthenticated = await request('/api/admin/movies');
+  assert.equal(unauthenticated.status, 404);
+  assert.match(unauthenticated.headers.get('cache-control') ?? '', /no-store/);
+
+  const crossSite = await request('/api/admin/movies', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'origin': 'https://evil.example',
+      'sec-fetch-site': 'cross-site',
+      'x-sublyra-action': 'admin-write',
+      'oai-authenticated-user-id': 'test-owner',
+      'oai-authenticated-user-email': 'owner@example.test',
+    },
+    body: '{}',
+  });
+  assert.equal(crossSite.status, 403);
 });

@@ -1,12 +1,12 @@
-import { movies } from '../lib/movies';
 import { MovieBrowser } from '../components/movie-browser';
 import { headers } from 'next/headers';
 import { toPublicMovie } from '../lib/public-movie';
 import { serializeJsonLd } from '../lib/security/json-ld';
 import { getRuntimeControls } from '../lib/security/runtime-controls';
+import { listPublishedMovies } from '../db';
 
 export default async function Home() {
-  const publicMovies = movies.map(toPublicMovie);
+  const publicMovies = (await listPublishedMovies()).map(toPublicMovie);
   const nonce = (await headers()).get('x-csp-nonce') ?? undefined;
   const { adsEnabled } = getRuntimeControls();
   const catalogueSchema = {

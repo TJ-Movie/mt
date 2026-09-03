@@ -11,7 +11,7 @@
   --font-sans: var(--font-geist-sans);
 }
 
-:root { --background:#f2efe9; --foreground:#181916; --primary:#de5d4f; --primary-foreground:#ffffff; --border:rgba(24,25,22,.15); }
+:root { --background:#f2efe9; --foreground:#181916; --primary:#de5d4f; --primary-foreground:#ffffff; --border:rgba(24,25,22,.15); --input:rgba(24,25,22,.16); --ring:#de5d4f; --muted:#dedad2; --muted-foreground:#67675f; --secondary:#e5e1da; --secondary-foreground:#181916; --destructive:#b42318; --popover:#f2efe9; --popover-foreground:#181916; --radius:.75rem; }
 * { box-sizing:border-box; }
 html { scroll-behavior:smooth; background:var(--background); }
 body { margin:0; background:var(--background); color:var(--foreground); font-family:var(--font-geist-sans),Arial,sans-serif; }

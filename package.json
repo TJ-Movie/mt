@@ -12,7 +12,7 @@
     "lint": "oxlint",
     "format": "oxfmt",
     "security:test": "node --conditions=react-server --experimental-strip-types --test tests/security.test.ts",
-    "security:integration": "npm run build && node --test tests/worker-security.integration.mjs"
+    "security:integration": "npm run build && node --loader ./tests/cloudflare-loader.mjs --test tests/worker-security.integration.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",
@@ -21,6 +21,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "date-fns": "4.1.0",
+    "drizzle-orm": "0.45.2",
     "embla-carousel-react": "8.5.2",
     "input-otp": "1.4.2",
     "lucide-react": "1.31.0",

@@ -1,0 +1,149 @@
+import { allLanguages, genres } from '../catalogue-options.ts';
+import { publicationStatuses, rightsStatuses, type PublicationStatus, type RightsStatus } from '../movies.ts';
+import { validateOutboundDestination } from '../security/outbound-links.ts';
+
+export type AdminMovieInput = {
+  slug: string;
+  title: string;
+  tagline: string;
+  description: string;
+  year: number;
+  runtime: string;
+  rating: number;
+  genre: string;
+  director: string;
+  cast: string[];
+  languages: string[];
+  poster: string;
+  backdrop: string;
+  featured: boolean;
+  publicationStatus: PublicationStatus;
+  rightsStatus: RightsStatus;
+  rightsVerifiedAt: string | null;
+  rightsExpiresAt: string | null;
+  rightsReviewer: string | null;
+  rightsReference: string | null;
+  officialWatchUrl: string | null;
+  telegramUrl: string | null;
+  telegramChannel: string | null;
+};
+
+export type ValidationResult =
+  | { ok: true; value: AdminMovieInput }
+  | { ok: false; errors: Record<string, string> };
+
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOCAL_ASSET = /^\/(?:og\.png|media\/movie-art\/[a-f0-9-]{36}\.(?:jpg|png))$/;
+
+type RightsControlledFields = Pick<AdminMovieInput,
+  'rightsStatus' | 'rightsExpiresAt' | 'rightsReference' | 'officialWatchUrl' | 'telegramUrl' | 'telegramChannel'>;
+
+export function requiresRightsReset(current: RightsControlledFields, next: RightsControlledFields): boolean {
+  if (current.rightsStatus !== 'verified' || next.rightsStatus !== 'verified') return false;
+  return current.rightsExpiresAt !== next.rightsExpiresAt ||
+    current.rightsReference !== next.rightsReference ||
+    current.officialWatchUrl !== next.officialWatchUrl ||
+    current.telegramUrl !== next.telegramUrl ||
+    current.telegramChannel !== next.telegramChannel;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
+}
+
+function textField(source: Record<string, unknown>, key: string, minimum: number, maximum: number, errors: Record<string, string>): string {
+  const raw = source[key];
+  if (typeof raw !== 'string') { errors[key] = 'Required text field.'; return ''; }
+  const value = raw.normalize('NFKC').trim();
+  if (value.length < minimum || value.length > maximum || hasControlCharacter(value)) errors[key] = `Use ${minimum}-${maximum} safe characters.`;
+  return value;
+}
+
+function optionalText(source: Record<string, unknown>, key: string, maximum: number, errors: Record<string, string>): string | null {
+  const raw = source[key];
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') { errors[key] = 'Invalid text field.'; return null; }
+  const value = raw.normalize('NFKC').trim();
+  if (!value || value.length > maximum || hasControlCharacter(value)) errors[key] = `Use at most ${maximum} safe characters.`;
+  return value || null;
+}
+
+function listField(source: Record<string, unknown>, key: string, allowed: readonly string[] | null, errors: Record<string, string>): string[] {
+  const raw = source[key];
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 20) { errors[key] = 'Select between 1 and 20 values.'; return []; }
+  const values = raw.map((item) => typeof item === 'string' ? item.normalize('NFKC').trim() : '');
+  if (values.some((item) => !item || item.length > 100 || hasControlCharacter(item))) errors[key] = 'Contains an invalid value.';
+  if (allowed && values.some((item) => !allowed.includes(item))) errors[key] = 'Contains an unsupported value.';
+  return [...new Set(values)];
+}
+
+function isoDate(value: string | null, key: string, errors: Record<string, string>): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) { errors[key] = 'Use a valid date and time.'; return null; }
+  return new Date(timestamp).toISOString();
+}
+
+export function validateAdminMovieInput(input: unknown, now = Date.now()): ValidationResult {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, errors: { form: 'Invalid movie record.' } };
+  const source = input as Record<string, unknown>;
+  const errors: Record<string, string> = {};
+  const slug = textField(source, 'slug', 2, 80, errors).toLowerCase();
+  if (!SLUG.test(slug)) errors.slug = 'Use lowercase letters, numbers, and single hyphens.';
+  const title = textField(source, 'title', 1, 160, errors);
+  const tagline = textField(source, 'tagline', 1, 200, errors);
+  const description = textField(source, 'description', 20, 2_000, errors);
+  const runtime = textField(source, 'runtime', 2, 30, errors);
+  const genre = textField(source, 'genre', 2, 40, errors);
+  const director = textField(source, 'director', 1, 160, errors);
+  if (genre === 'All' || !genres.includes(genre)) errors.genre = 'Select a supported genre.';
+
+  const year = source.year;
+  const rating = source.rating;
+  const maximumYear = new Date(now).getUTCFullYear() + 5;
+  if (!Number.isInteger(year) || Number(year) < 1888 || Number(year) > maximumYear) errors.year = `Use a year from 1888 to ${maximumYear}.`;
+  if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0 || rating > 10) errors.rating = 'Use a rating from 0 to 10.';
+
+  const cast = listField(source, 'cast', null, errors);
+  const languages = listField(source, 'languages', allLanguages, errors);
+  const poster = textField(source, 'poster', 1, 200, errors);
+  const backdrop = textField(source, 'backdrop', 1, 200, errors);
+  if (!LOCAL_ASSET.test(poster)) errors.poster = 'Upload a local JPG/PNG image or use /og.png.';
+  if (!LOCAL_ASSET.test(backdrop)) errors.backdrop = 'Upload a local JPG/PNG image or use /og.png.';
+
+  const publicationStatus = source.publicationStatus;
+  const rightsStatus = source.rightsStatus;
+  if (typeof publicationStatus !== 'string' || !publicationStatuses.includes(publicationStatus as PublicationStatus)) errors.publicationStatus = 'Invalid publication status.';
+  if (typeof rightsStatus !== 'string' || !rightsStatuses.includes(rightsStatus as RightsStatus)) errors.rightsStatus = 'Invalid rights status.';
+  if (typeof source.featured !== 'boolean') errors.featured = 'Invalid featured value.';
+
+  const rightsVerifiedAt = isoDate(optionalText(source, 'rightsVerifiedAt', 40, errors), 'rightsVerifiedAt', errors);
+  const rightsExpiresAt = isoDate(optionalText(source, 'rightsExpiresAt', 40, errors), 'rightsExpiresAt', errors);
+  const rightsReviewer = optionalText(source, 'rightsReviewer', 120, errors);
+  const rightsReference = optionalText(source, 'rightsReference', 160, errors);
+  const officialWatchUrl = optionalText(source, 'officialWatchUrl', 500, errors);
+  const telegramUrl = optionalText(source, 'telegramUrl', 500, errors);
+  const telegramChannel = optionalText(source, 'telegramChannel', 32, errors);
+
+  if (officialWatchUrl && !validateOutboundDestination('watch', officialWatchUrl)) errors.officialWatchUrl = 'Use an approved YouTube watch URL.';
+  if ((telegramUrl || telegramChannel) && (!telegramUrl || !telegramChannel || !validateOutboundDestination('telegram', telegramUrl, telegramChannel))) errors.telegramUrl = 'Telegram URL and channel must match the approved format.';
+
+  if (rightsStatus === 'verified') {
+    if (!rightsVerifiedAt || Date.parse(rightsVerifiedAt) > now) errors.rightsVerifiedAt = 'Verification time is required and cannot be in the future.';
+    if (!rightsExpiresAt || Date.parse(rightsExpiresAt) <= now) errors.rightsExpiresAt = 'A future expiry time is required.';
+    if (!rightsReviewer) errors.rightsReviewer = 'Reviewer is required.';
+    if (!rightsReference) errors.rightsReference = 'Evidence reference is required.';
+  }
+
+  if (Object.keys(errors).length) return { ok: false, errors };
+  return { ok: true, value: {
+    slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), genre, director,
+    cast, languages, poster, backdrop, featured: source.featured as boolean,
+    publicationStatus: publicationStatus as PublicationStatus, rightsStatus: rightsStatus as RightsStatus,
+    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel,
+  } };
+}

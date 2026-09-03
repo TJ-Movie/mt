@@ -1,21 +1,22 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { ArrowLeft, Clock3, Download, Film, Globe2, Play, ShieldCheck, Star, UserRound } from 'lucide-react';
-import { getMovie, movies } from '../../../lib/movies';
+import { movies } from '../../../lib/movies';
+import { getPublishedMovie } from '../../../db';
 import { resolveOutboundDestination } from '../../../lib/security/outbound-links';
 import { getRuntimeControls } from '../../../lib/security/runtime-controls';
 
 export function generateStaticParams() { return movies.map((movie) => ({ slug: movie.slug })); }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
-  const movie = getMovie((await params).slug);
+  const movie = await getPublishedMovie((await params).slug);
   if (!movie) return { title: 'Film not found — Sublyra' };
   const description = `${movie.tagline} Explore ${movie.title}, cast, rating, and ${movie.languages.length} subtitle languages on Sublyra.`;
   return { title: `${movie.title} — Sublyra`, description, openGraph: { title: `${movie.title} — Sublyra`, description, images: [{ url: movie.backdrop, alt: `${movie.title} cinematic artwork` }] }, twitter: { card: 'summary_large_image', title: `${movie.title} — Sublyra`, description, images: [movie.backdrop] } };
 }
 
 export default async function MoviePage({ params }: { params: Promise<{ slug: string }> }) {
-  const movie = getMovie((await params).slug);
+  const movie = await getPublishedMovie((await params).slug);
   if (!movie) notFound();
   const controls = getRuntimeControls();
   const watchAvailable = resolveOutboundDestination(movie, 'watch', controls).ok;

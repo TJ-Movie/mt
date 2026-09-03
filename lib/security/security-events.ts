@@ -1,5 +1,9 @@
 export type SecurityEventName =
   | 'catalogue_request_rejected'
+  | 'catalogue_database_unavailable'
+  | 'admin_request_rejected'
+  | 'admin_movie_changed'
+  | 'admin_asset_uploaded'
   | 'outbound_redirect_allowed'
   | 'outbound_redirect_denied';
 
