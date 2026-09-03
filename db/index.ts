@@ -248,10 +248,10 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = ?,
     director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?,
     publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?,
-    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?,
+    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?,
     updated_by = ?, updated_at = ?, revision = revision + 1
     WHERE id = ? AND revision = ?`).bind(
-      ...movieValues(persistedInput, user.userId, now).slice(0, 23), user.userId, now, id, revision,
+      ...movieValues(persistedInput, user.userId, now).slice(0, 24), user.userId, now, id, revision,
     ).run();
   if (result.meta.changes !== 1) return false;
   await auditStatement(database, user, rightsResetRequired ? 'movie_updated_rights_reset' : 'movie_updated', id, persistedInput.slug, rightsResetRequired ? ['movie_record', 'rights_reset'] : ['movie_record'], now).run();
