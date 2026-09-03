@@ -17,5 +17,5 @@ export default async function Home() {
     url: 'https://sublyra-cinema.alive-stoat-6821.chatgpt.site',
     mainEntity: publicMovies.map((movie) => ({ '@type': 'Movie', name: movie.title, dateCreated: String(movie.year), genre: movie.genre })),
   };
-  return <><script nonce={nonce} type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(catalogueSchema) }}/><MovieBrowser movies={publicMovies} adsEnabled={adsEnabled}/></>;
+  return <><script suppressHydrationWarning nonce={nonce} type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(catalogueSchema) }}/><MovieBrowser movies={publicMovies} adsEnabled={adsEnabled}/></>;
 }
