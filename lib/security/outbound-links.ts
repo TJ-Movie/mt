@@ -59,13 +59,12 @@ function validateTelegram(url: URL, expectedChannel: string | undefined): boolea
     url.hostname.toLowerCase() !== 't.me' ||
     hasUnexpectedUrlParts(url) ||
     url.search !== '' ||
-    !expectedChannel ||
-    !TELEGRAM_CHANNEL.test(expectedChannel)
+    expectedChannel !== undefined && !TELEGRAM_CHANNEL.test(expectedChannel)
   ) return false;
 
   const segments = url.pathname.split('/').filter(Boolean);
   if (segments.length < 1 || segments.length > 2) return false;
-  if (segments[0].toLowerCase() !== expectedChannel.toLowerCase()) return false;
+  if (expectedChannel && segments[0].toLowerCase() !== expectedChannel.toLowerCase()) return false;
   return segments.length === 1 || TELEGRAM_MESSAGE_ID.test(segments[1]);
 }
 

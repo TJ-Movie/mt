@@ -138,7 +138,13 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   if (subtitleUrl && !/^\/media\/subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)$/.test(subtitleUrl)) errors.subtitleUrl = 'Upload a subtitle SRT, VTT, ZIP, or 7Z file.';
 
   if (officialWatchUrl && !validateOutboundDestination('watch', officialWatchUrl)) errors.officialWatchUrl = 'Use an approved YouTube watch URL.';
-  if ((telegramUrl || telegramChannel) && (!telegramUrl || !telegramChannel || !validateOutboundDestination('telegram', telegramUrl, telegramChannel))) errors.telegramUrl = 'Telegram URL and channel must match the approved format.';
+  let normalizedTelegramChannel = telegramChannel;
+  if (telegramUrl) {
+    let parsedTelegram: URL | null = null;
+    try { parsedTelegram = new URL(telegramUrl); } catch { parsedTelegram = null; }
+    if (parsedTelegram?.hostname.toLowerCase() === 't.me' && !normalizedTelegramChannel) normalizedTelegramChannel = parsedTelegram.pathname.split('/').filter(Boolean)[0] ?? null;
+    if (!validateOutboundDestination('telegram', telegramUrl, normalizedTelegramChannel ?? undefined)) errors.telegramUrl = 'Use a valid Telegram URL.';
+  } else if (telegramChannel) errors.telegramUrl = 'Add a Telegram URL or clear the channel field.';
 
   if (rightsStatus === 'verified') {
     if (!rightsVerifiedAt || Date.parse(rightsVerifiedAt) > now) errors.rightsVerifiedAt = 'Verification time is required and cannot be in the future.';
@@ -152,6 +158,6 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
     slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), contentType: contentType as 'movie' | 'series', genre: [...new Set(selectedGenres)].join(', '), director,
     cast, languages, poster, backdrop, featured: source.featured as boolean,
     publicationStatus: publicationStatus as PublicationStatus, rightsStatus: rightsStatus as RightsStatus,
-    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel, subtitleUrl,
+    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel: normalizedTelegramChannel, subtitleUrl,
   } };
 }
