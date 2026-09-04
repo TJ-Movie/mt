@@ -21,6 +21,13 @@ select option { background:#f2efe9; color:#181916; }
 .info-content > section + section { margin-top:3rem; padding-top:3rem; border-top:1px solid rgba(24,25,22,.12); }
 button,a { -webkit-tap-highlight-color:transparent; }
 button { cursor:pointer; }
+main details.group > summary { transition:background .2s ease,border-color .2s ease,transform .2s ease; }
+main details.group > summary:hover { border-color:rgba(255,255,255,.45); background:rgba(255,255,255,.08); }
+main details.group[open] > summary { border-color:rgba(239,121,109,.7); background:rgba(239,121,109,.16); }
+main details.group > div { animation:download-menu-in .18s ease-out; }
+main details.group > div > a { display:flex; align-items:center; gap:.6rem; border-radius:.75rem; padding:.8rem 1rem; color:rgba(255,255,255,.78); transition:background .2s ease,color .2s ease,transform .2s ease; }
+main details.group > div > a:hover { background:rgba(239,121,109,.18); color:#fff; transform:translateX(2px); }
+@keyframes download-menu-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
 ::selection { background:#de5d4f; color:#fff; }
 ::-webkit-scrollbar { width:10px; height:5px; }
 ::-webkit-scrollbar-track { background:#f2efe9; }
