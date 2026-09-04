@@ -31,6 +31,9 @@ function validateYouTube(url: URL): boolean {
   if (url.protocol !== 'https:' || hasUnexpectedUrlParts(url)) return false;
 
   const hostname = url.hostname.toLowerCase();
+  if (hostname === 'playmogo.com' || hostname === 'www.playmogo.com') {
+    return /^\/e\/[A-Za-z0-9_-]{6,80}$/.test(url.pathname) && url.search === '';
+  }
   if (hostname === 'youtu.be') {
     const videoId = url.pathname.slice(1);
     return (
