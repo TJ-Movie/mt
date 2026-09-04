@@ -141,6 +141,13 @@ void test('admin movie validation allows optional editorial fields to remain bla
   assert.equal(result.ok, true);
 });
 
+void test('download URL alone is retained with safe metadata defaults', () => {
+  const result = validateAdminMovieInput({ ...validAdminMovie, downloadSources: [{ url: 'https://pixeldrain.com/u/example' }] }, Date.parse('2026-09-03T00:00:00.000Z'));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.value.downloadSources[0], { label: 'Download 1', quality: 'Standard', resolution: 'Auto', size: 'Unknown', url: 'https://pixeldrain.com/u/example' });
+});
+
 void test('admin movie validation rejects missing rights evidence and hostile destinations', () => {
   const result = validateAdminMovieInput({
     ...validAdminMovie,
