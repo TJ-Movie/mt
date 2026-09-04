@@ -18,6 +18,9 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
     logSecurityEvent('outbound_redirect_denied', 'warn', { slug, action, reason: 'not_found' });
     return new Response('Not found', { status: 404, headers: NO_STORE_HEADERS });
   }
+  if (action === 'telegram' && !movie.telegramUrl && (movie.downloadSources?.length ?? 0) > 0) {
+    return new Response(null, { status: 302, headers: { ...NO_STORE_HEADERS, Location: `/download/${movie.slug}` } });
+  }
 
   const resolution = resolveOutboundDestination(
     movie,
