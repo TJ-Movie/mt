@@ -60,6 +60,13 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
+function sourceUrl(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.normalize('NFKC').trim();
+  const markdown = /^\[https:\/\/[^\]]+\]\((https:\/\/[^)]+)\)$/i.exec(trimmed);
+  return (markdown?.[1] ?? trimmed).slice(0, 500);
+}
+
 function textField(source: Record<string, unknown>, key: string, minimum: number, maximum: number, errors: Record<string, string>): string {
   const raw = source[key];
   if (typeof raw !== 'string') { errors[key] = 'Required text field.'; return ''; }
@@ -139,7 +146,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const telegramChannel = optionalText(source, 'telegramChannel', 32, errors);
   const subtitleUrl = optionalText(source, 'subtitleUrl', 240, errors);
   const rawStreaming = source.streamingSources;
-  const streamingSources = Array.isArray(rawStreaming) ? rawStreaming.slice(0, 8).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', url: typeof item?.url === 'string' ? item.url.normalize('NFKC').trim().slice(0, 500) : '' })).filter((item) => item.label && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
+  const streamingSources = Array.isArray(rawStreaming) ? rawStreaming.slice(0, 8).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', url: sourceUrl(item?.url) })).filter((item) => item.label && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
   const rawSources = source.downloadSources;
   const downloadSources = Array.isArray(rawSources) ? rawSources.slice(0, 12).map((item, index) => { const url=typeof item?.url==='string'?item.url.normalize('NFKC').trim().slice(0,500):''; return { label: typeof item?.label==='string'&&item.label.trim()?item.label.normalize('NFKC').trim().slice(0,40):`Download ${index+1}`, quality: typeof item?.quality==='string'&&item.quality.trim()?item.quality.normalize('NFKC').trim().slice(0,24):'Standard', resolution: typeof item?.resolution==='string'&&item.resolution.trim()?item.resolution.normalize('NFKC').trim().slice(0,24):'Auto', size: typeof item?.size==='string'&&item.size.trim()?item.size.normalize('NFKC').trim().slice(0,24):'Unknown', url }; }).filter((item) => /^https:\/\/[^\s]+$/i.test(item.url)) : [];
   const rawEpisodes = source.episodes;

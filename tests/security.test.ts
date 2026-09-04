@@ -148,6 +148,13 @@ void test('download URL alone is retained with safe metadata defaults', () => {
   assert.deepEqual(result.value.downloadSources[0], { label: 'Download 1', quality: 'Standard', resolution: 'Auto', size: 'Unknown', url: 'https://pixeldrain.com/u/example' });
 });
 
+void test('pasted Markdown streaming links are normalized and retained', () => {
+  const result = validateAdminMovieInput({ ...validAdminMovie, streamingSources: [{ label: 'Server 1', url: '[https://playmogo.com/e/hq3kw9dae4aa](https://playmogo.com/e/hq3kw9dae4aa)' }] }, Date.parse('2026-09-03T00:00:00.000Z'));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.streamingSources[0]?.url, 'https://playmogo.com/e/hq3kw9dae4aa');
+});
+
 void test('admin movie validation rejects missing rights evidence and hostile destinations', () => {
   const result = validateAdminMovieInput({
     ...validAdminMovie,
