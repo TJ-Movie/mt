@@ -34,6 +34,7 @@ type MovieRow = {
   telegram_url: string | null;
   telegram_channel: string | null;
   subtitle_url: string | null;
+  download_sources_json: string;
   revision: number;
   created_by: string;
   updated_by: string;
@@ -77,6 +78,7 @@ function safeStringArray(json: string): string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value.slice(0, 20) : [];
   } catch { return []; }
 }
+function safeSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 12) : []; } catch { return []; } }
 
 function rowToMovie(row: MovieRow): AdminMovie {
   return {
@@ -106,6 +108,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     telegramUrl: row.telegram_url ?? undefined,
     telegramChannel: row.telegram_channel ?? undefined,
     subtitleUrl: row.subtitle_url ?? undefined,
+    downloadSources: safeSources(row.download_sources_json),
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -116,7 +119,7 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, revision, created_by, updated_by, created_at, updated_at`;
+  telegram_channel, subtitle_url, download_sources_json, revision, created_by, updated_by, created_at, updated_at`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {
@@ -152,8 +155,8 @@ export async function initializeStarterCatalogue(user: ChatGPTUser): Promise<voi
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
-    telegram_channel, subtitle_url, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 30 }, () => '?').join(', ')})`).bind(
+    telegram_channel, subtitle_url, download_sources_json, revision, created_by, updated_by, created_at, updated_at
+  ) VALUES (${Array.from({ length: 31 }, () => '?').join(', ')})`).bind(
     ...movieValues(movie, user.userId, now),
   ));
   statements.push(
@@ -190,7 +193,7 @@ function movieValues(movie: Movie | AdminMovieInput, actorId: string, now: strin
     JSON.stringify(movie.languages), movie.poster, movie.backdrop, movie.featured ? 1 : 0,
     movie.publicationStatus, movie.rightsStatus, movie.rightsVerifiedAt ?? null,
     movie.rightsExpiresAt ?? null, movie.rightsReviewer ?? null, movie.rightsReference ?? null,
-    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null,
+    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null, JSON.stringify(movie.downloadSources ?? []),
     1, actorId, actorId, now, now,
   ];
 }
@@ -211,8 +214,8 @@ export async function createAdminMovie(input: AdminMovieInput, user: ChatGPTUser
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
-    telegram_channel, subtitle_url, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 30 }, () => '?').join(', ')})`).bind(
+    telegram_channel, subtitle_url, download_sources_json, revision, created_by, updated_by, created_at, updated_at
+  ) VALUES (${Array.from({ length: 31 }, () => '?').join(', ')})`).bind(
     ...movieValues(input, user.userId, now),
   ).run();
   const movieId = Number(result.meta.last_row_id);
@@ -250,10 +253,10 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, content_type = ?, genre = ?,
     director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?,
     publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?,
-    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?,
+    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?, download_sources_json = ?,
     updated_by = ?, updated_at = ?, revision = revision + 1
     WHERE id = ? AND revision = ?`).bind(
-      ...movieValues(persistedInput, user.userId, now).slice(0, 24), user.userId, now, id, revision,
+      ...movieValues(persistedInput, user.userId, now).slice(0, 25), user.userId, now, id, revision,
     ).run();
   if (result.meta.changes !== 1) return false;
   await auditStatement(database, user, rightsResetRequired ? 'movie_updated_rights_reset' : 'movie_updated', id, persistedInput.slug, rightsResetRequired ? ['movie_record', 'rights_reset'] : ['movie_record'], now).run();
