@@ -143,7 +143,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
     let parsedTelegram: URL | null = null;
     try { parsedTelegram = new URL(telegramUrl); } catch { parsedTelegram = null; }
     if (parsedTelegram?.hostname.toLowerCase() === 't.me' && !normalizedTelegramChannel) normalizedTelegramChannel = parsedTelegram.pathname.split('/').filter(Boolean)[0] ?? null;
-    if (!validateOutboundDestination('telegram', telegramUrl, normalizedTelegramChannel ?? undefined)) errors.telegramUrl = 'Use a valid Telegram URL.';
+    if (!validateOutboundDestination('telegram', telegramUrl, normalizedTelegramChannel ?? undefined)) errors.telegramUrl = 'Use a valid HTTPS download/source URL.';
   } else if (telegramChannel) errors.telegramUrl = 'Add a Telegram URL or clear the channel field.';
 
   if (rightsStatus === 'verified') {
