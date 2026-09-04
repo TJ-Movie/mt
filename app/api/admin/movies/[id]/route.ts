@@ -1,4 +1,4 @@
-import { archiveAdminMovie, updateAdminMovie } from '../../../../../db';
+import { archiveAdminMovie, assertApprovedSourceDomains, updateAdminMovie } from '../../../../../db';
 import { validateAdminMovieInput } from '../../../../../lib/admin/movie-input';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 import { logSecurityEvent } from '../../../../../lib/security/security-events';
@@ -27,10 +27,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return Response.json({ error: 'Please correct the highlighted fields.', fields: validation.ok ? {} : validation.errors }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   }
   try {
+    await assertApprovedSourceDomains(validation.value);
     const updated = await updateAdminMovie(id, revision, validation.value, authorization.user);
     if (!updated) return Response.json({ error: 'This record changed in another session. Refresh and try again.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
     return Response.json({ updated: true }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('UNAPPROVED_DOMAIN:')) return Response.json({ error: `Add ${error.message.slice(18)} to Approved Domains before saving.` }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
     if (error instanceof Error && error.message === 'RIGHTS_REVERIFICATION_REQUIRED') {
       logSecurityEvent('admin_request_rejected', 'warn', { action: 'update', reason: 'rights_reverification_required' });
       return Response.json({ error: 'Set rights to pending, save the delivery change, then complete a fresh verification.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });

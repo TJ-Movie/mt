@@ -16,6 +16,7 @@ export type PublicMovie = Pick<
   | 'rating'
   | 'contentType'
   | 'downloadSources'
+  | 'streamingSources'
   | 'episodes'
   | 'genre'
   | 'director'
@@ -37,6 +38,7 @@ export function toPublicMovie(movie: Movie): PublicMovie {
     rating: movie.rating,
     contentType: movie.contentType ?? 'movie',
     downloadSources: (movie.downloadSources ?? []).map((source) => ({ ...source })),
+    streamingSources: (movie.streamingSources ?? []).map((source) => ({ ...source })),
     episodes: (movie.episodes ?? []).map((episode) => ({ ...episode })),
     genre: movie.genre,
     director: movie.director,

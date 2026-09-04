@@ -35,6 +35,7 @@ type MovieRow = {
   telegram_channel: string | null;
   subtitle_url: string | null;
   download_sources_json: string;
+  streaming_sources_json: string;
   episodes_json: string;
   revision: number;
   created_by: string;
@@ -58,6 +59,8 @@ export type AuditEvent = {
   actorEmail: string;
   createdAt: string;
 };
+export type ApprovedDomain = { id: number; domain: string; active: boolean; createdAt: string };
+export type SourceReport = { id: number; movieSlug: string; sourceKind: 'stream' | 'download'; sourceLabel: string; sourceUrl: string; reason: string; details: string; status: 'open' | 'disabled' | 'dismissed'; createdAt: string };
 
 function bindings(): Bindings { return env as unknown as Bindings; }
 
@@ -79,7 +82,8 @@ function safeStringArray(json: string): string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value.slice(0, 20) : [];
   } catch { return []; }
 }
-function safeSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 12) : []; } catch { return []; } }
+function safeStreamingSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 8) : []; } catch { return []; } }
+function safeSources(json: string): { label: string; quality: string; resolution: string; size: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label:string;quality:string;resolution:string;size:string;url:string } => Boolean(item && typeof item === 'object' && ['label','quality','resolution','size','url'].every((key) => typeof (item as Record<string,unknown>)[key] === 'string'))).slice(0, 12) : []; } catch { return []; } }
 function safeEpisodes(json: string): { season: number; episode: number; title: string; url?: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { season:number; episode:number; title:string; url?:string } => Boolean(item && typeof item==='object' && Number.isInteger((item as any).season) && Number.isInteger((item as any).episode) && typeof (item as any).title==='string')).slice(0, 500) : []; } catch { return []; } }
 
 function rowToMovie(row: MovieRow): AdminMovie {
@@ -111,6 +115,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     telegramChannel: row.telegram_channel ?? undefined,
     subtitleUrl: row.subtitle_url ?? undefined,
     downloadSources: safeSources(row.download_sources_json),
+    streamingSources: safeStreamingSources(row.streaming_sources_json),
     episodes: safeEpisodes(row.episodes_json),
     revision: row.revision,
     createdAt: row.created_at,
@@ -122,7 +127,7 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, download_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at`;
+  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {
@@ -158,8 +163,8 @@ export async function initializeStarterCatalogue(user: ChatGPTUser): Promise<voi
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
-    telegram_channel, subtitle_url, download_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 32 }, () => '?').join(', ')})`).bind(
+    telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at
+  ) VALUES (${Array.from({ length: 33 }, () => '?').join(', ')})`).bind(
     ...movieValues(movie, user.userId, now),
   ));
   statements.push(
@@ -196,7 +201,7 @@ function movieValues(movie: Movie | AdminMovieInput, actorId: string, now: strin
     JSON.stringify(movie.languages), movie.poster, movie.backdrop, movie.featured ? 1 : 0,
     movie.publicationStatus, movie.rightsStatus, movie.rightsVerifiedAt ?? null,
     movie.rightsExpiresAt ?? null, movie.rightsReviewer ?? null, movie.rightsReference ?? null,
-    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null, JSON.stringify(movie.downloadSources ?? []), JSON.stringify(movie.episodes ?? []),
+    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null, JSON.stringify(movie.downloadSources ?? []), JSON.stringify(movie.streamingSources ?? []), JSON.stringify(movie.episodes ?? []),
     1, actorId, actorId, now, now,
   ];
 }
@@ -217,8 +222,8 @@ export async function createAdminMovie(input: AdminMovieInput, user: ChatGPTUser
     director, cast_json, languages_json, poster, backdrop, featured,
     publication_status, rights_status, rights_verified_at, rights_expires_at,
     rights_reviewer, rights_reference, official_watch_url, telegram_url,
-    telegram_channel, subtitle_url, download_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at
-  ) VALUES (${Array.from({ length: 32 }, () => '?').join(', ')})`).bind(
+    telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at
+  ) VALUES (${Array.from({ length: 33 }, () => '?').join(', ')})`).bind(
     ...movieValues(input, user.userId, now),
   ).run();
   const movieId = Number(result.meta.last_row_id);
@@ -256,10 +261,10 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, content_type = ?, genre = ?,
     director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?,
     publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?,
-    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?, download_sources_json = ?, episodes_json = ?,
+    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?, download_sources_json = ?, streaming_sources_json = ?, episodes_json = ?,
     updated_by = ?, updated_at = ?, revision = revision + 1
     WHERE id = ? AND revision = ?`).bind(
-      ...movieValues(persistedInput, user.userId, now).slice(0, 26), user.userId, now, id, revision,
+      ...movieValues(persistedInput, user.userId, now).slice(0, 28), user.userId, now, id, revision,
     ).run();
   if (result.meta.changes !== 1) return false;
   await auditStatement(database, user, rightsResetRequired ? 'movie_updated_rights_reset' : 'movie_updated', id, persistedInput.slug, rightsResetRequired ? ['movie_record', 'rights_reset'] : ['movie_record'], now).run();
@@ -279,3 +284,25 @@ export async function archiveAdminMovie(id: number, revision: number, user: Chat
   logSecurityEvent('admin_movie_changed', 'info', { action: 'archived', slug: current.slug });
   return true;
 }
+
+export async function listApprovedDomains(): Promise<ApprovedDomain[]> {
+  const result = await getDatabase().prepare('SELECT id, domain, active, created_at FROM approved_domains ORDER BY domain').all<{id:number;domain:string;active:number;created_at:string}>();
+  return result.results.map((row) => ({ id: row.id, domain: row.domain, active: row.active === 1, createdAt: row.created_at }));
+}
+export async function createApprovedDomain(domain: string, user: ChatGPTUser): Promise<void> {
+  const now = new Date().toISOString(); const database = getDatabase();
+  await database.batch([database.prepare('INSERT INTO approved_domains (domain, active, created_at) VALUES (?, 1, ?)').bind(domain, now), auditStatement(database, user, 'approved_domain_added', null, null, [domain], now)]);
+}
+export async function removeApprovedDomain(id: number, user: ChatGPTUser): Promise<boolean> {
+  const database = getDatabase(); const row = await database.prepare('SELECT domain FROM approved_domains WHERE id = ?').bind(id).first<{domain:string}>(); if (!row) return false;
+  const now = new Date().toISOString(); await database.batch([database.prepare('DELETE FROM approved_domains WHERE id = ?').bind(id), auditStatement(database, user, 'approved_domain_removed', null, null, [row.domain], now)]); return true;
+}
+export async function assertApprovedSourceDomains(input: AdminMovieInput): Promise<void> {
+  const allowed = new Set((await listApprovedDomains()).filter((item) => item.active).map((item) => item.domain));
+  for (const source of [...input.streamingSources, ...input.downloadSources]) { const hostname = new URL(source.url).hostname.toLowerCase(); if (!allowed.has(hostname)) throw new Error(`UNAPPROVED_DOMAIN:${hostname}`); }
+}
+export async function createSourceReport(input: {movieSlug:string;sourceKind:'stream'|'download';sourceLabel:string;sourceUrl:string;reason:string;details:string}): Promise<void> {
+  await getDatabase().prepare("INSERT INTO source_reports (movie_slug, source_kind, source_label, source_url, reason, details, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)").bind(input.movieSlug,input.sourceKind,input.sourceLabel,input.sourceUrl,input.reason,input.details,new Date().toISOString()).run();
+}
+export async function listSourceReports(): Promise<SourceReport[]> { const result = await getDatabase().prepare("SELECT id,movie_slug,source_kind,source_label,source_url,reason,details,status,created_at FROM source_reports WHERE status = 'open' ORDER BY id DESC LIMIT 200").all<Record<string,unknown>>(); return result.results.map((r) => ({id:Number(r.id),movieSlug:String(r.movie_slug),sourceKind:r.source_kind as 'stream'|'download',sourceLabel:String(r.source_label),sourceUrl:String(r.source_url),reason:String(r.reason),details:String(r.details),status:r.status as 'open'|'disabled'|'dismissed',createdAt:String(r.created_at)})); }
+export async function resolveSourceReport(id:number, action:'disabled'|'dismissed', user:ChatGPTUser): Promise<boolean> { const database=getDatabase(); const report=await database.prepare("SELECT movie_slug,source_kind,source_url FROM source_reports WHERE id=? AND status='open'").bind(id).first<{movie_slug:string;source_kind:string;source_url:string}>(); if(!report)return false; const now=new Date().toISOString(); const statements:D1PreparedStatement[]=[]; if(action==='disabled'){ const movie=await database.prepare('SELECT id,download_sources_json,streaming_sources_json FROM movies WHERE slug=?').bind(report.movie_slug).first<{id:number;download_sources_json:string;streaming_sources_json:string}>(); if(movie){ const key=report.source_kind==='stream'?'streaming_sources_json':'download_sources_json'; const raw=report.source_kind==='stream'?movie.streaming_sources_json:movie.download_sources_json; const parsed:unknown=JSON.parse(raw); const kept=Array.isArray(parsed)?parsed.filter((s) => s && typeof s==='object' && (s as {url?:unknown}).url!==report.source_url):[]; statements.push(database.prepare(`UPDATE movies SET ${key}=?, revision=revision+1, updated_by=?, updated_at=? WHERE id=?`).bind(JSON.stringify(kept),user.userId,now,movie.id)); } } statements.push(database.prepare('UPDATE source_reports SET status=?,reviewed_at=?,reviewed_by=? WHERE id=?').bind(action,now,user.userId,id), auditStatement(database,user,`source_report_${action}`,null,report.movie_slug,[report.source_url],now)); await database.batch(statements); return true; }

@@ -3,8 +3,9 @@ import { publicationStatuses, rightsStatuses, type PublicationStatus, type Right
 import { validateOutboundDestination } from '../security/outbound-links.ts';
 
 export type AdminMovieInput = {
+  streamingSources: { label: string; url: string }[];
   episodes: { season: number; episode: number; title: string; url?: string }[];
-  downloadSources: { label: string; url: string }[];
+  downloadSources: { label: string; quality: string; resolution: string; size: string; url: string }[];
   contentType: 'movie' | 'series';
   slug: string;
   title: string;
@@ -103,7 +104,7 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const tagline = textField(source, 'tagline', 0, 200, errors);
   const description = textField(source, 'description', 0, 2_000, errors);
   const runtime = textField(source, 'runtime', 0, 30, errors);
-  const contentType = source.contentType;
+  const contentType = source.contentType ?? 'movie';
   if (typeof contentType !== 'string' || !contentTypes.includes(contentType as 'movie' | 'series')) errors.contentType = 'Select Movie or TV Series.';
   const genre = textField(source, 'genre', 2, 200, errors);
   const director = textField(source, 'director', 0, 160, errors);
@@ -137,11 +138,14 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const telegramUrl = optionalText(source, 'telegramUrl', 500, errors);
   const telegramChannel = optionalText(source, 'telegramChannel', 32, errors);
   const subtitleUrl = optionalText(source, 'subtitleUrl', 240, errors);
+  const rawStreaming = source.streamingSources;
+  const streamingSources = Array.isArray(rawStreaming) ? rawStreaming.slice(0, 8).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', url: typeof item?.url === 'string' ? item.url.normalize('NFKC').trim().slice(0, 500) : '' })).filter((item) => item.label && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
   const rawSources = source.downloadSources;
-  const downloadSources = Array.isArray(rawSources) ? rawSources.slice(0, 12).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', url: typeof item?.url === 'string' ? item.url.normalize('NFKC').trim() : '' })).filter((item) => item.label && item.url && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
+  const downloadSources = Array.isArray(rawSources) ? rawSources.slice(0, 12).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', quality: typeof item?.quality === 'string' ? item.quality.normalize('NFKC').trim().slice(0, 24) : '', resolution: typeof item?.resolution === 'string' ? item.resolution.normalize('NFKC').trim().slice(0, 24) : '', size: typeof item?.size === 'string' ? item.size.normalize('NFKC').trim().slice(0, 24) : '', url: typeof item?.url === 'string' ? item.url.normalize('NFKC').trim().slice(0, 500) : '' })).filter((item) => item.label && item.quality && item.resolution && item.size && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
   const rawEpisodes = source.episodes;
   const episodes = Array.isArray(rawEpisodes) ? rawEpisodes.slice(0, 500).filter((item) => item && Number.isInteger(item.season) && item.season > 0 && Number.isInteger(item.episode) && item.episode > 0 && typeof item.title === 'string').map((item) => ({ season: item.season, episode: item.episode, title: item.title.normalize('NFKC').trim().slice(0, 160), url: typeof item.url === 'string' && /^https:\/\/[^\s]+$/i.test(item.url.trim()) ? item.url.trim().slice(0, 500) : undefined })) : [];
   if (Array.isArray(rawSources) && rawSources.length > 12) errors.downloadSources = 'Use at most 12 sources.';
+  if (Array.isArray(rawStreaming) && rawStreaming.length > 8) errors.streamingSources = 'Use at most 8 streaming sources.';
   if (subtitleUrl && !/^\/media\/subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)$/.test(subtitleUrl)) errors.subtitleUrl = 'Upload a subtitle SRT, VTT, ZIP, or 7Z file.';
 
   if (officialWatchUrl && !validateOutboundDestination('watch', officialWatchUrl)) errors.officialWatchUrl = 'Use an approved YouTube watch URL.';
@@ -165,6 +169,6 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
     slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), contentType: contentType as 'movie' | 'series', genre: [...new Set(selectedGenres)].join(', '), director,
     cast, languages, poster, backdrop, featured: source.featured as boolean,
     publicationStatus: publicationStatus as PublicationStatus, rightsStatus: rightsStatus as RightsStatus,
-    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel: normalizedTelegramChannel, subtitleUrl, downloadSources, episodes,
+    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel: normalizedTelegramChannel, subtitleUrl, streamingSources, downloadSources, episodes,
   } };
 }

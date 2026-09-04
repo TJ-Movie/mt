@@ -57,9 +57,7 @@ function validateYouTube(url: URL): boolean {
 }
 
 function validateTelegram(url: URL, expectedChannel: string | undefined): boolean {
-  if (url.hostname.toLowerCase() !== 't.me') {
-    return url.protocol === 'https:' && !hasUnexpectedUrlParts(url) && /^[a-z0-9.-]+$/i.test(url.hostname) && url.pathname.length > 1;
-  }
+  if (url.hostname.toLowerCase() !== 't.me') return false;
   if (
     url.protocol !== 'https:' ||
     hasUnexpectedUrlParts(url) ||

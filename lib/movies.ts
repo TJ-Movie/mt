@@ -7,8 +7,9 @@ export const publicationStatuses = ['draft', 'published', 'archived'] as const;
 export type PublicationStatus = (typeof publicationStatuses)[number];
 
 export type Movie = {
+  streamingSources?: { label: string; url: string }[];
   episodes?: { season: number; episode: number; title: string; url?: string }[];
-  downloadSources?: { label: string; url: string }[];
+  downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string }[];
   contentType?: 'movie' | 'series';
   slug: string;
   title: string;

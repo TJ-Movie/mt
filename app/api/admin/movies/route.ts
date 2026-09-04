@@ -1,4 +1,4 @@
-import { createAdminMovie, initializeStarterCatalogue, listAdminMovies, listAuditEvents } from '../../../../db';
+import { assertApprovedSourceDomains, createAdminMovie, initializeStarterCatalogue, listAdminMovies, listAuditEvents } from '../../../../db';
 import { validateAdminMovieInput } from '../../../../lib/admin/movie-input';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../lib/security/admin-api';
 import { logSecurityEvent } from '../../../../lib/security/security-events';
@@ -25,9 +25,11 @@ export async function POST(request: Request) {
     return Response.json({ error: 'Please correct the highlighted fields.', fields: validation.errors }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   }
   try {
+    await assertApprovedSourceDomains(validation.value);
     const id = await createAdminMovie(validation.value, authorization.user);
     return Response.json({ id }, { status: 201, headers: ADMIN_NO_STORE_HEADERS });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('UNAPPROVED_DOMAIN:')) return Response.json({ error: `Add ${error.message.slice(18)} to Approved Domains before saving.` }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
     return Response.json({ error: 'The slug may already exist, or the database is unavailable.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
   }
 }

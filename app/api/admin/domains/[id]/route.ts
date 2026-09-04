@@ -1,0 +1,3 @@
+import { removeApprovedDomain } from '../../../../../db';
+import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest } from '../../../../../lib/security/admin-api';
+export async function DELETE(request:Request,context:{params:Promise<{id:string}>}){const auth=await authorizeAdminRequest(request,true);if('response'in auth)return auth.response;const raw=(await context.params).id;if(!/^[1-9]\d{0,9}$/.test(raw))return Response.json({error:'Invalid domain.'},{status:400,headers:ADMIN_NO_STORE_HEADERS});const removed=await removeApprovedDomain(Number(raw),auth.user);return removed?Response.json({removed:true},{headers:ADMIN_NO_STORE_HEADERS}):Response.json({error:'Domain not found.'},{status:404,headers:ADMIN_NO_STORE_HEADERS});}

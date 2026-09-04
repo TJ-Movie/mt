@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
 import { ShieldCheck } from 'lucide-react';
 import { MovieStudio } from '../../components/admin/movie-studio';
+import { SourceGovernance } from '../../components/admin/source-governance';
 import { chatGPTSignOutPath } from '../chatgpt-auth';
-import { initializeStarterCatalogue, listAdminMovies, listAuditEvents } from '../../db';
+import { initializeStarterCatalogue, listAdminMovies, listApprovedDomains, listAuditEvents, listSourceReports } from '../../db';
 import { requireAdminUser } from '../../lib/security/admin-auth';
 import { getRuntimeControls } from '../../lib/security/runtime-controls';
 
@@ -12,7 +13,7 @@ export const metadata: Metadata = { title: 'Sublyra Studio', robots: { index: fa
 export default async function StudioPage() {
   const user = await requireAdminUser('/studio');
   await initializeStarterCatalogue(user);
-  const [movies, auditEvents] = await Promise.all([listAdminMovies(), listAuditEvents()]);
+  const [movies, auditEvents, domains, reports] = await Promise.all([listAdminMovies(), listAuditEvents(), listApprovedDomains(), listSourceReports()]);
   const controls = getRuntimeControls();
 
   return <main className="min-h-screen bg-[#111310] text-[#f2efe9]">
@@ -23,5 +24,6 @@ export default async function StudioPage() {
       </div>
     </header>
     <MovieStudio initialMovies={movies} initialAuditEvents={auditEvents} controls={controls}/>
+    <div className="mx-auto max-w-[1500px] px-5 pb-12 sm:px-8 lg:px-12"><SourceGovernance initialDomains={domains} initialReports={reports}/></div>
   </main>;
 }

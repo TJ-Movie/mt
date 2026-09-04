@@ -28,6 +28,7 @@ export const moviesTable = sqliteTable('movies', {
   telegramChannel: text('telegram_channel'),
   subtitleUrl: text('subtitle_url'),
   downloadSourcesJson: text('download_sources_json').notNull().default('[]'),
+  streamingSourcesJson: text('streaming_sources_json').notNull().default('[]'),
   episodesJson: text('episodes_json').notNull().default('[]'),
   revision: integer('revision').notNull().default(1),
   createdBy: text('created_by').notNull(),
@@ -68,3 +69,27 @@ export const movieCommentsTable = sqliteTable('movie_comments', {
   status: text('status').notNull().default('visible'),
   createdAt: text('created_at').notNull(),
 }, (table) => [index('idx_movie_comments_slug_status').on(table.movieSlug, table.status)]);
+
+export const approvedDomainsTable = sqliteTable('approved_domains', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  domain: text('domain').notNull(),
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+}, (table) => [uniqueIndex('idx_approved_domains_domain').on(table.domain)]);
+
+export const sourceReportsTable = sqliteTable('source_reports', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  movieSlug: text('movie_slug').notNull(),
+  sourceKind: text('source_kind').notNull(),
+  sourceLabel: text('source_label').notNull(),
+  sourceUrl: text('source_url').notNull(),
+  reason: text('reason').notNull(),
+  details: text('details').notNull().default(''),
+  status: text('status').notNull().default('open'),
+  createdAt: text('created_at').notNull(),
+  reviewedAt: text('reviewed_at'),
+  reviewedBy: text('reviewed_by'),
+}, (table) => [
+  index('idx_source_reports_status_created').on(table.status, table.createdAt),
+  index('idx_source_reports_movie_slug').on(table.movieSlug),
+]);
