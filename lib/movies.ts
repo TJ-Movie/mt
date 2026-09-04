@@ -8,7 +8,7 @@ export type PublicationStatus = (typeof publicationStatuses)[number];
 
 export type Movie = {
   streamingSources?: { label: string; url: string }[];
-  episodes?: { season: number; episode: number; title: string; url?: string; thumbnail?: string; description?: string; rating?: number; streamingSources?: { label: string; url: string }[]; downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string }[]; downloadStatus?: 'available' | 'pending' }[];
+  episodes?: { season: number; episode: number; title: string; url?: string; thumbnail?: string; backdrop?: string; description?: string; rating?: number; streamingSources?: { label: string; url: string }[]; downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string }[]; downloadStatus?: 'available' | 'pending' }[];
   downloadStatus?: 'available' | 'pending';
   downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string }[];
   contentType?: 'movie' | 'series';
