@@ -1,0 +1,1 @@
+ALTER TABLE movies ADD COLUMN episodes_json TEXT NOT NULL DEFAULT '[]';

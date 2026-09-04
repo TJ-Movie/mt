@@ -28,6 +28,7 @@ export const moviesTable = sqliteTable('movies', {
   telegramChannel: text('telegram_channel'),
   subtitleUrl: text('subtitle_url'),
   downloadSourcesJson: text('download_sources_json').notNull().default('[]'),
+  episodesJson: text('episodes_json').notNull().default('[]'),
   revision: integer('revision').notNull().default(1),
   createdBy: text('created_by').notNull(),
   updatedBy: text('updated_by').notNull(),

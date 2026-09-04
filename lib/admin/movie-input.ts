@@ -3,6 +3,7 @@ import { publicationStatuses, rightsStatuses, type PublicationStatus, type Right
 import { validateOutboundDestination } from '../security/outbound-links.ts';
 
 export type AdminMovieInput = {
+  episodes: { season: number; episode: number; title: string; url?: string }[];
   downloadSources: { label: string; url: string }[];
   contentType: 'movie' | 'series';
   slug: string;
@@ -138,6 +139,8 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const subtitleUrl = optionalText(source, 'subtitleUrl', 240, errors);
   const rawSources = source.downloadSources;
   const downloadSources = Array.isArray(rawSources) ? rawSources.slice(0, 12).map((item) => ({ label: typeof item?.label === 'string' ? item.label.normalize('NFKC').trim().slice(0, 40) : '', url: typeof item?.url === 'string' ? item.url.normalize('NFKC').trim() : '' })).filter((item) => item.label && item.url && /^https:\/\/[^\s]+$/i.test(item.url)) : [];
+  const rawEpisodes = source.episodes;
+  const episodes = Array.isArray(rawEpisodes) ? rawEpisodes.slice(0, 500).filter((item) => item && Number.isInteger(item.season) && item.season > 0 && Number.isInteger(item.episode) && item.episode > 0 && typeof item.title === 'string').map((item) => ({ season: item.season, episode: item.episode, title: item.title.normalize('NFKC').trim().slice(0, 160), url: typeof item.url === 'string' && /^https:\/\/[^\s]+$/i.test(item.url.trim()) ? item.url.trim().slice(0, 500) : undefined })) : [];
   if (Array.isArray(rawSources) && rawSources.length > 12) errors.downloadSources = 'Use at most 12 sources.';
   if (subtitleUrl && !/^\/media\/subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)$/.test(subtitleUrl)) errors.subtitleUrl = 'Upload a subtitle SRT, VTT, ZIP, or 7Z file.';
 
@@ -162,6 +165,6 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
     slug, title, tagline, description, year: Number(year), runtime, rating: Number(rating), contentType: contentType as 'movie' | 'series', genre: [...new Set(selectedGenres)].join(', '), director,
     cast, languages, poster, backdrop, featured: source.featured as boolean,
     publicationStatus: publicationStatus as PublicationStatus, rightsStatus: rightsStatus as RightsStatus,
-    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel: normalizedTelegramChannel, subtitleUrl, downloadSources,
+    rightsVerifiedAt, rightsExpiresAt, rightsReviewer, rightsReference, officialWatchUrl, telegramUrl, telegramChannel: normalizedTelegramChannel, subtitleUrl, downloadSources, episodes,
   } };
 }
