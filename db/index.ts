@@ -83,7 +83,7 @@ function safeStringArray(json: string): string[] {
   } catch { return []; }
 }
 function safeStreamingSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 8) : []; } catch { return []; } }
-function safeSources(json: string): { label: string; quality: string; resolution: string; size: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label:string;quality:string;resolution:string;size:string;url:string } => Boolean(item && typeof item === 'object' && ['label','quality','resolution','size','url'].every((key) => typeof (item as Record<string,unknown>)[key] === 'string'))).slice(0, 12) : []; } catch { return []; } }
+function safeSources(json: string): { label: string; quality: string; resolution: string; size: string; url: string }[] { try { const parsed: unknown = JSON.parse(json); const value = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' && Array.isArray((parsed as any).sources) ? (parsed as any).sources : []; return value.filter((item): item is { label:string;quality:string;resolution:string;size:string;url:string } => Boolean(item && typeof item === 'object' && ['label','quality','resolution','size','url'].every((key) => typeof (item as Record<string,unknown>)[key] === 'string'))).slice(0, 12); } catch { return []; } }
 function safeEpisodes(json: string): { season: number; episode: number; title: string; url?: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { season:number; episode:number; title:string; url?:string } => Boolean(item && typeof item==='object' && Number.isInteger((item as any).season) && Number.isInteger((item as any).episode) && typeof (item as any).title==='string')).slice(0, 500) : []; } catch { return []; } }
 
 function rowToMovie(row: MovieRow): AdminMovie {
@@ -115,6 +115,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     telegramChannel: row.telegram_channel ?? undefined,
     subtitleUrl: row.subtitle_url ?? undefined,
     downloadSources: safeSources(row.download_sources_json),
+    downloadStatus: (() => { try { const parsed = JSON.parse(row.download_sources_json) as any; return parsed && !Array.isArray(parsed) && parsed.status === 'pending' ? 'pending' : 'available'; } catch { return 'pending'; } })(),
     streamingSources: safeStreamingSources(row.streaming_sources_json),
     episodes: safeEpisodes(row.episodes_json),
     revision: row.revision,
@@ -195,13 +196,14 @@ export async function listAuditEvents(): Promise<AuditEvent[]> {
 }
 
 function movieValues(movie: Movie | AdminMovieInput, actorId: string, now: string): unknown[] {
+  const sources = movie.downloadSources ?? [];
   return [
     movie.slug, movie.title, movie.tagline, movie.description, movie.year,
     movie.runtime, movie.rating, movie.contentType ?? 'movie', movie.genre, movie.director, JSON.stringify(movie.cast),
     JSON.stringify(movie.languages), movie.poster, movie.backdrop, movie.featured ? 1 : 0,
     movie.publicationStatus, movie.rightsStatus, movie.rightsVerifiedAt ?? null,
     movie.rightsExpiresAt ?? null, movie.rightsReviewer ?? null, movie.rightsReference ?? null,
-    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null, JSON.stringify(movie.downloadSources ?? []), JSON.stringify(movie.streamingSources ?? []), JSON.stringify(movie.episodes ?? []),
+    movie.officialWatchUrl ?? null, movie.telegramUrl ?? null, movie.telegramChannel ?? null, movie.subtitleUrl ?? null, JSON.stringify({ status: movie.downloadStatus ?? (sources.length ? 'available' : 'pending'), sources }), JSON.stringify(movie.streamingSources ?? []), JSON.stringify(movie.episodes ?? []),
     1, actorId, actorId, now, now,
   ];
 }

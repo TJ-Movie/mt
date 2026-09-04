@@ -7,7 +7,7 @@ export async function approvedGatewaySources(movie: Movie, episode?: { season: n
   const controls = getRuntimeControls();
   const verifiedAt = movie.rightsVerifiedAt ? Date.parse(movie.rightsVerifiedAt) : NaN;
   const expiresAt = movie.rightsExpiresAt ? Date.parse(movie.rightsExpiresAt) : NaN;
-  if (!controls.externalLinksEnabled || movie.rightsStatus !== 'verified' || !Number.isFinite(verifiedAt) || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !movie.rightsReviewer?.trim() || !movie.rightsReference?.trim()) return null;
+  if (movie.downloadStatus === 'pending' || !controls.externalLinksEnabled || movie.rightsStatus !== 'verified' || !Number.isFinite(verifiedAt) || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !movie.rightsReviewer?.trim() || !movie.rightsReference?.trim()) return null;
   const allowed = new Set((await listApprovedDomains()).filter((item) => item.active).map((item) => item.domain.toLowerCase()));
   const safe = (url: string) => { try { const target = new URL(url); return target.protocol === 'https:' && !target.username && !target.password && !target.port && allowed.has(target.hostname.toLowerCase()); } catch { return false; } };
   const sources = episode
