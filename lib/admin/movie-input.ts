@@ -17,7 +17,7 @@ export type AdminMovieInput = {
   rating: number;
   genre: string;
   director: string;
-  cast: string[];
+  cast: (string | { actor: string; character?: string; image?: string })[];
   languages: string[];
   poster: string;
   backdrop: string;
@@ -126,7 +126,8 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   if (!Number.isInteger(year) || Number(year) < 1888 || Number(year) > maximumYear) errors.year = `Use a year from 1888 to ${maximumYear}.`;
   if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0 || rating > 10) errors.rating = 'Use a rating from 0 to 10.';
 
-  const cast = listField(source, 'cast', null, errors, false);
+  const rawCast = Array.isArray(source.cast) ? source.cast.slice(0, 100) : [];
+  const cast = rawCast.map((member) => typeof member === 'string' ? member.normalize('NFKC').trim().slice(0, 120) : member && typeof member === 'object' && typeof member.actor === 'string' ? { actor: member.actor.normalize('NFKC').trim().slice(0, 120), character: typeof member.character === 'string' ? member.character.normalize('NFKC').trim().slice(0, 120) : undefined, image: typeof member.image === 'string' ? member.image.trim().slice(0, 500) : undefined } : '').filter((member) => typeof member === 'string' ? member.length > 0 : member.actor.length > 0);
   const languages = listField(source, 'languages', allLanguages, errors);
   const poster = textField(source, 'poster', 1, 200, errors);
   const backdrop = textField(source, 'backdrop', 1, 200, errors);

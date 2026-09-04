@@ -21,7 +21,7 @@ export type Movie = {
   rating: number;
   genre: string;
   director: string;
-  cast: string[];
+  cast: (string | { actor: string; character?: string; image?: string })[];
   languages: readonly string[];
   poster: string;
   backdrop: string;
