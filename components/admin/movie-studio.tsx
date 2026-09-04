@@ -93,7 +93,6 @@ export function MovieStudio({ initialMovies, initialAuditEvents, controls }: { i
   }
 
   return <ContentTypeContext.Provider value={{ contentType: draft.contentType ?? 'movie', episodes: draft.episodes ?? [], setEpisodes: (episodes) => update('episodes', episodes), downloadStatus: draft.downloadStatus ?? ((draft.downloadSources?.length ?? 0) > 0 ? 'available' : 'pending'), setDownloadStatus: (status) => update('downloadStatus', status) }}><div className="mx-auto max-w-[1500px] px-5 py-8 sm:px-8 lg:px-12">
-    <DownloadStatusField />
     <div className="mb-7 grid gap-3 sm:grid-cols-3"><StatusCard label="External links" active={controls.externalLinksEnabled}/><StatusCard label="Advertisements" active={controls.adsEnabled}/><div className="rounded-2xl border border-white/10 bg-white/[.035] p-4"><p className="text-xs uppercase tracking-[.18em] text-white/35">Records</p><p className="mt-2 font-serif text-2xl">{movies.length} movies</p></div></div>
     <Tabs defaultValue="catalogue"><TabsList className="bg-white/[.06] text-white/50"><TabsTrigger value="catalogue" className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white">Catalogue</TabsTrigger><TabsTrigger value="audit" className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white">Audit trail</TabsTrigger></TabsList>
       <TabsContent value="catalogue" className="mt-6"><div className="grid gap-6 xl:grid-cols-[360px_1fr]">
@@ -110,7 +109,7 @@ export function MovieStudio({ initialMovies, initialAuditEvents, controls }: { i
         </section></div></TabsContent>
       <TabsContent value="audit" className="mt-6 rounded-2xl border border-white/10 bg-white/[.035] p-4 sm:p-6"><Table><TableHeader><TableRow className="border-white/10"><TableHead className="text-white/45">Time</TableHead><TableHead className="text-white/45">Action</TableHead><TableHead className="text-white/45">Movie</TableHead><TableHead className="text-white/45">Editor</TableHead></TableRow></TableHeader><TableBody>{initialAuditEvents.map((event) => <TableRow key={event.id} className="border-white/8 hover:bg-white/[.03]"><TableCell className="text-white/45">{new Date(event.createdAt).toLocaleString()}</TableCell><TableCell>{event.action}</TableCell><TableCell>{event.movieSlug ?? '—'}</TableCell><TableCell className="text-white/45">{event.actorEmail}</TableCell></TableRow>)}</TableBody></Table></TabsContent>
     </Tabs>
-  </div></ContentTypeContext.Provider>;
+  <div className="mx-auto mt-6 max-w-md"><DownloadStatusField /></div></div></ContentTypeContext.Provider>;
 }
 
 function StatusCard({ label, active }: { label: string; active: boolean }) { return <div className="rounded-2xl border border-white/10 bg-white/[.035] p-4"><p className="text-xs uppercase tracking-[.18em] text-white/35">{label}</p><p className={`mt-2 flex items-center gap-2 font-serif text-2xl ${active ? 'text-amber-200' : 'text-emerald-300'}`}><span className={`size-2 rounded-full ${active ? 'bg-amber-300' : 'bg-emerald-300'}`}/>{active ? 'Enabled' : 'Safe-disabled'}</p></div>; }
