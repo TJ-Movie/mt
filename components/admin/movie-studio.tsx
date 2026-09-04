@@ -14,8 +14,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../ui/alert-dialog';
 import { EpisodeBuilder } from './episode-builder';
 
-type EditorContext = { contentType: 'movie' | 'series'; episodes: NonNullable<AdminMovie['episodes']>; setEpisodes: (episodes: NonNullable<AdminMovie['episodes']>) => void };
-const ContentTypeContext = createContext<EditorContext>({ contentType: 'movie', episodes: [], setEpisodes: () => undefined });
+type EditorContext = { contentType: 'movie' | 'series'; episodes: NonNullable<AdminMovie['episodes']>; setEpisodes: (episodes: NonNullable<AdminMovie['episodes']>) => void; downloadStatus: 'available' | 'pending'; setDownloadStatus: (status: 'available' | 'pending') => void };
+const ContentTypeContext = createContext<EditorContext>({ contentType: 'movie', episodes: [], setEpisodes: () => undefined, downloadStatus: 'pending', setDownloadStatus: () => undefined });
 
 type DraftMovie = Omit<AdminMovie, 'id' | 'createdAt' | 'updatedAt'> & { id?: number };
 type FieldErrors = Record<string, string>;
@@ -28,6 +28,7 @@ const emptyMovie: DraftMovie = {
   genre: 'Drama', director: '', cast: [], languages: ['English'], poster: '/og.png', backdrop: '/og.png', featured: false,
   publicationStatus: 'draft', rightsStatus: 'pending', rightsVerifiedAt: undefined, rightsExpiresAt: undefined,
   rightsReviewer: undefined, rightsReference: undefined, officialWatchUrl: undefined, telegramUrl: undefined, telegramChannel: undefined, subtitleUrl: undefined,
+  downloadStatus: 'pending',
 };
 
 function localDate(value?: string): string { return value ? value.slice(0, 10) : ''; }
@@ -91,7 +92,8 @@ export function MovieStudio({ initialMovies, initialAuditEvents, controls }: { i
     setBusy(false);
   }
 
-  return <ContentTypeContext.Provider value={{ contentType: draft.contentType ?? 'movie', episodes: draft.episodes ?? [], setEpisodes: (episodes) => update('episodes', episodes) }}><div className="mx-auto max-w-[1500px] px-5 py-8 sm:px-8 lg:px-12">
+  return <ContentTypeContext.Provider value={{ contentType: draft.contentType ?? 'movie', episodes: draft.episodes ?? [], setEpisodes: (episodes) => update('episodes', episodes), downloadStatus: draft.downloadStatus ?? ((draft.downloadSources?.length ?? 0) > 0 ? 'available' : 'pending'), setDownloadStatus: (status) => update('downloadStatus', status) }}><div className="mx-auto max-w-[1500px] px-5 py-8 sm:px-8 lg:px-12">
+    <DownloadStatusField />
     <div className="mb-7 grid gap-3 sm:grid-cols-3"><StatusCard label="External links" active={controls.externalLinksEnabled}/><StatusCard label="Advertisements" active={controls.adsEnabled}/><div className="rounded-2xl border border-white/10 bg-white/[.035] p-4"><p className="text-xs uppercase tracking-[.18em] text-white/35">Records</p><p className="mt-2 font-serif text-2xl">{movies.length} movies</p></div></div>
     <Tabs defaultValue="catalogue"><TabsList className="bg-white/[.06] text-white/50"><TabsTrigger value="catalogue" className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white">Catalogue</TabsTrigger><TabsTrigger value="audit" className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white">Audit trail</TabsTrigger></TabsList>
       <TabsContent value="catalogue" className="mt-6"><div className="grid gap-6 xl:grid-cols-[360px_1fr]">
@@ -112,6 +114,7 @@ export function MovieStudio({ initialMovies, initialAuditEvents, controls }: { i
 }
 
 function StatusCard({ label, active }: { label: string; active: boolean }) { return <div className="rounded-2xl border border-white/10 bg-white/[.035] p-4"><p className="text-xs uppercase tracking-[.18em] text-white/35">{label}</p><p className={`mt-2 flex items-center gap-2 font-serif text-2xl ${active ? 'text-amber-200' : 'text-emerald-300'}`}><span className={`size-2 rounded-full ${active ? 'bg-amber-300' : 'bg-emerald-300'}`}/>{active ? 'Enabled' : 'Safe-disabled'}</p></div>; }
+function DownloadStatusField() { const context = useContext(ContentTypeContext); const available = context.downloadStatus === 'available'; return <section className="mb-6 rounded-2xl border border-[#ef796d]/30 bg-[#ef796d]/[.08] p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.2em] text-[#ef796d]">Download controls</p><h2 className="mt-1 text-xl font-semibold text-white">{available ? 'Downloads available' : 'Downloads pending'}</h2><p className="mt-1 text-sm text-white/55">Choose whether the public Download button opens the gateway or stays disabled.</p></div><NativeSelect aria-label="Download status" value={context.downloadStatus} onChange={(event) => context.setDownloadStatus(event.target.value as 'available' | 'pending')} className="h-11 w-full border-white/20 bg-black/30 text-white sm:w-72"><NativeSelectOption value="available">Available</NativeSelectOption><NativeSelectOption value="pending">Download Pending / Coming Soon</NativeSelectOption></NativeSelect></div></section>; }
 function fieldLabel(field: string): string { return field.replace(/([A-Z])/g, ' $1').replace(/^./, (value) => value.toUpperCase()); }
 function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) { const context = useContext(ContentTypeContext); const isEpisode = label.startsWith('Series episodes'); const isMovieOnly = label.startsWith('Streaming servers') || label.startsWith('Download options'); if ((isEpisode && context.contentType !== 'series') || (isMovieOnly && context.contentType === 'series')) return null; const content = isEpisode ? <EpisodeBuilder episodes={context.episodes} onChange={context.setEpisodes}/> : children; return <label className={wide ? 'md:col-span-2' : ''}><span className="mb-2 block text-xs font-semibold uppercase tracking-[.14em] text-white/40">{label}</span><div className="[&_input]:h-10 [&_input]:border-white/12 [&_input]:bg-black/15 [&_input]:text-white [&_textarea]:border-white/12 [&_textarea]:bg-black/15 [&_textarea]:text-white [&_select]:h-10 [&_select]:border-white/12 [&_select]:bg-black/15 [&_select]:text-white">{content}</div></label>; }
 function UploadField({ label, value, accept, onUpload }: { label: string; value: string; accept: string; onUpload: (file?: File) => void }) { return <Field label={label}><div className="flex gap-2"><Input readOnly value={value}/><Button type="button" variant="outline" className="relative h-10 shrink-0 overflow-hidden border-white/15 bg-transparent text-white"><ImagePlus/> Upload<input type="file" accept={accept} onChange={(event) => { onUpload(event.target.files?.[0]); event.target.value = ''; }} className="absolute inset-0 cursor-pointer opacity-0" aria-label={`Upload ${label.toLowerCase()}`}/></Button></div></Field>; }
