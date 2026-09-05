@@ -82,6 +82,28 @@ function safeStringArray(json: string): string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value.slice(0, 20) : [];
   } catch { return []; }
 }
+function safeCast(json: string): (string | { actor: string; character?: string; image?: string })[] {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (!Array.isArray(value)) return [];
+    const result: (string | { actor: string; character?: string; image?: string })[] = [];
+    for (const member of value.slice(0, 100) as unknown[]) {
+      if (typeof member === 'string') {
+        const actor = member.normalize('NFKC').trim().slice(0, 120);
+        if (actor) result.push(actor);
+        continue;
+      }
+      if (!member || typeof member !== 'object' || typeof (member as { actor?: unknown }).actor !== 'string') continue;
+      const source = member as { actor: string; character?: unknown; image?: unknown };
+      const actor = source.actor.normalize('NFKC').trim().slice(0, 120);
+      if (!actor) continue;
+      const character = typeof source.character === 'string' ? source.character.normalize('NFKC').trim().slice(0, 120) : undefined;
+      const image = typeof source.image === 'string' ? source.image.trim().slice(0, 500) : undefined;
+      result.push({ actor, character: character || undefined, image: image || undefined });
+    }
+    return result;
+  } catch { return []; }
+}
 function safeStreamingSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 8) : []; } catch { return []; } }
 function safeSources(json: string): { label: string; quality: string; resolution: string; size: string; url: string }[] { try { const parsed: unknown = JSON.parse(json); const value = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' && Array.isArray((parsed as any).sources) ? (parsed as any).sources : []; return value.filter((item): item is { label:string;quality:string;resolution:string;size:string;url:string } => Boolean(item && typeof item === 'object' && ['label','quality','resolution','size','url'].every((key) => typeof (item as Record<string,unknown>)[key] === 'string'))).slice(0, 12); } catch { return []; } }
 function safeEpisodes(json: string): { season: number; episode: number; title: string; url?: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { season:number; episode:number; title:string; url?:string } => Boolean(item && typeof item==='object' && Number.isInteger((item as any).season) && Number.isInteger((item as any).episode) && typeof (item as any).title==='string')).slice(0, 500) : []; } catch { return []; } }
@@ -99,7 +121,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     contentType: row.content_type === 'series' ? 'series' : 'movie',
     genre: row.genre,
     director: row.director,
-    cast: safeStringArray(row.cast_json),
+    cast: safeCast(row.cast_json),
     languages: safeStringArray(row.languages_json),
     poster: row.poster,
     backdrop: row.backdrop,
