@@ -11,6 +11,7 @@ function buildContentSecurityPolicy(nonce: string): string {
     "font-src 'self' data:",
     "connect-src 'self'",
     "media-src 'self'",
+    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com",
     "worker-src 'self'",
     "manifest-src 'self'",
     "object-src 'none'",
