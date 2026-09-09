@@ -36,7 +36,7 @@ export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
     const protocol = requestHeaders.get('x-forwarded-proto') ?? 'https';
     const returnUrl = `${protocol}://${host}${_returnTo.startsWith('/') ? _returnTo : `/${_returnTo}`}`;
     const teamDomain = process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN ?? 'throbbing-limit-326e.cloudflareaccess.com';
-    redirect(`https://${teamDomain}/cdn-cgi/access/login?redirect_url=${encodeURIComponent(returnUrl)}`);
+    redirect(`https://${teamDomain}/cdn-cgi/access/login/${host}?redirect_url=${encodeURIComponent(returnUrl)}`);
   }
   if (!isAdminUser(user)) notFound();
   return user;
