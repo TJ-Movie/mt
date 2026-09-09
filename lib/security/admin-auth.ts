@@ -1,24 +1,24 @@
 import 'server-only';
-import { getChatGPTUser, requireChatGPTUser, type ChatGPTUser } from '../../app/chatgpt-auth';
+import { getCloudflareAccessUser, type AccessUser } from '../../app/cloudflare-access-auth';
 import { notFound } from 'next/navigation';
 import { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
 export { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
-function isAdminUser(user: ChatGPTUser): boolean {
+function isAdminUser(user: AccessUser): boolean {
   const configuredIds = process.env.SUBLYRA_ADMIN_USER_IDS;
   return configuredIds?.trim()
     ? isAdminUserId(user.userId, configuredIds)
     : isAdminEmail(user.email);
 }
 
-export async function getAdminUser(): Promise<ChatGPTUser | null> {
-  const user = await getChatGPTUser();
+export async function getAdminUser(): Promise<AccessUser | null> {
+  const user = await getCloudflareAccessUser();
   return user && isAdminUser(user) ? user : null;
 }
 
-export async function requireAdminUser(returnTo: string): Promise<ChatGPTUser> {
-  const user = await requireChatGPTUser(returnTo);
-  if (!isAdminUser(user)) notFound();
+export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
+  const user = await getCloudflareAccessUser();
+  if (!user || !isAdminUser(user)) notFound();
   return user;
 }

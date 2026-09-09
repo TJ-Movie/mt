@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import { ShieldCheck } from 'lucide-react';
 import { MovieStudio } from '../../components/admin/movie-studio';
 import { SourceGovernance } from '../../components/admin/source-governance';
-import { chatGPTSignOutPath } from '../chatgpt-auth';
 import {
   initializeStarterCatalogue,
   listAdminMovies,
@@ -48,7 +47,7 @@ export default async function StudioPage() {
               {user.email}
             </span>
             <a
-              href={chatGPTSignOutPath('/')}
+              href="/cdn-cgi/access/logout"
               target="_top"
               className="rounded-full border border-white/15 px-4 py-2 hover:border-white/35"
             >
