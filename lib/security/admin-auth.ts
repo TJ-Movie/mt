@@ -7,6 +7,7 @@ import { isAdminEmail, isAdminUserId } from './admin-allowlist';
 export { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
 // Studio access is delegated to Cloudflare Access; no ChatGPT OAuth is used.
+const DEFAULT_ACCESS_AUDIENCE = '04674bc890cc0929ee2939705d16ccbdd4f38e0c66aa7bcf678a4f200e5022be';
 
 function isAdminUser(user: AccessUser): boolean {
   const configuredIds = process.env.SUBLYRA_ADMIN_USER_IDS;
@@ -30,13 +31,11 @@ export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
     // on the public Flixlyra hostname so the authorization cookie is scoped
     // correctly.
     const host = forwardedHost.endsWith('.chatgpt.site') ? 'flixlyra.com' : forwardedHost;
-    const protocol = requestHeaders.get('x-forwarded-proto') ?? 'https';
     const path = _returnTo.startsWith('/') ? _returnTo : `/${_returnTo}`;
-    const returnUrl = `${protocol}://${host}${path}`;
     const teamDomain = process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN ?? 'throbbing-limit-326e.cloudflareaccess.com';
-    // Cloudflare Access resolves path-scoped apps by the destination URL. Using
-    // only the host here points Access at flixlyra.com, not flixlyra.com/studio.
-    redirect(`https://${teamDomain}/cdn-cgi/access/login/${host}${path}?redirect_url=${encodeURIComponent(returnUrl)}`);
+    const audience = process.env.CLOUDFLARE_ACCESS_AUD?.trim() || DEFAULT_ACCESS_AUDIENCE;
+    const params = new URLSearchParams({ kid: audience, redirect_url: path });
+    redirect(`https://${teamDomain}/cdn-cgi/access/login/${host}?${params.toString()}`);
   }
   if (!isAdminUser(user)) notFound();
   return user;
