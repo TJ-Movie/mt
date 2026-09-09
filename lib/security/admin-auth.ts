@@ -5,6 +5,8 @@ import { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
 export { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
+// Studio access is delegated to Cloudflare Access; no ChatGPT OAuth is used.
+
 function isAdminUser(user: AccessUser): boolean {
   const configuredIds = process.env.SUBLYRA_ADMIN_USER_IDS;
   return configuredIds?.trim()
