@@ -9,6 +9,7 @@ import {
   Plus,
   Save,
   ShieldAlert,
+  UploadCloud,
 } from 'lucide-react';
 import type { AdminMovie, AuditEvent } from '../../db';
 import type { RuntimeControls } from '../../lib/security/runtime-controls';
@@ -69,6 +70,91 @@ type DraftMovie = Omit<AdminMovie, 'id' | 'createdAt' | 'updatedAt'> & {
   id?: number;
 };
 type FieldErrors = Record<string, string>;
+
+function IngestionPanel({
+  onMoviesRefreshed,
+}: {
+  onMoviesRefreshed: (movies: AdminMovie[]) => void;
+}) {
+  const [running, setRunning] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+
+  async function triggerIngestion() {
+    setRunning(true);
+    setNotice({ tone: 'success', text: 'Ingestion in progress — fetching the YTS batch and securing torrent assets…' });
+    try {
+      const response = await fetch('/api/admin/ingest/yts', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-sublyra-action': 'admin-write',
+        },
+        body: JSON.stringify({}),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string'
+          ? payload.error
+          : 'The ingestion request was rejected.';
+        throw new Error(error);
+      }
+      const results = payload && typeof payload === 'object' && 'results' in payload && Array.isArray(payload.results)
+        ? payload.results as Array<{ status?: unknown }>
+        : [];
+      const queued = results.filter((result) => result.status === 'queued').length;
+      const failed = results.length - queued;
+      setNotice({
+        tone: failed ? 'error' : 'success',
+        text: failed
+          ? `Ingestion finished: ${queued} queued, ${failed} failed. Review the response details or retry after correcting the source.`
+          : `Ingestion complete: ${queued} movies queued for rights review.`,
+      });
+      const refreshed = await fetch('/api/admin/movies', { credentials: 'same-origin' });
+      const refreshedPayload: unknown = await refreshed.json().catch(() => null);
+      if (refreshed.ok && refreshedPayload && typeof refreshedPayload === 'object' && 'movies' in refreshedPayload && Array.isArray(refreshedPayload.movies)) {
+        onMoviesRefreshed(refreshedPayload.movies as AdminMovie[]);
+      }
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'The ingestion request failed.' });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section className="rounded-2xl border border-white/10 bg-[#171916] p-6 sm:p-8">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
+          <h2 className="mt-2 font-serif text-2xl">Ingest movie metadata and torrents</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+            Fetches the configured 20-film IMDb batch, prefers 1080p (falling back to 720p), and queues each record for rights review.
+          </p>
+        </div>
+        <Button
+          onClick={triggerIngestion}
+          disabled={running}
+          className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60"
+        >
+          {running ? <Loader2 className="animate-spin" /> : <UploadCloud />}
+          {running ? 'Ingesting…' : 'Run YTS ingestion'}
+        </Button>
+      </div>
+      {running && (
+        <div className="mt-6 h-2 overflow-hidden rounded-full bg-white/10">
+          <progress className="h-full w-full opacity-0" aria-label="YTS ingestion progress" />
+          <div className="-mt-2 h-full w-1/3 animate-pulse rounded-full bg-[#ef796d]" />
+        </div>
+      )}
+      {notice && (
+        <output className={`mt-5 block rounded-xl border px-4 py-3 text-sm ${notice.tone === 'success' ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : 'border-rose-400/25 bg-rose-400/10 text-rose-200'}`}>
+          {notice.text}
+        </output>
+      )}
+    </section>
+  );
+}
 
 const emptyMovie: DraftMovie = {
   streamingSources: [],
@@ -334,6 +420,12 @@ export function MovieStudio({
               className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white"
             >
               Audit trail
+            </TabsTrigger>
+            <TabsTrigger
+              value="ingestion"
+              className="px-4 text-white/55 data-active:bg-white/10 data-active:text-white"
+            >
+              Ingestion
             </TabsTrigger>
           </TabsList>
           <TabsContent value="catalogue" className="mt-6">
@@ -843,6 +935,12 @@ export function MovieStudio({
                 </div>
               </section>
             </div>
+          </TabsContent>
+          <TabsContent value="ingestion" className="mt-6">
+            <IngestionPanel onMoviesRefreshed={(nextMovies) => {
+              setMovies(nextMovies);
+              if (selectedId !== 'new' && !nextMovies.some((movie) => movie.id === selectedId)) choose(null);
+            }} />
           </TabsContent>
           <TabsContent
             value="audit"
