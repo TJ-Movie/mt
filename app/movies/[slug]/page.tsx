@@ -72,10 +72,6 @@ export default async function MoviePage({
     'telegram',
     controls,
   ).ok;
-  const gatewayAvailable =
-    controls.externalLinksEnabled &&
-    movie.rightsStatus === 'verified' &&
-    (movie.downloadSources?.length ?? 0) > 0;
   const sourcesAvailable =
     controls.externalLinksEnabled && movie.rightsStatus === 'verified';
   return (

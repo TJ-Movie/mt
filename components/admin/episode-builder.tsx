@@ -1,4 +1,5 @@
 'use client';
+/* oxlint-disable jsx-a11y/label-has-associated-control -- labels wrap shared form controls. */
 import { Plus, Trash2, ImagePlus } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -15,17 +16,19 @@ export function EpisodeBuilder({
   episodes: Episode[];
   onChange: (episodes: Episode[]) => void;
 }) {
-  function update(index: number, key: keyof Episode, value: string) {
+  function update(index: number, key: keyof Episode, value: Episode[keyof Episode]) {
     onChange(
       episodes.map((episode, itemIndex) =>
         itemIndex === index
-          ? {
+          ? ({
               ...episode,
               [key]:
                 key === 'season' || key === 'episode'
                   ? Math.max(1, Number(value) || 1)
-                  : value,
-            }
+                  : key === 'rating'
+                    ? value === '' ? undefined : Math.max(0, Math.min(10, Number(value)))
+                    : value,
+            } as Episode)
           : episode,
       ),
     );
@@ -151,7 +154,7 @@ export function EpisodeBuilder({
                     : 'pending')
                 }
                 onChange={(event) =>
-                  update(index, 'downloadStatus', event.target.value)
+                  update(index, 'downloadStatus', event.target.value as 'available' | 'pending')
                 }
               >
                 <NativeSelectOption value="available">

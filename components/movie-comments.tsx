@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { type SyntheticEvent, useEffect, useState } from 'react';
 
 type Comment = { id: number; name: string; body: string; createdAt: string };
 
@@ -15,14 +15,14 @@ export function MovieComments({ slug }: { slug: string }) {
     fetch(`/api/movies/${encodeURIComponent(slug)}/comments`, {
       credentials: 'same-origin',
     })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { comments?: Comment[] } | null) =>
-        setComments(data?.comments ?? []),
-      )
+      .then(async (res) => res.ok
+        ? await res.json() as { comments?: Comment[] }
+        : null)
+      .then((data) => setComments(data?.comments ?? []))
       .catch(() => undefined);
   }, [slug]);
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setStatus('');
@@ -88,9 +88,9 @@ export function MovieComments({ slug }: { slug: string }) {
               {busy ? 'Posting…' : 'Post feedback'}
             </button>
             {status ? (
-              <p role="status" className="text-sm text-white/55">
+              <output className="text-sm text-white/55">
                 {status}
-              </p>
+              </output>
             ) : null}
           </form>
         </div>

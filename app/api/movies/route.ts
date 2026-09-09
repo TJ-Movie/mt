@@ -10,7 +10,7 @@ const MAX_PAGE_SIZE = 24;
 const MAX_PAGE_NUMBER = 1_000;
 
 const SUCCESS_HEADERS = {
-  'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
+  'Cache-Control': 'no-store, max-age=0',
   'Cross-Origin-Resource-Policy': 'same-origin',
   'RateLimit-Policy': '60;w=60',
   'X-Content-Type-Options': 'nosniff',
@@ -54,7 +54,10 @@ export async function GET(request: Request) {
 
   const movies = await listPublishedMovies();
   const filtered = movies.filter((movie) => {
-    const text = `${movie.title} ${movie.director} ${movie.cast.join(' ')}`.toLowerCase();
+    const cast = movie.cast.map((member) => typeof member === 'string'
+      ? member
+      : `${member.actor} ${member.character ?? ''}`).join(' ');
+    const text = `${movie.title} ${movie.director} ${cast}`.toLowerCase();
     const movieGenres = movie.genre.toLowerCase().split(',').map((item) => item.trim());
     return (!query || text.includes(query)) && (!genre || genre === 'all' || movieGenres.includes(genre)) && (!language || language === 'all languages' || movie.languages.some((item) => item.toLowerCase() === language)) && (!type || type === 'all' || movie.contentType === type);
   });

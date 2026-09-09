@@ -32,16 +32,16 @@ export function MediaSourcesGateway({
     );
     return [...map.entries()];
   }, [downloads]);
-  async function report(source: Source | Stream, kind: 'download' | 'stream') {
+  async function report(kind: 'download' | 'stream', index: number) {
     const reason = window.prompt('What is wrong with this source?');
     if (!reason) return;
     const r = await fetch(`/api/movies/${slug}/reports`, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sourceKind: kind,
-        sourceLabel: source.label,
-        sourceUrl: source.url,
+        sourceId: `s${index}`,
         reason,
       }),
     });
@@ -85,7 +85,7 @@ export function MediaSourcesGateway({
             />
           </div>
           <button
-            onClick={() => report(streams[active], 'stream')}
+            onClick={() => report('stream', active)}
             className="mt-3 text-xs text-white/40"
           >
             <Flag size={13} className="mr-2 inline" />
@@ -135,7 +135,7 @@ export function MediaSourcesGateway({
                         Download
                       </a>
                       <button
-                        onClick={() => report(s, 'download')}
+                        onClick={() => report('download', downloads.indexOf(s))}
                         className="mt-2 w-full text-xs text-white/35"
                       >
                         <Flag size={12} className="mr-1 inline" />
@@ -150,12 +150,11 @@ export function MediaSourcesGateway({
         </section>
       )}
       {notice && (
-        <p
-          role="status"
+        <output
           className="mx-auto max-w-[1380px] px-4 pb-6 text-sm text-white/55 sm:px-8 lg:px-12"
         >
           {notice}
-        </p>
+        </output>
       )}
     </>
   );

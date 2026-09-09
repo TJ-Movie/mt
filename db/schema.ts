@@ -70,6 +70,17 @@ export const movieCommentsTable = sqliteTable('movie_comments', {
   createdAt: text('created_at').notNull(),
 }, (table) => [index('idx_movie_comments_slug_status').on(table.movieSlug, table.status)]);
 
+export const publicRateLimitsTable = sqliteTable('public_rate_limits', {
+  scope: text('scope').notNull(),
+  clientHash: text('client_hash').notNull(),
+  windowStart: integer('window_start').notNull(),
+  requestCount: integer('request_count').notNull().default(1),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_public_rate_limits_key').on(table.scope, table.clientHash, table.windowStart),
+  index('idx_public_rate_limits_window').on(table.windowStart),
+]);
+
 export const approvedDomainsTable = sqliteTable('approved_domains', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   domain: text('domain').notNull(),

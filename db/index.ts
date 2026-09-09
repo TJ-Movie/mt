@@ -6,6 +6,8 @@ import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
 
 type Bindings = { DB?: D1Database; MEDIA?: R2Bucket };
+type StoredDownloadSource = NonNullable<Movie['downloadSources']>[number];
+type StoredEpisode = NonNullable<Movie['episodes']>[number];
 
 type MovieRow = {
   id: number;
@@ -105,8 +107,33 @@ function safeCast(json: string): (string | { actor: string; character?: string; 
   } catch { return []; }
 }
 function safeStreamingSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 8) : []; } catch { return []; } }
-function safeSources(json: string): { label: string; quality: string; resolution: string; size: string; url: string }[] { try { const parsed: unknown = JSON.parse(json); const value = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' && Array.isArray((parsed as any).sources) ? (parsed as any).sources : []; return value.filter((item): item is { label:string;quality:string;resolution:string;size:string;url:string } => Boolean(item && typeof item === 'object' && ['label','quality','resolution','size','url'].every((key) => typeof (item as Record<string,unknown>)[key] === 'string'))).slice(0, 12); } catch { return []; } }
-function safeEpisodes(json: string): { season: number; episode: number; title: string; url?: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { season:number; episode:number; title:string; url?:string } => Boolean(item && typeof item==='object' && Number.isInteger((item as any).season) && Number.isInteger((item as any).episode) && typeof (item as any).title==='string')).slice(0, 500) : []; } catch { return []; } }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+function isStoredDownloadSource(value: unknown): value is StoredDownloadSource {
+  return isRecord(value) && ['label', 'quality', 'resolution', 'size', 'url']
+    .every((key) => typeof value[key] === 'string');
+}
+function safeSources(json: string): StoredDownloadSource[] {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    const value: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : isRecord(parsed) && Array.isArray(parsed.sources)
+        ? parsed.sources
+        : [];
+    return value.filter(isStoredDownloadSource).slice(0, 12);
+  } catch { return []; }
+}
+function isStoredEpisode(value: unknown): value is StoredEpisode {
+  return isRecord(value) && Number.isInteger(value.season) && Number.isInteger(value.episode) && typeof value.title === 'string';
+}
+function safeEpisodes(json: string): StoredEpisode[] {
+  try {
+    const value: unknown = JSON.parse(json);
+    return Array.isArray(value) ? value.filter(isStoredEpisode).slice(0, 500) : [];
+  } catch { return []; }
+}
 
 function rowToMovie(row: MovieRow): AdminMovie {
   return {
@@ -137,7 +164,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     telegramChannel: row.telegram_channel ?? undefined,
     subtitleUrl: row.subtitle_url ?? undefined,
     downloadSources: safeSources(row.download_sources_json),
-    downloadStatus: (() => { try { const parsed = JSON.parse(row.download_sources_json) as any; return parsed && !Array.isArray(parsed) && parsed.status === 'pending' ? 'pending' : 'available'; } catch { return 'pending'; } })(),
+    downloadStatus: (() => { try { const parsed: unknown = JSON.parse(row.download_sources_json); return isRecord(parsed) && parsed.status === 'pending' ? 'pending' : 'available'; } catch { return 'pending'; } })(),
     streamingSources: safeStreamingSources(row.streaming_sources_json),
     episodes: safeEpisodes(row.episodes_json),
     revision: row.revision,
@@ -323,7 +350,18 @@ export async function removeApprovedDomain(id: number, user: ChatGPTUser): Promi
 }
 export async function assertApprovedSourceDomains(input: AdminMovieInput): Promise<void> {
   const allowed = new Set((await listApprovedDomains()).filter((item) => item.active).map((item) => item.domain));
-  for (const source of [...input.streamingSources, ...input.downloadSources]) { const hostname = new URL(source.url).hostname.toLowerCase(); if (!allowed.has(hostname)) throw new Error(`UNAPPROVED_DOMAIN:${hostname}`); }
+  const episodeSources = input.episodes.flatMap((episode) => [
+    ...(episode.url ? [{ url: episode.url }] : []),
+    ...(episode.streamingSources ?? []),
+    ...(episode.downloadSources ?? []),
+  ]);
+  for (const source of [...input.streamingSources, ...input.downloadSources, ...episodeSources]) {
+    const target = new URL(source.url);
+    const hostname = target.hostname.toLowerCase();
+    if (target.protocol !== 'https:' || target.username || target.password || target.port || !allowed.has(hostname)) {
+      throw new Error(`UNAPPROVED_DOMAIN:${hostname}`);
+    }
+  }
 }
 export async function createSourceReport(input: {movieSlug:string;sourceKind:'stream'|'download';sourceLabel:string;sourceUrl:string;reason:string;details:string}): Promise<void> {
   await getDatabase().prepare("INSERT INTO source_reports (movie_slug, source_kind, source_label, source_url, reason, details, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)").bind(input.movieSlug,input.sourceKind,input.sourceLabel,input.sourceUrl,input.reason,input.details,new Date().toISOString()).run();

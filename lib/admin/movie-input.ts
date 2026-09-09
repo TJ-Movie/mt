@@ -61,6 +61,10 @@ function hasControlCharacter(value: string): boolean {
   return false;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function sourceUrl(value: unknown): string {
   if (typeof value !== 'string') return '';
   const trimmed = value.normalize('NFKC').trim();
@@ -153,7 +157,58 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   const rawSources = source.downloadSources;
   const downloadSources = Array.isArray(rawSources) ? rawSources.slice(0, 12).map((item, index) => { const url=typeof item?.url==='string'?item.url.normalize('NFKC').trim().slice(0,500):''; return { label: typeof item?.label==='string'&&item.label.trim()?item.label.normalize('NFKC').trim().slice(0,40):`Download ${index+1}`, quality: typeof item?.quality==='string'&&item.quality.trim()?item.quality.normalize('NFKC').trim().slice(0,24):'Standard', resolution: typeof item?.resolution==='string'&&item.resolution.trim()?item.resolution.normalize('NFKC').trim().slice(0,24):'Auto', size: typeof item?.size==='string'&&item.size.trim()?item.size.normalize('NFKC').trim().slice(0,24):'Unknown', url }; }).filter((item) => /^https:\/\/[^\s]+$/i.test(item.url)) : [];
   const rawEpisodes = source.episodes;
-  const episodes = Array.isArray(rawEpisodes) ? rawEpisodes.slice(0, 500).filter((item) => item && Number.isInteger(item.season) && item.season > 0 && Number.isInteger(item.episode) && item.episode > 0 && typeof item.title === 'string').map((item) => ({ season: item.season, episode: item.episode, title: item.title.normalize('NFKC').trim().slice(0, 160), url: typeof item.url === 'string' && /^https:\/\/[^\s]+$/i.test(item.url.trim()) ? item.url.trim().slice(0, 500) : undefined, thumbnail: typeof item.thumbnail === 'string' ? item.thumbnail.trim().slice(0, 500) : undefined, backdrop: typeof item.backdrop === 'string' ? item.backdrop.trim().slice(0, 500) : undefined, description: typeof item.description === 'string' ? item.description.normalize('NFKC').trim().slice(0, 1000) : undefined, rating: Number.isFinite(item.rating) ? Math.max(0, Math.min(10, Number(item.rating))) : undefined, downloadStatus: item.downloadStatus === 'pending' ? 'pending' : 'available', downloadSources: Array.isArray(item.downloadSources) ? item.downloadSources.slice(0, 20).filter((source) => source && typeof source.url === 'string' && /^https:\/\/[^\s]+$/i.test(source.url.trim())).map((source) => ({ label: typeof source.label === 'string' ? source.label.trim().slice(0, 80) : 'Download', quality: typeof source.quality === 'string' ? source.quality.trim().slice(0, 40) : 'Standard', resolution: typeof source.resolution === 'string' ? source.resolution.trim().slice(0, 20) : 'Auto', size: typeof source.size === 'string' ? source.size.trim().slice(0, 40) : 'Unknown', url: source.url.trim().slice(0, 1000) })) : undefined })) : [];
+  const episodes: AdminMovieInput['episodes'] = [];
+  if (Array.isArray(rawEpisodes)) {
+    for (const candidate of rawEpisodes.slice(0, 500) as unknown[]) {
+      if (!isRecord(candidate)) continue;
+      const season = candidate.season;
+      const episodeNumber = candidate.episode;
+      const rawTitle = candidate.title;
+      if (!Number.isInteger(season) || Number(season) < 1 || !Number.isInteger(episodeNumber) || Number(episodeNumber) < 1 || typeof rawTitle !== 'string') continue;
+
+      const episodeDownloads = Array.isArray(candidate.downloadSources)
+        ? (candidate.downloadSources as unknown[])
+            .filter((item) => isRecord(item) && typeof item.url === 'string' && /^https:\/\/[^\s]+$/i.test(item.url.trim()))
+            .slice(0, 20)
+            .map((item, index) => {
+              const source = item as Record<string, unknown>;
+              return {
+                label: typeof source.label === 'string' && source.label.trim() ? source.label.trim().slice(0, 80) : `Download ${index + 1}`,
+                quality: typeof source.quality === 'string' && source.quality.trim() ? source.quality.trim().slice(0, 40) : 'Standard',
+                resolution: typeof source.resolution === 'string' && source.resolution.trim() ? source.resolution.trim().slice(0, 20) : 'Auto',
+                size: typeof source.size === 'string' && source.size.trim() ? source.size.trim().slice(0, 40) : 'Unknown',
+                url: String(source.url).trim().slice(0, 500),
+              };
+            })
+        : undefined;
+      const episodeStreams = Array.isArray(candidate.streamingSources)
+        ? (candidate.streamingSources as unknown[])
+            .filter((item) => isRecord(item) && typeof item.url === 'string' && /^https:\/\/[^\s]+$/i.test(item.url.trim()))
+            .slice(0, 8)
+            .map((item, index) => {
+              const stream = item as Record<string, unknown>;
+              return {
+                label: typeof stream.label === 'string' && stream.label.trim() ? stream.label.trim().slice(0, 40) : `Server ${index + 1}`,
+                url: String(stream.url).trim().slice(0, 500),
+              };
+            })
+        : undefined;
+      episodes.push({
+        season: Number(season),
+        episode: Number(episodeNumber),
+        title: rawTitle.normalize('NFKC').trim().slice(0, 160),
+        url: typeof candidate.url === 'string' && /^https:\/\/[^\s]+$/i.test(candidate.url.trim()) ? candidate.url.trim().slice(0, 500) : undefined,
+        thumbnail: typeof candidate.thumbnail === 'string' && LOCAL_ASSET.test(candidate.thumbnail.trim()) ? candidate.thumbnail.trim() : undefined,
+        backdrop: typeof candidate.backdrop === 'string' && LOCAL_ASSET.test(candidate.backdrop.trim()) ? candidate.backdrop.trim() : undefined,
+        description: typeof candidate.description === 'string' ? candidate.description.normalize('NFKC').trim().slice(0, 1000) : undefined,
+        rating: typeof candidate.rating === 'number' && Number.isFinite(candidate.rating) ? Math.max(0, Math.min(10, candidate.rating)) : undefined,
+        streamingSources: episodeStreams,
+        downloadSources: episodeDownloads,
+        downloadStatus: candidate.downloadStatus === 'pending' ? 'pending' : 'available',
+      });
+    }
+  }
+  if (Array.isArray(rawEpisodes) && rawEpisodes.length > 500) errors.episodes = 'Use at most 500 episodes.';
   if (Array.isArray(rawSources) && rawSources.length > 12) errors.downloadSources = 'Use at most 12 sources.';
   if (Array.isArray(rawSources) && downloadSources.length !== rawSources.length) errors.downloadSources = 'Every download option needs a valid HTTPS target URL.';
   if (Array.isArray(rawStreaming) && rawStreaming.length > 8) errors.streamingSources = 'Use at most 8 streaming sources.';

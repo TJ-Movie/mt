@@ -4,8 +4,13 @@ export type SecurityEventName =
   | 'admin_request_rejected'
   | 'admin_movie_changed'
   | 'admin_asset_uploaded'
+  | 'download_redirect_allowed'
+  | 'download_redirect_denied'
   | 'outbound_redirect_allowed'
-  | 'outbound_redirect_denied';
+  | 'outbound_redirect_denied'
+  | 'public_rate_limit_exceeded'
+  | 'public_rate_limit_unavailable'
+  | 'public_request_rejected';
 
 type SecurityLevel = 'info' | 'warn' | 'error';
 type SecurityValue = string | number | boolean | null | undefined;

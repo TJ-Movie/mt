@@ -1,4 +1,7 @@
 import { getDatabase, getPublishedMovie } from '../../../../../db';
+import { readBoundedJson } from '../../../../../lib/security/request-body';
+import { enforcePublicRateLimit, isSameOriginRequest } from '../../../../../lib/security/public-rate-limit';
+import { logSecurityEvent } from '../../../../../lib/security/security-events';
 
 const MAX_NAME = 40;
 const MAX_BODY = 500;
@@ -6,7 +9,12 @@ const HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosnif
 
 function clean(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;
-  const normalized = value.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  let normalized = '';
+  for (const character of value.normalize('NFKC')) {
+      const code = character.codePointAt(0) ?? 0;
+      normalized += code <= 31 || code === 127 ? ' ' : character;
+  }
+  normalized = normalized.trim();
   return normalized.length > 0 && normalized.length <= max ? normalized : null;
 }
 
@@ -26,9 +34,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
 export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const slug = clean((await params).slug, 80);
   if (!slug) return Response.json({ error: 'Invalid movie.' }, { status: 400, headers: HEADERS });
+  if (!isSameOriginRequest(request)) {
+    logSecurityEvent('public_request_rejected', 'warn', { scope: 'comments', reason: 'cross_origin' });
+    return Response.json({ error: 'Request rejected.' }, { status: 403, headers: HEADERS });
+  }
+  const rateLimit = await enforcePublicRateLimit(request, 'comments', 5, 600);
+  if (!rateLimit.allowed) {
+    return Response.json({ error: 'Too many comments. Try again later.' }, { status: 429, headers: { ...HEADERS, ...rateLimit.headers } });
+  }
   const movie = await getPublishedMovie(slug);
   if (!movie) return Response.json({ error: 'Movie not found.' }, { status: 404, headers: HEADERS });
-  const input = await request.json().catch(() => null) as { name?: unknown; body?: unknown; website?: unknown } | null;
+  const rawInput = await readBoundedJson(request, 2_048);
+  const input = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
+    ? rawInput as { name?: unknown; body?: unknown; website?: unknown }
+    : null;
   if (input?.website) return Response.json({ ok: true }, { headers: HEADERS });
   const name = clean(input?.name, MAX_NAME);
   const body = clean(input?.body, MAX_BODY);

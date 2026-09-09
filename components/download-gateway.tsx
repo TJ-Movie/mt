@@ -1,11 +1,11 @@
 import { Download, ShieldCheck } from 'lucide-react';
 
 export type GatewaySource = {
+  id: string;
   label: string;
   quality: string;
   resolution: string;
   size: string;
-  url: string;
 };
 
 export function DownloadGateway({
@@ -18,6 +18,7 @@ export function DownloadGateway({
   description: _description,
   rating: _rating,
   sources,
+  sourceBasePath,
 }: {
   title: string;
   poster: string;
@@ -28,6 +29,7 @@ export function DownloadGateway({
   description?: string;
   rating?: number;
   sources: GatewaySource[];
+  sourceBasePath: string;
 }) {
   const groups = [
     ...sources
@@ -83,7 +85,7 @@ export function DownloadGateway({
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {options.map((source) => (
                     <div
-                      key={source.url}
+                      key={source.id}
                       className="min-w-0 rounded-xl border border-white/10 bg-black/15 p-4"
                     >
                       <div className="flex flex-wrap gap-2 text-xs text-white/65">
@@ -104,7 +106,7 @@ export function DownloadGateway({
                         {source.label}
                       </p>
                       <a
-                        href={source.url}
+                        href={`${sourceBasePath}/${source.id}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="mt-4 flex min-h-12 items-center justify-center gap-2 rounded-full bg-[#ef796d] px-4 py-3 text-sm font-semibold"

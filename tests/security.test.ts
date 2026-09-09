@@ -12,6 +12,8 @@ import { getRuntimeControls } from '../lib/security/runtime-controls.ts';
 import { requiresRightsReset, validateAdminMovieInput } from '../lib/admin/movie-input.ts';
 import { sanitizeUploadedImage } from '../lib/admin/image-sanitizer.ts';
 import { isAdminEmail, isAdminUserId } from '../lib/security/admin-allowlist.ts';
+import { isSameOriginRequest } from '../lib/security/public-rate-limit.ts';
+import { readBoundedJson } from '../lib/security/request-body.ts';
 
 const verifiedMovie: Movie = {
   ...movies[0],
@@ -37,6 +39,9 @@ void test('PublicMovie is an explicit allowlist and clones arrays', () => {
     'rightsExpiresAt',
     'rightsReviewer',
     'rightsReference',
+    'downloadSources',
+    'streamingSources',
+    'episodes',
   ]) assert.equal(keys.includes(forbidden), false);
   assert.notEqual(publicMovie.cast, verifiedMovie.cast);
   assert.notEqual(publicMovie.languages, verifiedMovie.languages);
@@ -118,6 +123,31 @@ void test('admin authorization is an explicit bounded allowlist', () => {
   assert.equal(isAdminUserId('eleventh', '1,2,3,4,5,6,7,8,9,10,eleventh'), false);
   assert.equal(isAdminEmail('Owner@Example.com', 'owner@example.com'), true);
   assert.equal(isAdminEmail('attacker@example.com', 'owner@example.com'), false);
+});
+
+void test('public writes require same-origin requests and bounded JSON', async () => {
+  assert.equal(isSameOriginRequest(new Request('https://flixlyra.test/api', {
+    method: 'POST',
+    headers: { origin: 'https://flixlyra.test', 'sec-fetch-site': 'same-origin' },
+  })), true);
+  assert.equal(isSameOriginRequest(new Request('https://flixlyra.test/api', {
+    method: 'POST',
+    headers: { origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' },
+  })), false);
+  assert.equal(isSameOriginRequest(new Request('https://flixlyra.test/api', { method: 'POST' })), false);
+
+  const valid = await readBoundedJson(new Request('https://flixlyra.test/api', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{"ok":true}',
+  }), 32);
+  assert.deepEqual(valid, { ok: true });
+  const oversized = await readBoundedJson(new Request('https://flixlyra.test/api', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '"abcdefghijklmnopqrstuvwxyz"',
+  }), 8);
+  assert.equal(oversized, null);
 });
 
 const validAdminMovie = {

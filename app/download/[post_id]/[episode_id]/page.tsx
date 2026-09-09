@@ -11,5 +11,5 @@ export default async function EpisodeDownloadPage({ params }: { params: Promise<
   if (!movie || movie.contentType !== 'series' || !episode) notFound();
   const gateway = await approvedGatewaySources(movie, episode);
   if (!gateway) notFound();
-  return <DownloadGateway {...gateway} />;
+  return <DownloadGateway {...gateway} sourceBasePath={`/download/${movie.slug}/${episode_id}/source`} />;
 }

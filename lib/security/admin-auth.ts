@@ -6,7 +6,10 @@ import { isAdminEmail, isAdminUserId } from './admin-allowlist';
 export { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
 function isAdminUser(user: ChatGPTUser): boolean {
-  return isAdminUserId(user.userId) || isAdminEmail(user.email);
+  const configuredIds = process.env.SUBLYRA_ADMIN_USER_IDS;
+  return configuredIds?.trim()
+    ? isAdminUserId(user.userId, configuredIds)
+    : isAdminEmail(user.email);
 }
 
 export async function getAdminUser(): Promise<ChatGPTUser | null> {

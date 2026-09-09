@@ -42,7 +42,8 @@ Production environment values are managed by Sites, not committed to source:
 |---|---|---|
 | `SUBLYRA_EXTERNAL_LINKS_ENABLED` | `false` | Denies every watch/Telegram redirect. |
 | `SUBLYRA_ADS_ENABLED` | `false` | Removes all advertisement placements. |
-| `SUBLYRA_ADMIN_USER_IDS` | owner user ID only | Allows the private `/studio` and admin APIs. |
+| `SUBLYRA_ADMIN_USER_IDS` | owner user ID only | Primary production allowlist for `/studio` and admin APIs. |
+| `SUBLYRA_ADMIN_EMAILS` | owner email only | Legacy fallback used only when no user-ID allowlist is configured. |
 
 Only the exact case-insensitive value `true` enables a feature. Missing, empty,
 or malformed values remain disabled. A switch change requires a saved-version
@@ -78,12 +79,16 @@ non-sensitive identifier only.
 
 ## Edge rate limiting
 
-The API advertises `RateLimit-Policy: 60;w=60`; the header is documentation, not
-enforcement. Before public access, configure the hosting edge to enforce:
+The catalogue API advertises `RateLimit-Policy: 60;w=60`; that header is
+documentation, not enforcement. Public comment and source-report writes use a
+distributed D1-backed limiter and fail closed if it is unavailable in
+production. Also configure the hosting edge to enforce:
 
 - `/api/movies`: 60 requests per source per rolling 60 seconds;
 - `/out/*`: 30 requests per source per rolling 60 seconds;
-- any future authentication/admin write: 5 failed attempts per 15 minutes and
+- `/api/movies/*/comments`: 5 writes per source per 10 minutes;
+- `/api/movies/*/reports`: 5 writes per source per hour;
+- authentication/admin writes: 5 failed attempts per 15 minutes and
   a separate low write limit.
 
 Return `429` with a bounded `Retry-After`, do not reflect request values, and log
@@ -129,7 +134,9 @@ and restore only after a new rights/security approval.
 
 The studio is intentionally absent from public navigation. Open `/studio`
 directly and authenticate with ChatGPT. Production access then requires an exact
-match in `SUBLYRA_ADMIN_USER_IDS`; authenticated non-admin users receive a 404.
+match in `SUBLYRA_ADMIN_USER_IDS`; older deployments may use
+`SUBLYRA_ADMIN_EMAILS` only when the user-ID allowlist is unset. Authenticated
+non-admin users receive a 404.
 Every write API also requires a same-origin request, `Sec-Fetch-Site`, and the
 `x-sublyra-action: admin-write` header. Request bodies are bounded and validated
 again on the server. Movie deletion is a recoverable soft archive.

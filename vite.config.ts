@@ -32,6 +32,11 @@ const localBindingConfig = {
         },
       ]
     : [],
+  observability: {
+    enabled: true,
+    logs: { enabled: true, head_sampling_rate: 1 },
+    traces: { enabled: true, head_sampling_rate: 0.01 },
+  },
 };
 
 export default defineConfig(async () => {

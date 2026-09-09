@@ -8,5 +8,5 @@ export default async function DownloadPage({ params }: { params: Promise<{ post_
   if (!movie) notFound();
   const gateway = await approvedGatewaySources(movie);
   if (!gateway) notFound();
-  return <DownloadGateway {...gateway} />;
+  return <DownloadGateway {...gateway} sourceBasePath={`/download/${movie.slug}/source`} />;
 }

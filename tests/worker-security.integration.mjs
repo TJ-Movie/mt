@@ -99,3 +99,19 @@ void test('studio and admin APIs deny unauthenticated or cross-site access', asy
   });
   assert.equal(crossSite.status, 403);
 });
+
+void test('anonymous write routes reject requests without same-origin browser evidence', async () => {
+  const comment = await request('/api/movies/the-last-lantern/comments', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'test', body: 'test' }),
+  });
+  assert.equal(comment.status, 403);
+
+  const report = await request('/api/movies/the-last-lantern/reports', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceKind: 'stream', sourceId: 's0', reason: 'test' }),
+  });
+  assert.equal(report.status, 403);
+});
