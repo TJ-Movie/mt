@@ -1,5 +1,162 @@
 'use client';
 import { useMemo, useState } from 'react';
 import { Flag, Play } from 'lucide-react';
-type Stream={label:string;url:string}; type Source={label:string;quality:string;resolution:string;size:string;url:string};
-export function MediaSourcesGateway({slug,title,streams,downloads}:{slug:string;title:string;streams:Stream[];downloads:Source[]}){const [active,setActive]=useState(0);const [notice,setNotice]=useState('');const groups=useMemo(()=>{const map=new Map<string,Source[]>();downloads.forEach(s=>map.set(s.resolution||'Auto',[...(map.get(s.resolution||'Auto')??[]),s]));return [...map.entries()]},[downloads]);async function report(source:Source|Stream,kind:'download'|'stream'){const reason=window.prompt('What is wrong with this source?');if(!reason)return;const r=await fetch(`/api/movies/${slug}/reports`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sourceKind:kind,sourceLabel:source.label,sourceUrl:source.url,reason})});setNotice(r.ok?'Report received. Thank you.':'The report could not be submitted.')}return <>{streams.length>0&&<section className="mx-auto max-w-[1380px] px-5 pb-10 sm:px-8 lg:px-12"><div className="mb-4 flex flex-wrap gap-2" role="tablist" aria-label="Streaming servers">{streams.map((s,i)=><button key={s.url} role="tab" aria-selected={active===i} onClick={()=>setActive(i)} className={`rounded-full px-5 py-2.5 text-sm font-semibold ${active===i?'bg-[#ef796d] text-white':'border border-white/15 text-white/65'}`}><Play size={14} className="mr-2 inline"/>{s.label}</button>)}</div><div className="aspect-video overflow-hidden rounded-2xl border border-white/10 bg-black"><iframe key={streams[active]?.url} title={`${title} - ${streams[active]?.label}`} src={streams[active]?.url} className="h-full w-full" allow="autoplay; fullscreen" allowFullScreen sandbox="allow-scripts allow-same-origin allow-presentation"/></div><button onClick={()=>report(streams[active],'stream')} className="mt-3 text-xs text-white/40"><Flag size={13} className="mr-2 inline"/>Report this server</button></section>}{groups.length>0&&<section className="mx-auto max-w-[1380px] px-5 pb-10 sm:px-8 lg:px-12"><p className="section-kicker text-[#ef796d]">Download options</p><div className="mt-5 space-y-4">{groups.map(([resolution,sources])=><article key={resolution} className="rounded-2xl border border-white/10 bg-white/[.035] p-5"><div className="flex items-center justify-between"><h3 className="font-serif text-2xl">{resolution}</h3><span className="text-xs text-white/45">{sources.length} {sources.length===1?'mirror':'mirrors'}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{sources.map((s)=><div key={s.url} className="rounded-xl border border-white/10 bg-black/15 p-4"><div className="flex flex-wrap gap-2 text-xs text-white/65"><span className="rounded-full bg-white/10 px-2.5 py-1">{s.quality||'Standard'}</span><span className="rounded-full bg-white/10 px-2.5 py-1">{s.size||'Unknown size'}</span></div><p className="mt-3 truncate text-sm font-semibold">{s.label}</p><a href={`/download/${slug}`} target="_blank" rel="noopener noreferrer" className="mt-3 flex w-full justify-center rounded-full bg-[#ef796d] px-4 py-2.5 text-sm font-semibold">Download</a><button onClick={()=>report(s,'download')} className="mt-2 w-full text-xs text-white/35"><Flag size={12} className="mr-1 inline"/>Report mirror</button></div>)}</div></article>)}</div></section>}{notice&&<p role="status" className="mx-auto max-w-[1380px] px-5 pb-6 text-sm text-white/55 sm:px-8 lg:px-12">{notice}</p>}</>}
+type Stream = { label: string; url: string };
+type Source = {
+  label: string;
+  quality: string;
+  resolution: string;
+  size: string;
+  url: string;
+};
+export function MediaSourcesGateway({
+  slug,
+  title,
+  streams,
+  downloads,
+}: {
+  slug: string;
+  title: string;
+  streams: Stream[];
+  downloads: Source[];
+}) {
+  const [active, setActive] = useState(0);
+  const [notice, setNotice] = useState('');
+  const groups = useMemo(() => {
+    const map = new Map<string, Source[]>();
+    downloads.forEach((s) =>
+      map.set(s.resolution || 'Auto', [
+        ...(map.get(s.resolution || 'Auto') ?? []),
+        s,
+      ]),
+    );
+    return [...map.entries()];
+  }, [downloads]);
+  async function report(source: Source | Stream, kind: 'download' | 'stream') {
+    const reason = window.prompt('What is wrong with this source?');
+    if (!reason) return;
+    const r = await fetch(`/api/movies/${slug}/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceKind: kind,
+        sourceLabel: source.label,
+        sourceUrl: source.url,
+        reason,
+      }),
+    });
+    setNotice(
+      r.ok
+        ? 'Report received. Thank you.'
+        : 'The report could not be submitted.',
+    );
+  }
+  return (
+    <>
+      {streams.length > 0 && (
+        <section className="mx-auto max-w-[1380px] px-4 pb-10 sm:px-8 lg:px-12">
+          <div
+            className="mb-4 flex flex-wrap gap-2"
+            role="tablist"
+            aria-label="Streaming servers"
+          >
+            {streams.map((s, i) => (
+              <button
+                key={s.url}
+                role="tab"
+                aria-selected={active === i}
+                onClick={() => setActive(i)}
+                className={`min-h-11 rounded-full px-5 py-2.5 text-sm font-semibold ${active === i ? 'bg-[#ef796d] text-white' : 'border border-white/15 text-white/65'}`}
+              >
+                <Play size={14} className="mr-2 inline" />
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <div className="aspect-video overflow-hidden rounded-2xl border border-white/10 bg-black">
+            <iframe
+              key={streams[active]?.url}
+              title={`${title} - ${streams[active]?.label}`}
+              src={streams[active]?.url}
+              className="h-full w-full"
+              allow="autoplay; fullscreen"
+              allowFullScreen
+              sandbox="allow-scripts allow-same-origin allow-presentation"
+            />
+          </div>
+          <button
+            onClick={() => report(streams[active], 'stream')}
+            className="mt-3 text-xs text-white/40"
+          >
+            <Flag size={13} className="mr-2 inline" />
+            Report this server
+          </button>
+        </section>
+      )}
+      {groups.length > 0 && (
+        <section className="mx-auto max-w-[1380px] px-4 pb-10 sm:px-8 lg:px-12">
+          <p className="section-kicker text-[#ef796d]">Download options</p>
+          <div className="mt-5 space-y-4">
+            {groups.map(([resolution, sources]) => (
+              <article
+                key={resolution}
+                className="rounded-2xl border border-white/10 bg-white/[.035] p-4 sm:p-5"
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="font-serif text-2xl">{resolution}</h3>
+                  <span className="text-xs text-white/45">
+                    {sources.length}{' '}
+                    {sources.length === 1 ? 'mirror' : 'mirrors'}
+                  </span>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {sources.map((s) => (
+                    <div
+                      key={s.url}
+                      className="rounded-xl border border-white/10 bg-black/15 p-4"
+                    >
+                      <div className="flex flex-wrap gap-2 text-xs text-white/65">
+                        <span className="rounded-full bg-white/10 px-2.5 py-1">
+                          {s.quality || 'Standard'}
+                        </span>
+                        <span className="rounded-full bg-white/10 px-2.5 py-1">
+                          {s.size || 'Unknown size'}
+                        </span>
+                      </div>
+                      <p className="mt-3 truncate text-sm font-semibold">
+                        {s.label}
+                      </p>
+                      <a
+                        href={`/download/${slug}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 flex min-h-12 w-full items-center justify-center rounded-full bg-[#ef796d] px-4 py-2.5 text-sm font-semibold"
+                      >
+                        Download
+                      </a>
+                      <button
+                        onClick={() => report(s, 'download')}
+                        className="mt-2 w-full text-xs text-white/35"
+                      >
+                        <Flag size={12} className="mr-1 inline" />
+                        Report mirror
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      {notice && (
+        <p
+          role="status"
+          className="mx-auto max-w-[1380px] px-4 pb-6 text-sm text-white/55 sm:px-8 lg:px-12"
+        >
+          {notice}
+        </p>
+      )}
+    </>
+  );
+}

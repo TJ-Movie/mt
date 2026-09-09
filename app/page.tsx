@@ -12,10 +12,26 @@ export default async function Home() {
   const catalogueSchema = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
-    name: 'Sublyra movie collection',
-    description: 'A multilingual cinema discovery collection with 10+ subtitle languages.',
-    url: 'https://sublyra-cinema.alive-stoat-6821.chatgpt.site',
-    mainEntity: publicMovies.map((movie) => ({ '@type': 'Movie', name: movie.title, dateCreated: String(movie.year), genre: movie.genre })),
+    name: 'Flixlyra movie collection',
+    description:
+      'A multilingual cinema discovery collection with 10+ subtitle languages.',
+    url: 'https://flixlyra.com',
+    mainEntity: publicMovies.map((movie) => ({
+      '@type': 'Movie',
+      name: movie.title,
+      dateCreated: String(movie.year),
+      genre: movie.genre,
+    })),
   };
-  return <><script suppressHydrationWarning nonce={nonce} type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(catalogueSchema) }}/><MovieBrowser movies={publicMovies} adsEnabled={adsEnabled}/></>;
+  return (
+    <>
+      <script
+        suppressHydrationWarning
+        nonce={nonce}
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(catalogueSchema) }}
+      />
+      <MovieBrowser movies={publicMovies} adsEnabled={adsEnabled} />
+    </>
+  );
 }

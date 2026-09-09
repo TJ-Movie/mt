@@ -13,17 +13,25 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://sublyra-cinema.alive-stoat-6821.chatgpt.site'),
-  title: 'Sublyra — One Film. Many Languages.',
-  description: 'Discover global cinema through 10+ subtitle languages in a calm, premium movie experience.',
+  metadataBase: new URL('https://flixlyra.com'),
+  title: 'Flixlyra — One Film. Many Languages.',
+  description:
+    'Discover global cinema through 10+ subtitle languages in a calm, premium movie experience.',
   openGraph: {
-    title: 'Sublyra — One Film. Many Languages. Global Audience.',
+    title: 'Flixlyra — One Film. Many Languages. Global Audience.',
     description: 'Discover global cinema through 10+ subtitle languages.',
-    images: [{ url: '/og.png', width: 1680, height: 945, alt: 'Sublyra cinematic coastline and lantern' }],
+    images: [
+      {
+        url: '/og.png',
+        width: 1680,
+        height: 945,
+        alt: 'Flixlyra cinematic coastline and lantern',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Sublyra — One Film. Many Languages.',
+    title: 'Flixlyra — One Film. Many Languages.',
     description: 'Discover global cinema through 10+ subtitle languages.',
     images: ['/og.png'],
   },

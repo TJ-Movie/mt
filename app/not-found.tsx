@@ -1,3 +1,26 @@
 import { ArrowLeft, Film } from 'lucide-react';
 
-export default function NotFound() { return <main className="grid min-h-screen place-items-center bg-[#171815] px-5 text-center text-white"><div><Film className="mx-auto text-[#ef796d]" size={34}/><p className="mt-6 text-xs font-semibold uppercase tracking-[.22em] text-white/40">404 · Scene missing</p><h1 className="mt-4 font-serif text-5xl tracking-[-.04em]">This film is not in our collection.</h1><p className="mx-auto mt-4 max-w-lg text-base leading-7 text-white/50">The listing may have moved, or its availability may be under review.</p><a href="/" className="mt-8 inline-flex items-center gap-2 rounded-full bg-[#ef796d] px-6 py-3.5 text-sm font-semibold"><ArrowLeft size={16}/> Return to discovery</a></div></main>; }
+export default function NotFound() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#171815] px-5 text-center text-white">
+      <div>
+        <Film className="mx-auto text-[#ef796d]" size={34} />
+        <p className="mt-6 text-xs font-semibold uppercase tracking-[.22em] text-white/40">
+          404 · Scene missing
+        </p>
+        <h1 className="mt-4 font-serif text-4xl tracking-[-.04em] sm:text-5xl">
+          This film is not in our collection.
+        </h1>
+        <p className="mx-auto mt-4 max-w-lg text-base leading-7 text-white/50">
+          The listing may have moved, or its availability may be under review.
+        </p>
+        <a
+          href="/"
+          className="mt-8 inline-flex min-h-12 items-center gap-2 rounded-full bg-[#ef796d] px-6 py-3.5 text-sm font-semibold"
+        >
+          <ArrowLeft size={16} /> Return to discovery
+        </a>
+      </div>
+    </main>
+  );
+}

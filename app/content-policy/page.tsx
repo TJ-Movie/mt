@@ -1,6 +1,46 @@
 import type { Metadata } from 'next';
 import { InfoPage, InfoSection } from '../../components/info-page';
 
-export const metadata: Metadata = { title: 'Content Policy — Sublyra', description: 'Sublyra policy for films, subtitles and delivery links.' };
+export const metadata: Metadata = {
+  title: 'Content Policy — Flixlyra',
+  description: 'Flixlyra policy for films, subtitles and delivery links.',
+};
 
-export default function ContentPolicyPage() { return <InfoPage eyebrow="Content policy" title="Cinema delivered responsibly." intro="Sublyra is a discovery platform. Film, subtitle and delivery records should be published only when their source and distribution rights have been checked."><InfoSection title="Authorised content only"><p>Do not publish copyrighted films, subtitle files, posters or download links without the necessary licence or permission. A Telegram link is not evidence that distribution is authorised.</p></InfoSection><InfoSection title="Verified destinations"><p>Official watch links must use approved YouTube destinations. Delivery links must use approved Telegram destinations. Unknown hosts, insecure links and malformed URLs are blocked.</p></InfoSection><InfoSection title="Accurate listings"><p>Movie titles, credits, ratings, languages and availability should be reviewed before publication. Placeholder records must not be presented as real releases.</p></InfoSection><InfoSection title="Removal process"><p>When a rights holder or visitor reports a listing, disable its delivery links while the claim is reviewed. Restore access only after verification.</p></InfoSection></InfoPage>; }
+export default function ContentPolicyPage() {
+  return (
+    <InfoPage
+      eyebrow="Content policy"
+      title="Cinema delivered responsibly."
+      intro="Flixlyra is a discovery platform. Film, subtitle and delivery records should be published only when their source and distribution rights have been checked."
+    >
+      <InfoSection title="Authorised content only">
+        <p>
+          Do not publish copyrighted films, subtitle files, posters or download
+          links without the necessary licence or permission. A Telegram link is
+          not evidence that distribution is authorised.
+        </p>
+      </InfoSection>
+      <InfoSection title="Verified destinations">
+        <p>
+          Official watch links must use approved YouTube destinations. Delivery
+          links must use approved Telegram destinations. Unknown hosts, insecure
+          links and malformed URLs are blocked.
+        </p>
+      </InfoSection>
+      <InfoSection title="Accurate listings">
+        <p>
+          Movie titles, credits, ratings, languages and availability should be
+          reviewed before publication. Placeholder records must not be presented
+          as real releases.
+        </p>
+      </InfoSection>
+      <InfoSection title="Removal process">
+        <p>
+          When a rights holder or visitor reports a listing, disable its
+          delivery links while the claim is reviewed. Restore access only after
+          verification.
+        </p>
+      </InfoSection>
+    </InfoPage>
+  );
+}

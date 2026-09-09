@@ -13,8 +13,10 @@
 
 :root { --background:#f2efe9; --foreground:#181916; --primary:#de5d4f; --primary-foreground:#ffffff; --border:rgba(24,25,22,.15); --input:rgba(24,25,22,.16); --ring:#de5d4f; --muted:#dedad2; --muted-foreground:#67675f; --secondary:#e5e1da; --secondary-foreground:#181916; --destructive:#b42318; --popover:#f2efe9; --popover-foreground:#181916; --radius:.75rem; }
 * { box-sizing:border-box; }
-html { scroll-behavior:smooth; background:var(--background); }
-body { margin:0; background:var(--background); color:var(--foreground); font-family:var(--font-geist-sans),Arial,sans-serif; }
+html { width:100%; scroll-behavior:smooth; background:var(--background); overflow-x:hidden; }
+body { width:100%; min-width:0; margin:0; background:var(--background); color:var(--foreground); font-family:var(--font-geist-sans),Arial,sans-serif; overflow-x:hidden; }
+img,video,iframe { max-width:100%; }
+input,select,textarea,button { font:inherit; }
 select option { background:#f2efe9; color:#181916; }
 .font-serif { font-family: Georgia, 'Times New Roman', serif; }
 .section-kicker { font-size:.75rem; font-weight:700; letter-spacing:.22em; text-transform:uppercase; color:#b43a2e; }
@@ -32,3 +34,7 @@ main details.group > div > a:hover { background:rgba(239,121,109,.18); color:#ff
 ::-webkit-scrollbar { width:10px; height:5px; }
 ::-webkit-scrollbar-track { background:#f2efe9; }
 ::-webkit-scrollbar-thumb { background:#aaa69d; border-radius:99px; }
+@media (max-width:640px) {
+  .info-content > section + section { margin-top:2rem; padding-top:2rem; }
+  main { overflow-wrap:anywhere; }
+}
