@@ -1,6 +1,6 @@
 import 'server-only';
 import { getCloudflareAccessUser, type AccessUser } from '../../app/cloudflare-access-auth';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { isAdminEmail, isAdminUserId } from './admin-allowlist';
 
 export { isAdminEmail, isAdminUserId } from './admin-allowlist';
@@ -19,6 +19,7 @@ export async function getAdminUser(): Promise<AccessUser | null> {
 
 export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
   const user = await getCloudflareAccessUser();
-  if (!user || !isAdminUser(user)) notFound();
+  if (!user) redirect(`/cdn-cgi/access/login?returnTo=${encodeURIComponent(_returnTo)}`);
+  if (!isAdminUser(user)) notFound();
   return user;
 }
