@@ -27,7 +27,12 @@ export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
     // custom hostname's /cdn-cgi/access/login path is not served by Sites and
     // otherwise returns a Cloudflare 404 before Access can start the flow.
     const requestHeaders = await headers();
-    const host = requestHeaders.get('x-forwarded-host') ?? requestHeaders.get('host') ?? 'flixlyra.com';
+    const forwardedHost = requestHeaders.get('x-forwarded-host') ?? requestHeaders.get('host') ?? 'flixlyra.com';
+    // Sites may expose its internal *.chatgpt.site host in forwarded headers
+    // even when the visitor used the custom domain. Keep the Access callback
+    // on the public Flixlyra hostname so the authorization cookie is scoped
+    // correctly.
+    const host = forwardedHost.endsWith('.chatgpt.site') ? 'flixlyra.com' : forwardedHost;
     const protocol = requestHeaders.get('x-forwarded-proto') ?? 'https';
     const returnUrl = `${protocol}://${host}${_returnTo.startsWith('/') ? _returnTo : `/${_returnTo}`}`;
     const teamDomain = process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN ?? 'throbbing-limit-326e.cloudflareaccess.com';
