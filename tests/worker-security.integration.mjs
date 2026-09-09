@@ -85,6 +85,13 @@ void test('studio and admin APIs deny unauthenticated or cross-site access', asy
   assert.equal(unauthenticated.status, 404);
   assert.match(unauthenticated.headers.get('cache-control') ?? '', /no-store/);
 
+  const unauthenticatedIngest = await request('/api/admin/ingest/yts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ imdbIds: ['tt0499549'] }),
+  });
+  assert.equal(unauthenticatedIngest.status, 404);
+
   const crossSite = await request('/api/admin/movies', {
     method: 'POST',
     headers: {

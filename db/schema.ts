@@ -35,6 +35,9 @@ export const moviesTable = sqliteTable('movies', {
   updatedBy: text('updated_by').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  imdbId: text('imdb_id'),
+  storageKey: text('storage_key'),
+  ingestStatus: text('ingest_status').notNull().default('none'),
 }, (table) => [
   uniqueIndex('idx_movies_slug_unique').on(table.slug),
   index('idx_movies_publication_featured').on(table.publicationStatus, table.featured),

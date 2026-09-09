@@ -44,6 +44,9 @@ type MovieRow = {
   updated_by: string;
   created_at: string;
   updated_at: string;
+  imdb_id: string | null;
+  storage_key: string | null;
+  ingest_status: string;
 };
 
 export type AdminMovie = Movie & {
@@ -51,6 +54,9 @@ export type AdminMovie = Movie & {
   revision: number;
   createdAt: string;
   updatedAt: string;
+  imdbId?: string;
+  storageKey?: string;
+  ingestStatus?: string;
 };
 
 export type AuditEvent = {
@@ -170,6 +176,9 @@ function rowToMovie(row: MovieRow): AdminMovie {
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    imdbId: row.imdb_id ?? undefined,
+    storageKey: row.storage_key ?? undefined,
+    ingestStatus: row.ingest_status,
   };
 }
 
@@ -177,7 +186,7 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at`;
+  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {
@@ -280,6 +289,44 @@ export async function createAdminMovie(input: AdminMovieInput, user: ChatGPTUser
   const movieId = Number(result.meta.last_row_id);
   await auditStatement(database, user, 'movie_created', movieId, input.slug, ['all_fields'], now).run();
   logSecurityEvent('admin_movie_changed', 'info', { action: 'created', slug: input.slug });
+  return movieId;
+}
+
+export type YtsIngestRecord = {
+  imdbId: string;
+  title: string;
+  year: number;
+  synopsis: string;
+  rating: number;
+  poster: string;
+  storageKey: string;
+  torrent: { url: string; quality: string; resolution: string; size: string; label: string };
+};
+
+export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGPTUser): Promise<number> {
+  const database = getDatabase();
+  const now = new Date().toISOString();
+  const slugBase = record.title.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || `movie-${record.imdbId}`;
+  const existing = await database.prepare('SELECT id FROM movies WHERE imdb_id = ? LIMIT 1').bind(record.imdbId).first<{ id: number }>();
+  const values = [
+    slugBase, record.title.slice(0, 200), '', record.synopsis.slice(0, 5000), record.year,
+    '', Math.max(0, Math.min(10, record.rating)), 'movie', '', '', '[]', '[]', record.poster, record.poster, 0,
+    'draft', 'pending', null, null, null, null, null, null, null, null, null,
+    JSON.stringify({ status: 'pending', sources: [record.torrent] }), '[]', '[]', 1,
+    user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
+  ];
+  if (existing) {
+    await database.prepare(`UPDATE movies SET title = ?, description = ?, release_year = ?, rating = ?, poster = ?, backdrop = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
+      .bind(record.title.slice(0, 200), record.synopsis.slice(0, 5000), record.year, Math.max(0, Math.min(10, record.rating)), record.poster, record.poster, JSON.stringify({ status: 'pending', sources: [record.torrent] }), record.storageKey, user.userId, now, existing.id).run();
+    return existing.id;
+  }
+  const result = await database.prepare(`INSERT INTO movies (
+    slug, title, tagline, description, release_year, runtime, rating, content_type, genre, director, cast_json, languages_json, poster, backdrop, featured,
+    publication_status, rights_status, rights_verified_at, rights_expires_at, rights_reviewer, rights_reference, official_watch_url, telegram_url, telegram_channel, subtitle_url,
+    download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status
+  ) VALUES (${Array.from({ length: 36 }, () => '?').join(', ')})`).bind(...values).run();
+  const movieId = Number(result.meta.last_row_id);
+  await auditStatement(database, user, 'yts_movie_queued', movieId, slugBase, ['yts_metadata', 'storage_key'], now).run();
   return movieId;
 }
 
