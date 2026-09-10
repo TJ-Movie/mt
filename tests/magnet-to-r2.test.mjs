@@ -1,8 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { primaryMp4, sourceMagnet, transferLimits, hasDiskBudget } from '../scripts/magnet-to-r2.mjs';
+import { primaryMp4, sourceMagnet, transferLimits, hasDiskBudget, uploadStream } from '../scripts/magnet-to-r2.mjs';
+import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+
+test('torrent async stream becomes an AWS-compatible binary Node stream', async () => {
+  const source = (async function* () { yield Buffer.from('video'); yield Buffer.from('-bytes'); })();
+  const stream = uploadStream(source);
+  assert.ok(stream instanceof Readable);
+  assert.equal(stream.readableObjectMode, false);
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  assert.equal(Buffer.concat(chunks).toString(), 'video-bytes');
+});
 
 test('selects largest MP4 and ignores samples, trailers and other containers', () => {
   assert.equal(primaryMp4([

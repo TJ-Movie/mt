@@ -5,12 +5,18 @@ import { join, dirname, basename, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { Readable } from 'node:stream';
 import WebTorrent from 'webtorrent';
 import { S3Client, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 
 const exec = promisify(execFile);
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
+// WebTorrent returns a streamx stream, which AWS Upload does not recognize as
+// a native Node Readable. Adapt its async iterator without buffering the film.
+export function uploadStream(source) {
+  return Readable.from(source, { objectMode: false, highWaterMark: 256 * 1024 });
+}
 export function transferLimits(environment = process.env) {
   const number = (name, fallback, min, max) => {
     const value = Number(environment[name] ?? fallback);
@@ -129,7 +135,7 @@ async function transfer(row, s3, bucket, limits) {
       if (!hasDiskBudget(torrent.length, disk.bavail * disk.bsize, limits)) throw new Error('Torrent exceeds size limit or available disk budget');
       torrent.deselect(0, torrent.pieces.length - 1, false);
       file.select();
-      stream = file.createReadStream();
+      stream = uploadStream(file.createReadStream());
       // Verify the container instead of relabeling arbitrary files as MP4.
       const header = await new Promise((resolve, reject) => {
         const probe = file.createReadStream({ start: 0, end: 11 });
