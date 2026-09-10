@@ -173,3 +173,33 @@ test('admin approval fields validate and persist through PATCH before the gatewa
   assert.equal((await worker.fetch(new Request(`https://flixlyra.com/api/download/resolve?slug=${movie.slug}`), {}, { waitUntil() {} })).status, 302);
   assert.equal((await patch(approved)).status, 409, 'stale revision cannot overwrite approval');
 });
+
+test('movie buttons and legacy download routes never fall back to a torrent source', async () => {
+  const movie = sqlite.prepare("SELECT id, slug FROM movies WHERE imdb_id='tt1234567'").get();
+  const torrent = 'https://yts.gg/torrent/download/fixture';
+  sqlite.prepare("UPDATE movies SET ingest_status='queued', download_sources_json=?, telegram_url=? WHERE id=?")
+    .run(JSON.stringify({ status: 'available', sources: [{ label: 'YTS 1080p', quality: '1080p', resolution: '1080p', size: '2 GB', url: torrent }] }), torrent, movie.id);
+  const get = path => worker.fetch(new Request(`https://flixlyra.com${path}`), {}, { waitUntil() {} });
+  for (const path of [`/download/${movie.slug}/source/s0`, `/out/${movie.slug}/telegram`, `/api/download/resolve?slug=${movie.slug}`]) {
+    const response = await get(path);
+    assert.equal(response.status, 404, path);
+    assert.equal(response.headers.get('location'), null);
+  }
+  const unavailable = await (await get(`/download/${movie.slug}`)).text();
+  assert.ok(unavailable.includes('Movie download not available yet'));
+  assert.ok(!unavailable.includes(torrent));
+  const film = await (await get(`/movie/${movie.slug}`)).text();
+  assert.ok(film.includes('Download pending'));
+  assert.ok(!film.includes('pending-download-redirect'));
+  assert.ok(!film.includes(torrent));
+  sqlite.prepare("UPDATE movies SET ingest_status='ready' WHERE id=?").run(movie.id);
+  for (const path of [`/download/${movie.slug}/source/s0`, `/out/${movie.slug}/telegram`]) {
+    const response = await get(path);
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get('location'), `/api/download/resolve?slug=${movie.slug}`);
+  }
+  delete process.env.R2_SECRET_ACCESS_KEY;
+  const failedSigning = await get(`/api/download/resolve?slug=${movie.slug}`);
+  assert.equal(failedSigning.status, 503);
+  assert.equal(failedSigning.headers.get('location'), null, 'signing failure must not fall back to torrent');
+});

@@ -30,6 +30,9 @@ async function approvedStoredSources(
   movie: Movie,
   episode?: GatewayEpisode,
 ): Promise<StoredGatewaySource[] | null> {
+  // Film downloads are exclusively served by the R2 MP4 gateway.
+  // Do not expose torrent ingestion inputs through legacy source routes.
+  if (!episode && movie.contentType !== 'series') return null;
   const controls = getRuntimeControls();
   const verifiedAt = movie.rightsVerifiedAt ? Date.parse(movie.rightsVerifiedAt) : NaN;
   const expiresAt = movie.rightsExpiresAt ? Date.parse(movie.rightsExpiresAt) : NaN;

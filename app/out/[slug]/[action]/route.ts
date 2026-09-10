@@ -3,6 +3,7 @@ import { resolveOutboundDestination, type OutboundAction } from '../../../../lib
 import { getRuntimeControls } from '../../../../lib/security/runtime-controls';
 import { logSecurityEvent } from '../../../../lib/security/security-events';
 import { approvedGatewaySources } from '../../../../lib/download-gateway';
+import { readyVideo } from '../../../../lib/r2-download';
 
 const NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, max-age=0',
@@ -18,6 +19,10 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
   if (!movie || (action !== 'watch' && action !== 'telegram')) {
     logSecurityEvent('outbound_redirect_denied', 'warn', { slug, action, reason: 'not_found' });
     return new Response('Not found', { status: 404, headers: NO_STORE_HEADERS });
+  }
+  if (action === 'telegram' && movie.contentType !== 'series') {
+    if (!await readyVideo(movie.slug)) return new Response('Movie download unavailable', { status: 404, headers: NO_STORE_HEADERS });
+    return new Response(null, { status: 302, headers: { ...NO_STORE_HEADERS, Location: `/api/download/resolve?slug=${encodeURIComponent(movie.slug)}` } });
   }
   if (action === 'telegram' && !movie.telegramUrl && (movie.downloadSources?.length ?? 0) > 0) {
     const gateway = await approvedGatewaySources(movie);

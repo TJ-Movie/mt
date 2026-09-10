@@ -1,5 +1,5 @@
 import { getPublishedMovie } from '../../../../../db';
-import { resolveApprovedGatewaySource } from '../../../../../lib/download-gateway';
+import { readyVideo } from '../../../../../lib/r2-download';
 import { logSecurityEvent } from '../../../../../lib/security/security-events';
 
 const HEADERS = {
@@ -12,7 +12,8 @@ const HEADERS = {
 export async function GET(_request: Request, context: { params: Promise<{ post_id: string; source_id: string }> }) {
   const { post_id: slug, source_id: sourceId } = await context.params;
   const movie = await getPublishedMovie(slug);
-  const target = movie ? await resolveApprovedGatewaySource(movie, sourceId) : null;
+  const target = movie && /^s(?:0|[1-9]\d?)$/.test(sourceId) && await readyVideo(movie.slug)
+    ? `/api/download/resolve?slug=${encodeURIComponent(movie.slug)}` : null;
   if (!target) {
     logSecurityEvent('download_redirect_denied', 'warn', { slug, reason: 'not_found_or_ineligible' });
     return new Response('Not found', { status: 404, headers: HEADERS });

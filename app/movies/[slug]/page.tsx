@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { MediaSourcesGateway } from '../../../components/media-sources-gateway';
-import { PendingDownloadRedirect } from '../../../components/pending-download-redirect';
 import { readyVideo } from '../../../lib/r2-download';
 import { notFound } from 'next/navigation';
 import {
@@ -155,7 +154,7 @@ export default async function MoviePage({
                   >
                     <Download size={17} /> Download MP4
                   </a>
-                ) : telegramAvailable ? (
+                  ) : movie.contentType === 'series' && telegramAvailable ? (
                   <details className="group relative min-[430px]:w-auto">
                     <summary className="flex min-h-12 cursor-pointer list-none items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold">
                       <Download size={17} /> Download{' '}
@@ -347,10 +346,6 @@ export default async function MoviePage({
         />
       </div>
       <CastList cast={movie.cast} />
-      <PendingDownloadRedirect
-        href={directVideo ? `/api/download/resolve?slug=${encodeURIComponent(movie.slug)}` : `/download/${movie.slug}`}
-        active={Boolean(directVideo) || movie.downloadStatus !== 'pending'}
-      />
       <MovieComments slug={movie.slug} />
     </main>
   );
