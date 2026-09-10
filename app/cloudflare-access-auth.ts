@@ -33,6 +33,7 @@ export async function getCloudflareAccessUser(): Promise<AccessUser | null> {
   const issuer = `https://${domain}`;
   try {
     const { payload } = await jwtVerify(token, jwksFor(domain), {
+      algorithms: ['RS256'],
       issuer,
       audience: process.env.CLOUDFLARE_ACCESS_AUD?.trim() || DEFAULT_AUDIENCE,
     });

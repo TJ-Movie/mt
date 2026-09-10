@@ -79,7 +79,18 @@ void test('external links fail closed and unsupported methods are denied', async
 void test('studio and admin APIs deny unauthenticated or cross-site access', async () => {
   const studio = await request('/studio');
   assert.ok(studio.status === 307 || studio.status === 308);
-  assert.match(studio.headers.get('location') ?? '', /^\/signin-with-chatgpt\?return_to=/);
+  const login = new URL(studio.headers.get('location'));
+  assert.equal(login.origin, 'https://throbbing-limit-326e.cloudflareaccess.com');
+  assert.equal(login.pathname, '/cdn-cgi/access/login/flixlyra.com');
+  assert.equal(login.searchParams.get('redirect_url'), '/studio');
+  assert.equal(login.searchParams.get('kid'), '04674bc890cc0929ee2939705d16ccbdd4f38e0c66aa7bcf678a4f200e5022be');
+
+  const forged = await request('/studio', { headers: {
+    'Cf-Access-Jwt-Assertion': 'not-a-valid-jwt',
+    'Cf-Access-Authenticated-User-Email': 'tharushajayasooriya@gmail.com',
+  } });
+  assert.equal(forged.status, 404);
+  assert.equal(forged.headers.get('location'), null);
 
   const unauthenticated = await request('/api/admin/movies');
   assert.equal(unauthenticated.status, 404);
@@ -104,7 +115,8 @@ void test('studio and admin APIs deny unauthenticated or cross-site access', asy
     },
     body: '{}',
   });
-  assert.equal(crossSite.status, 403);
+  // Legacy OpenAI identity headers are no longer authentication evidence.
+  assert.equal(crossSite.status, 404);
 });
 
 void test('anonymous write routes reject requests without same-origin browser evidence', async () => {

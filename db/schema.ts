@@ -38,6 +38,11 @@ export const moviesTable = sqliteTable('movies', {
   imdbId: text('imdb_id'),
   storageKey: text('storage_key'),
   ingestStatus: text('ingest_status').notNull().default('none'),
+  r2StorageKey: text('r2_storage_key'),
+  r2VideoBytes: integer('r2_video_bytes'),
+  transferToken: text('transfer_token'),
+  transferLeaseUntil: integer('transfer_lease_until'),
+  transferError: text('transfer_error'),
 }, (table) => [
   uniqueIndex('idx_movies_slug_unique').on(table.slug),
   index('idx_movies_publication_featured').on(table.publicationStatus, table.featured),

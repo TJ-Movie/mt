@@ -25,13 +25,11 @@ export async function requireAdminUser(_returnTo: string): Promise<AccessUser> {
   const user = await getCloudflareAccessUser();
   if (!user) {
     const requestHeaders = await headers();
-    const forwardedHost = requestHeaders.get('x-forwarded-host') ?? requestHeaders.get('host') ?? 'flixlyra.com';
-    // Sites may expose its internal *.chatgpt.site host in forwarded headers
-    // even when the visitor used the custom domain. Keep the Access callback
-    // on the public Flixlyra hostname so the authorization cookie is scoped
-    // correctly.
-    const host = forwardedHost.endsWith('.chatgpt.site') ? 'flixlyra.com' : forwardedHost;
-    const path = _returnTo.startsWith('/') ? _returnTo : `/${_returnTo}`;
+    // A rejected assertion must fail closed, not start another login loop.
+    if (requestHeaders.has('Cf-Access-Jwt-Assertion')) notFound();
+    // Access protects this canonical hostname, including visits via workers.dev.
+    const host = 'flixlyra.com';
+    const path = _returnTo.startsWith('/') && !_returnTo.startsWith('//') ? _returnTo : '/studio';
     const teamDomain = process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN ?? 'throbbing-limit-326e.cloudflareaccess.com';
     const audience = process.env.CLOUDFLARE_ACCESS_AUD?.trim() || DEFAULT_ACCESS_AUDIENCE;
     const params = new URLSearchParams({ kid: audience, redirect_url: path });

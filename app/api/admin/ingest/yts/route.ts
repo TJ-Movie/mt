@@ -6,7 +6,8 @@ const DEFAULT_IMDB_IDS = [
   'tt0137523', 'tt0110912', 'tt0133093', 'tt15239678', 'tt0111161', 'tt0109830', 'tt9362722',
   'tt0482571', 'tt0114369', 'tt2582802', 'tt0848228', 'tt1745960', 'tt7286456',
 ];
-const YTS_ENDPOINT = 'https://yts.mx/api/v2/movie_details.json';
+// The YTS API announces this replacement in its @meta.migration.new_base.
+const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
 type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; torrents?: unknown };
@@ -28,12 +29,38 @@ function idsFromBody(body: unknown): string[] {
   return [...new Set(body.imdbIds.filter((id): id is string => typeof id === 'string' && /^tt\d{7,10}$/.test(id.trim())).map((id) => id.trim()))].slice(0, 20);
 }
 
+async function torrentBytes(response: Response): Promise<Uint8Array> {
+  const reader = response.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 2 * 1024 * 1024) throw new Error('TORRENT_TOO_LARGE');
+      chunks.push(value);
+    }
+  } finally { await reader.cancel(); }
+  if (!size) throw new Error('TORRENT_EMPTY');
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
 async function fetchJson(imdbId: string): Promise<YtsMovie> {
-  const response = await fetch(`${YTS_ENDPOINT}?imdb_id=${encodeURIComponent(imdbId)}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+  let response: Response;
+  try {
+    response = await fetch(`${YTS_ENDPOINT}?imdb_id=${encodeURIComponent(imdbId)}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw new Error('YTS_UNREACHABLE: Metadata service could not be reached.');
+  }
   if (!response.ok) throw new Error(`YTS_${response.status}`);
-  const payload: unknown = await response.json();
+  const payload: unknown = await response.json().catch(() => null);
   const movie = isRecord(payload) && isRecord(payload.data) ? payload.data.movie : null;
   if (!isRecord(movie)) throw new Error('YTS_INVALID_RESPONSE');
+  if (movie.imdb_code !== imdbId || !text(movie.title, 200)) throw new Error('YTS_MOVIE_MISMATCH');
   return movie as YtsMovie;
 }
 
@@ -53,7 +80,7 @@ export async function POST(request: Request) {
       const object = await fetch(torrentUrl, { signal: AbortSignal.timeout(20_000) });
       if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
       const storageKey = `assets/${crypto.randomUUID()}/data.bin`;
-      await bucket.put(storageKey, object.body, { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
+      await bucket.put(storageKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
       const record: YtsIngestRecord = {
         imdbId,
         title: text(movie.title, 200),

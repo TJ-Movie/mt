@@ -77,10 +77,12 @@ function IngestionPanel({
   onMoviesRefreshed: (movies: AdminMovie[]) => void;
 }) {
   const [running, setRunning] = useState(false);
+  const [failures, setFailures] = useState<Array<{ imdbId: string; error: string }>>([]);
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
 
   async function triggerIngestion() {
     setRunning(true);
+    setFailures([]);
     setNotice({ tone: 'success', text: 'Ingestion in progress — fetching the YTS batch and securing torrent assets…' });
     try {
       const response = await fetch('/api/admin/ingest/yts', {
@@ -100,14 +102,18 @@ function IngestionPanel({
         throw new Error(error);
       }
       const results = payload && typeof payload === 'object' && 'results' in payload && Array.isArray(payload.results)
-        ? payload.results as Array<{ status?: unknown }>
+        ? payload.results as Array<{ status?: unknown; imdbId?: unknown; error?: unknown }>
         : [];
       const queued = results.filter((result) => result.status === 'queued').length;
       const failed = results.length - queued;
+      setFailures(results.filter((result) => result.status !== 'queued').map((result) => ({
+        imdbId: typeof result.imdbId === 'string' ? result.imdbId : 'Unknown film',
+        error: typeof result.error === 'string' ? result.error : 'No error details returned.',
+      })));
       setNotice({
         tone: failed ? 'error' : 'success',
         text: failed
-          ? `Ingestion finished: ${queued} queued, ${failed} failed. Review the response details or retry after correcting the source.`
+          ? `Ingestion finished: ${queued} queued, ${failed} failed. See the details below.`
           : `Ingestion complete: ${queued} movies queued for rights review.`,
       });
       const refreshed = await fetch('/api/admin/movies', { credentials: 'same-origin' });
@@ -151,6 +157,15 @@ function IngestionPanel({
         <output className={`mt-5 block rounded-xl border px-4 py-3 text-sm ${notice.tone === 'success' ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : 'border-rose-400/25 bg-rose-400/10 text-rose-200'}`}>
           {notice.text}
         </output>
+      )}
+      {failures.length > 0 && (
+        <ul className="mt-4 space-y-2 text-sm text-rose-200" aria-label="Ingestion errors">
+          {failures.map((failure, index) => (
+            <li key={`${failure.imdbId}-${index}`} className="break-words">
+              <span className="font-mono">{failure.imdbId}</span>: {failure.error}
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );

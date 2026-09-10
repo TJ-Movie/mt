@@ -24,7 +24,7 @@ export function isSameOriginRequest(request: Request): boolean {
 
 export async function enforcePublicRateLimit(
   request: Request,
-  scope: 'comments' | 'source-reports',
+  scope: 'comments' | 'source-reports' | 'downloads',
   limit: number,
   windowSeconds: number,
 ): Promise<RateLimitResult> {
@@ -38,8 +38,8 @@ export async function enforcePublicRateLimit(
     const database = getDatabase();
     const hash = await clientHash(request, windowStart);
     await database
-      .prepare('DELETE FROM public_rate_limits WHERE window_start < ?')
-      .bind(windowStart - windowSeconds * 2)
+      .prepare('DELETE FROM public_rate_limits WHERE scope = ? AND window_start < ?')
+      .bind(scope, windowStart - windowSeconds * 2)
       .run();
     const row = await database
       .prepare(`INSERT INTO public_rate_limits

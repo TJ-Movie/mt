@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { MediaSourcesGateway } from '../../../components/media-sources-gateway';
 import { PendingDownloadRedirect } from '../../../components/pending-download-redirect';
+import { readyVideo } from '../../../lib/r2-download';
 import { notFound } from 'next/navigation';
 import {
   ArrowLeft,
@@ -74,6 +75,7 @@ export default async function MoviePage({
   ).ok;
   const sourcesAvailable =
     controls.externalLinksEnabled && movie.rightsStatus === 'verified';
+  const directVideo = await readyVideo(movie.slug);
   return (
     <main className="min-h-screen bg-[#171815] text-white">
       <section className="relative min-h-[680px] overflow-hidden sm:min-h-[720px]">
@@ -146,7 +148,14 @@ export default async function MoviePage({
                     <Play size={17} /> Official link pending
                   </span>
                 )}
-                {telegramAvailable ? (
+                {directVideo ? (
+                  <a
+                    href={`/api/download/resolve?slug=${encodeURIComponent(movie.slug)}`}
+                    className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold"
+                  >
+                    <Download size={17} /> Download MP4
+                  </a>
+                ) : telegramAvailable ? (
                   <details className="group relative min-[430px]:w-auto">
                     <summary className="flex min-h-12 cursor-pointer list-none items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold">
                       <Download size={17} /> Download{' '}
@@ -339,8 +348,8 @@ export default async function MoviePage({
       </div>
       <CastList cast={movie.cast} />
       <PendingDownloadRedirect
-        href={`/download/${movie.slug}`}
-        active={movie.downloadStatus !== 'pending'}
+        href={directVideo ? `/api/download/resolve?slug=${encodeURIComponent(movie.slug)}` : `/download/${movie.slug}`}
+        active={Boolean(directVideo) || movie.downloadStatus !== 'pending'}
       />
       <MovieComments slug={movie.slug} />
     </main>

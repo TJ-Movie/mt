@@ -311,7 +311,7 @@ export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGP
   const values = [
     slugBase, record.title.slice(0, 200), '', record.synopsis.slice(0, 5000), record.year,
     '', Math.max(0, Math.min(10, record.rating)), 'movie', '', '', '[]', '[]', record.poster, record.poster, 0,
-    'draft', 'pending', null, null, null, null, null, null, null, null, null,
+    'draft', 'pending', null, null, null, null, null, null, null, null,
     JSON.stringify({ status: 'pending', sources: [record.torrent] }), '[]', '[]', 1,
     user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
   ];
