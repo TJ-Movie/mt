@@ -47,9 +47,18 @@ export function sourceMagnet(json) {
 }
 
 async function sql(command) {
-  const { stdout } = await exec(process.execPath, ['node_modules/wrangler/bin/wrangler.js',
+  let stdout;
+  try {
+    ({ stdout } = await exec(process.execPath, ['node_modules/wrangler/bin/wrangler.js',
     'd1', 'execute', 'flixlyra-db', '--remote', '--config', 'wrangler.json', '--json', '--command', command],
-  { maxBuffer: 4 * 1024 * 1024, windowsHide: true, timeout: 60000 });
+    { maxBuffer: 4 * 1024 * 1024, windowsHide: true, timeout: 60000 }));
+  } catch (error) {
+    let diagnostic = String(error.stdout || error.stderr || 'D1 command failed without a diagnostic');
+    for (const name of ['CLOUDFLARE_API_TOKEN', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY']) {
+      if (process.env[name]) diagnostic = diagnostic.replaceAll(process.env[name], '[redacted]');
+    }
+    throw new Error(`D1 access failed: ${diagnostic.slice(-2000)}`);
+  }
   const response = JSON.parse(stdout);
   if (response.some(r => r.success === false)) throw new Error('D1 query failed');
   return response.flatMap(r => r.results || []);
