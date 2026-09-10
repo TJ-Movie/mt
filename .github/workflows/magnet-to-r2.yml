@@ -4,7 +4,7 @@ on:
     types: [magnet-to-r2]
   workflow_dispatch:
   schedule:
-    - cron: '23 2 * * *'
+    - cron: '23 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -37,7 +37,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           SUBLYRA_ADMIN_URL: ${{ secrets.SUBLYRA_ADMIN_URL }}
-          TRANSFER_BATCH_SIZE: '3'
+          TRANSFER_BATCH_SIZE: '20'
           TRANSFER_TIMEOUT_SECONDS: '2400'
           TRANSFER_RUN_SECONDS: '9000'
           TRANSFER_MAX_BYTES: '4294967296'
@@ -53,4 +53,4 @@ jobs:
         env:
           RESULT: ${{ job.status }}
         run: |
-          printf 'Transfer job: %s\nLimits: 3 films, 4 GiB per torrent, 40 minutes per film. See step logs for record IDs. No media or credentials saved as artifacts.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Transfer job: %s\nBulk mode: up to 20 films within the run budget; hourly runs continue the queue. 4 GiB per torrent, 40 minutes per film. No media or credentials saved as artifacts.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"

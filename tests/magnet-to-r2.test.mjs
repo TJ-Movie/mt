@@ -52,6 +52,7 @@ test('workflow uses trusted triggers, pinned actions, scoped secrets and finite 
   assert.deepEqual(workflow.on.repository_dispatch.types, ['magnet-to-r2']);
   assert.ok('workflow_dispatch' in workflow.on);
   assert.equal(workflow.on.schedule.length, 1);
+  assert.equal(workflow.on.schedule[0].cron, '23 * * * *');
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   const job = workflow.jobs.transfer;
@@ -61,7 +62,8 @@ test('workflow uses trusted triggers, pinned actions, scoped secrets and finite 
   assert.equal(step.env.R2_ACCOUNT_ID, '${{ secrets.CLOUDFLARE_ACCOUNT_ID }}');
   assert.equal(step.env.CLOUDFLARE_API_TOKEN, '${{ secrets.CLOUDFLARE_API_TOKEN }}');
   const limits = transferLimits(step.env);
-  assert.ok(limits.batch * (limits.timeout + 300) < limits.run);
+  assert.equal(limits.batch, 20);
+  assert.ok(limits.timeout + 300 < limits.run);
   assert.ok(limits.run < step['timeout-minutes'] * 60);
   assert.doesNotMatch(step.run, /--watch|client_payload/);
 });
