@@ -71,6 +71,36 @@ type DraftMovie = Omit<AdminMovie, 'id' | 'createdAt' | 'updatedAt'> & {
 };
 type FieldErrors = Record<string, string>;
 
+function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string } | null>(null);
+  const [error, setError] = useState('');
+  async function check() {
+    setBusy(true); setError(''); setResult(null);
+    try {
+      const response = await fetch(`/api/admin/movies/${id}/download-status`, { credentials: 'same-origin', cache: 'no-store' });
+      const data = await response.json() as { error?: string; transfer?: unknown; blockers?: unknown; eligible?: unknown; note?: unknown };
+      if (!response.ok) throw new Error(data.error || 'Check failed. Refresh your admin session and retry.');
+      if (typeof data.transfer !== 'string' || !Array.isArray(data.blockers) || !data.blockers.every(x => typeof x === 'string') || typeof data.eligible !== 'boolean' || typeof data.note !== 'string') throw new Error('Invalid status response. Refresh and retry.');
+      setResult({ transfer: data.transfer, blockers: data.blockers, eligible: data.eligible, note: data.note });
+    } catch (err) { setError(err instanceof Error ? err.message : 'Check failed.'); }
+    finally { setBusy(false); }
+  }
+  return <section className="rounded-xl border border-white/15 p-4 md:col-span-2" aria-label="Direct download readiness">
+    <h3 className="font-medium">Direct download readiness</h3>
+    <p className="mt-2 text-sm text-white/60">Save your changes first. This checks the saved rights, transfer, R2 video and Worker signing configuration.</p>
+    <Button type="button" variant="outline" className="mt-3" disabled={!id || busy} onClick={check}>{busy ? 'Checking...' : 'Check saved download status'}</Button>
+    <div aria-live="polite" className="mt-3 text-sm">
+      {error && <p className="text-red-300">{error}</p>}
+      {result && <><p>Transfer: {result.transfer}</p>
+        <ul className="mt-2 list-disc pl-5 text-amber-200">{result.blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
+        <p className="mt-2 text-white/60">{result.note}</p>
+        {result.eligible && <a className="mt-3 inline-block underline" href={`/api/download/resolve?slug=${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer">Test direct download</a>}
+      </>}
+    </div>
+  </section>;
+}
+
 function IngestionPanel({
   onMoviesRefreshed,
 }: {
@@ -681,7 +711,24 @@ export function MovieStudio({
                       </NativeSelectOption>
                     </NativeSelect>
                   </Field>
-                  <Field label="Rights expires at">
+                  <Field label="Rights status">
+                    <NativeSelect aria-label="Rights status" value={draft.rightsStatus} onChange={e => update('rightsStatus', e.target.value as DraftMovie['rightsStatus'])} className="w-full">
+                      <NativeSelectOption value="pending">Pending review</NativeSelectOption>
+                      <NativeSelectOption value="verified">Verified</NativeSelectOption>
+                      <NativeSelectOption value="blocked">Blocked</NativeSelectOption>
+                    </NativeSelect>
+                  </Field>
+                  <Field label="Rights reviewer">
+                    <Input aria-label="Rights reviewer" maxLength={120} value={draft.rightsReviewer ?? ''} onChange={e => update('rightsReviewer', e.target.value)} placeholder="Name or email of the person approving distribution" />
+                  </Field>
+                  <Field label="Rights evidence reference" wide>
+                    <Input aria-label="Rights evidence reference" maxLength={160} value={draft.rightsReference ?? ''} onChange={e => update('rightsReference', e.target.value)} placeholder="Your license, agreement or ownership evidence reference" />
+                  </Field>
+                  <Field label="Rights verified at (UTC)">
+                    <Input aria-label="Rights verified at (UTC)" type="datetime-local" step="1" value={draft.rightsVerifiedAt?.slice(0, 19) ?? ''} onChange={e => update('rightsVerifiedAt', e.target.value ? new Date(e.target.value + 'Z').toISOString() : undefined)} />
+                    <Button type="button" variant="outline" className="mt-2" onClick={() => update('rightsVerifiedAt', new Date().toISOString())}>Set verification time to now</Button>
+                  </Field>
+                  <Field label="Rights expires at (12:00 UTC)">
                     <Input
                       type="date"
                       value={localDate(draft.rightsExpiresAt)}
@@ -690,6 +737,8 @@ export function MovieStudio({
                       }
                     />
                   </Field>
+                  <p className="text-sm text-white/60 md:col-span-2">Only select Verified after reviewing distribution rights. Reviewer, evidence, verification time and future expiry are required. Changing an approved delivery source or evidence requires saving Pending first, then reviewing and verifying again.</p>
+                  <DownloadReadiness key={`${selectedId}-${draft.revision}`} id={draft.id} slug={selected.slug} />
                   <Field label="Official YouTube URL" wide>
                     <Input
                       maxLength={500}

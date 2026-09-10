@@ -106,3 +106,70 @@ test('R2 gateway checks rights and signs a private two-minute attachment URL', a
   stored.delete(key);
   assert.equal((await resolve()).status, 503, 'missing object is denied');
 });
+
+test('Studio diagnostics are private and report saved rights, transfer, signing and object failures', async () => {
+  const row = sqlite.prepare("SELECT id, r2_storage_key FROM movies WHERE imdb_id='tt1234567'").get();
+  const check = (assertion = token) => worker.fetch(new Request(`https://flixlyra.com/api/admin/movies/${row.id}/download-status`, {
+    headers: { 'Cf-Access-Jwt-Assertion': assertion },
+  }), {}, { waitUntil() {} });
+  assert.equal((await check('invalid')).status, 404);
+  delete process.env.R2_SECRET_ACCESS_KEY;
+  sqlite.prepare("UPDATE movies SET rights_status='pending', ingest_status='queued' WHERE id=?").run(row.id);
+  const response = await check();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('cache-control'), /no-store/);
+  const blocked = await response.json();
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.transfer, 'queued');
+  assert.ok(blocked.blockers.some(x => x.includes('Rights status')));
+  assert.ok(blocked.blockers.some(x => x.includes('signing credentials')));
+  assert.ok(blocked.blockers.some(x => x.includes('transfer is queued')));
+  assert.ok(!JSON.stringify(blocked).includes(row.r2_storage_key));
+  process.env.R2_SECRET_ACCESS_KEY = 'test-secret-key';
+  sqlite.prepare("UPDATE movies SET rights_status='verified', ingest_status='ready' WHERE id=?").run(row.id);
+  assert.equal((await (await check()).json()).objectVerified, false);
+  stored.set(row.r2_storage_key, 'video');
+  const ready = await (await check()).json();
+  assert.equal(ready.eligible, true);
+  assert.equal(ready.objectVerified, true);
+  sqlite.prepare("UPDATE movies SET rights_expires_at=? WHERE id=?").run(new Date(Date.now() - 1000).toISOString(), row.id);
+  assert.ok((await (await check()).json()).blockers.some(x => x.includes('expiry')));
+});
+
+test('Studio exposes all approval fields and download diagnostics behind Access', async () => {
+  const response = await worker.fetch(new Request('https://flixlyra.com/studio', {
+    headers: { 'Cf-Access-Jwt-Assertion': token },
+  }), {}, { waitUntil() {} });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  for (const label of ['Rights status', 'Rights reviewer', 'Rights evidence reference', 'Rights verified at (UTC)', 'Set verification time to now', 'Check saved download status']) {
+    assert.ok(html.includes(label), `missing ${label}`);
+  }
+  assert.ok(!html.includes('test-secret-key'));
+});
+
+test('admin approval fields validate and persist through PATCH before the gateway permits a download', async () => {
+  const list = await worker.fetch(new Request('https://flixlyra.com/api/admin/movies', { headers: { 'Cf-Access-Jwt-Assertion': token } }), {}, { waitUntil() {} });
+  const movie = (await list.json()).movies.find(x => x.imdbId === 'tt1234567');
+  sqlite.prepare("UPDATE movies SET rights_status='pending' WHERE id=?").run(movie.id);
+  const approved = { ...movie, poster: '/og.png', backdrop: '/og.png', genre: 'Drama', languages: ['English'],
+    downloadSources: [], rightsStatus: 'verified', rightsReviewer: 'Test reviewer', rightsReference: 'TEST-LICENSE-001',
+    rightsVerifiedAt: new Date(Date.now() - 60000).toISOString(), rightsExpiresAt: new Date(Date.now() + 86400000).toISOString() };
+  const patch = body => worker.fetch(new Request(`https://flixlyra.com/api/admin/movies/${movie.id}`, {
+    method: 'PATCH', headers: { 'Cf-Access-Jwt-Assertion': token, origin: 'https://flixlyra.com', 'content-type': 'application/json', 'x-sublyra-action': 'admin-write' },
+    body: JSON.stringify({ revision: movie.revision, movie: body }),
+  }), {}, { waitUntil() {} });
+  const invalid = await patch({ ...approved, rightsReference: '' });
+  assert.equal(invalid.status, 400);
+  assert.ok((await invalid.json()).fields.rightsReference);
+  const saved = await patch(approved);
+  assert.equal(saved.status, 200, await saved.clone().text());
+  const row = sqlite.prepare('SELECT rights_status, rights_reviewer, rights_reference, rights_verified_at, rights_expires_at FROM movies WHERE id=?').get(movie.id);
+  assert.equal(row.rights_status, 'verified');
+  assert.equal(row.rights_reviewer, approved.rightsReviewer);
+  assert.equal(row.rights_reference, approved.rightsReference);
+  assert.equal(row.rights_verified_at, approved.rightsVerifiedAt);
+  assert.equal(row.rights_expires_at, approved.rightsExpiresAt);
+  assert.equal((await worker.fetch(new Request(`https://flixlyra.com/api/download/resolve?slug=${movie.slug}`), {}, { waitUntil() {} })).status, 302);
+  assert.equal((await patch(approved)).status, 409, 'stale revision cannot overwrite approval');
+});

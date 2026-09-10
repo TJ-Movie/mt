@@ -2,18 +2,20 @@ import 'server-only';
 import { AwsClient } from 'aws4fetch';
 import { getDatabase, getMediaBucket, getPublishedMovie } from '../db';
 import { getRuntimeControls } from './security/runtime-controls';
+import { rightsBlockers, validVideoRecord } from './download-readiness';
+
+export function r2SigningConfigured(): boolean {
+  return Boolean(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY &&
+    /^[a-f0-9]{32}$/.test(process.env.R2_ACCOUNT_ID ?? '') && /^[a-z0-9-]+$/.test(process.env.R2_BUCKET_NAME ?? ''));
+}
 
 export async function readyVideo(slug: string) {
   const movie = await getPublishedMovie(slug);
-  const now = Date.now();
-  if (!movie || !getRuntimeControls().externalLinksEnabled || movie.rightsStatus !== 'verified' ||
-      !movie.rightsReviewer?.trim() || !movie.rightsReference?.trim() ||
-      !movie.rightsVerifiedAt || !(Date.parse(movie.rightsVerifiedAt) <= now) ||
-      !movie.rightsExpiresAt || !(Date.parse(movie.rightsExpiresAt) > now)) return null;
+  if (!movie || !getRuntimeControls().externalLinksEnabled || rightsBlockers(movie).length) return null;
   const row = await getDatabase().prepare(
     "SELECT r2_storage_key, r2_video_bytes FROM movies WHERE slug = ? AND ingest_status = 'ready'",
   ).bind(slug).first<{ r2_storage_key: string; r2_video_bytes: number }>();
-  if (!row || !/^assets\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/data\.bin$/.test(row.r2_storage_key) || row.r2_video_bytes <= 0) return null;
+  if (!row || !validVideoRecord(row.r2_storage_key, row.r2_video_bytes)) return null;
   return { movie, key: row.r2_storage_key, bytes: row.r2_video_bytes };
 }
 
