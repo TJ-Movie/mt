@@ -3,8 +3,6 @@ on:
   repository_dispatch:
     types: [magnet-to-r2]
   workflow_dispatch:
-  schedule:
-    - cron: '23 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -53,4 +51,4 @@ jobs:
         env:
           RESULT: ${{ job.status }}
         run: |
-          printf 'Transfer job: %s\nBulk mode: up to 20 films within the run budget; hourly runs continue the queue. 4 GiB per torrent, 40 minutes per film. No media or credentials saved as artifacts.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Transfer job: %s\nRequested batch mode: up to 20 films within the run budget. No recurring schedule. Check remaining queued/failed records before calling the batch complete. 4 GiB per torrent, 40 minutes per film. No media or credentials saved as artifacts.\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
