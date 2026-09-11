@@ -452,7 +452,7 @@ export function MovieBrowser({
                         {movie.title}
                       </h3>
                       <p className="mt-1.5 text-sm text-black/45">
-                        {movie.year} · {movie.genre} · {movie.runtime}
+                        {movie.year} · {movie.runtime}
                       </p>
                     </div>
                     <span className="shrink-0 pt-1 text-xs font-semibold">

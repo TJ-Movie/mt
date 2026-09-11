@@ -21,6 +21,7 @@ import { getRuntimeControls } from '../../../lib/security/runtime-controls';
 import { MovieComments } from '../../../components/movie-comments';
 import { CastList } from '../../../components/cast-list';
 import { TrailerModal } from '../../../components/trailer-modal';
+import { DownloadOptionsDialog } from '../../../components/download-options-dialog';
 import { ShareButtons } from '../../../components/share-buttons';
 
 export function generateStaticParams() {
@@ -148,12 +149,7 @@ export default async function MoviePage({
                   </span>
                 )}
                 {directVideo ? (
-                  <a
-                    href={`/api/download/resolve?slug=${encodeURIComponent(movie.slug)}`}
-                    className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold"
-                  >
-                    <Download size={17} /> Download MP4
-                  </a>
+                  <DownloadOptionsDialog slug={movie.slug} title={movie.title} sources={movie.downloadSources ?? []} />
                   ) : movie.contentType === 'series' && telegramAvailable ? (
                   <details className="group relative min-[430px]:w-auto">
                     <summary className="flex min-h-12 cursor-pointer list-none items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold">
