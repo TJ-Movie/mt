@@ -176,7 +176,7 @@ export function MovieBrowser({
         <section id="top" className="max-w-3xl mx-auto py-16 px-4 text-center">
           <span className="bg-neutral-900/80 text-neutral-400 border border-neutral-800 px-3 py-1 rounded-full text-xs font-mono inline-block mb-4">SYSTEM STATUS: CATALOG PREPARATION</span>
           <h1 className="text-3xl md:text-5xl font-bold text-white tracking-tight">Curated Cinema Arriving Soon</h1>
-          <p className="text-neutral-400 text-sm md:text-base mt-4 max-w-xl mx-auto">Our catalog is undergoing quality verification for dual 1080p/720p streams. Check back shortly.</p>
+          <p className="text-neutral-400 text-sm md:text-base mt-4 max-w-xl mx-auto">Our catalog is being curated for a premium multi-device cinematic experience. Check back shortly.</p>
         </section>
         <section id="collection" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mt-12 max-w-6xl mx-auto px-4" aria-label="Upcoming catalogue">
           {Array.from({ length: 6 }, (_, index) => (
