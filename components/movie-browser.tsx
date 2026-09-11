@@ -156,18 +156,43 @@ export function MovieBrowser({
 
   if (!heroMovies.length)
     return (
-      <main className="grid min-h-screen place-items-center bg-[#f2efe9] px-5 text-center text-[#181916]">
-        <div>
-          <p className="font-serif text-4xl">
-            Flixlyra<span className="text-[#b43a2e]">.</span>
-          </p>
-          <h1 className="mt-8 font-serif text-4xl tracking-[-.04em] sm:text-5xl">
-            The next collection is being prepared.
-          </h1>
-          <p className="mx-auto mt-4 max-w-lg text-base leading-7 text-black/50">
-            Please return soon for newly curated multilingual cinema.
-          </p>
-        </div>
+      <main className="min-h-screen overflow-hidden bg-neutral-950 text-white">
+        <header className="border-b border-white/10 bg-neutral-950/90 backdrop-blur-xl">
+          <div className="mx-auto flex h-16 max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
+            <a href="#top" className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl">
+              Flixlyra<span className="text-[#ef796d]">.</span>
+            </a>
+            <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-white/60 lg:flex">
+              <a className="text-white" href="#top">Discover</a>
+              <a href="#collection">Movies</a>
+              <a href="#languages">Languages</a>
+              <a href="/content-policy">Content policy</a>
+            </nav>
+            <a href="#top" className="ml-auto hidden items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-white/80 sm:flex">
+              <Search size={15} /> Search
+            </a>
+          </div>
+        </header>
+        <section id="top" className="max-w-3xl mx-auto py-16 px-4 text-center">
+          <span className="bg-neutral-900/80 text-neutral-400 border border-neutral-800 px-3 py-1 rounded-full text-xs font-mono inline-block mb-4">SYSTEM STATUS: CATALOG PREPARATION</span>
+          <h1 className="text-3xl md:text-5xl font-bold text-white tracking-tight">Curated Cinema Arriving Soon</h1>
+          <p className="text-neutral-400 text-sm md:text-base mt-4 max-w-xl mx-auto">Our catalog is undergoing quality verification for dual 1080p/720p streams. Check back shortly.</p>
+        </section>
+        <section id="collection" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mt-12 max-w-6xl mx-auto px-4" aria-label="Upcoming catalogue">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className="aspect-[2/3] bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-xl shadow-lg animate-pulse overflow-hidden relative">
+              <div className="bg-gradient-to-tr from-cyan-500/10 via-transparent to-blue-500/10 w-full h-full" />
+            </div>
+          ))}
+        </section>
+        <footer className="mx-auto mt-16 flex max-w-6xl flex-col gap-4 border-t border-white/10 px-4 py-7 text-sm text-white/40 sm:flex-row sm:justify-between">
+          <span>© 2026 Flixlyra. Cinema in every language.</span>
+          <span className="flex flex-wrap gap-x-5 gap-y-3">
+            <a href="/privacy">Privacy</a>
+            <a href="/content-policy">Content policy</a>
+            <a href="/advertise">Advertise</a>
+          </span>
+        </footer>
       </main>
     );
 
