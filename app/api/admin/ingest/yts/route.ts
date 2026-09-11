@@ -121,7 +121,7 @@ export async function POST(request: Request) {
       const poster = await persistImage(posterUrl, bucket);
       const backdrop = await persistImage(backdropUrl, bucket, poster);
       const tmdbCast = tmdbCredits && Array.isArray(tmdbCredits.cast) ? tmdbCredits.cast : null;
-      const castCandidates = (tmdbCast || (Array.isArray(movie.cast) ? movie.cast : [])).slice(0, 20).flatMap((entry) => {
+      const castCandidates = (tmdbCast || (Array.isArray(movie.cast) ? movie.cast : [])).slice(0, 6).flatMap((entry) => {
         if (!isRecord(entry)) return [];
         const actor = text(entry.name, 120);
         if (!actor) return [];

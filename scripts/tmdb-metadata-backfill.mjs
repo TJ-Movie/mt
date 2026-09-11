@@ -23,7 +23,7 @@ for (const row of rows) {
   const detail = await tmdb(`/movie/${movieId}?append_to_response=credits`);
   const credits = detail.credits?.cast ?? [];
   const cast = [];
-  for (const member of credits.slice(0, 20)) {
+  for (const member of credits.slice(0, 6)) {
     if (!member.name) continue;
     cast.push({ actor: member.name, character: member.character || undefined, image: member.profile_path ? `https://image.tmdb.org/t/p/original${member.profile_path}` : '/og.png' });
   }

@@ -40,6 +40,8 @@ export type ValidationResult =
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LOCAL_ASSET = /^\/(?:og\.png|media\/movie-art\/[a-f0-9-]{36}\.(?:jpg|png))$/;
+const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
+const validImage = (value: string) => LOCAL_ASSET.test(value) || REMOTE_IMAGE.test(value);
 
 type RightsControlledFields = Pick<AdminMovieInput,
   'rightsStatus' | 'rightsExpiresAt' | 'rightsReference' | 'officialWatchUrl' | 'telegramUrl' | 'telegramChannel'>;
@@ -130,13 +132,13 @@ export function validateAdminMovieInput(input: unknown, now = Date.now()): Valid
   if (!Number.isInteger(year) || Number(year) < 1888 || Number(year) > maximumYear) errors.year = `Use a year from 1888 to ${maximumYear}.`;
   if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0 || rating > 10) errors.rating = 'Use a rating from 0 to 10.';
 
-  const rawCast = Array.isArray(source.cast) ? source.cast.slice(0, 100) : [];
-  const cast = rawCast.map((member) => typeof member === 'string' ? member.normalize('NFKC').trim().slice(0, 120) : member && typeof member === 'object' && typeof member.actor === 'string' ? { actor: member.actor.normalize('NFKC').trim().slice(0, 120), character: typeof member.character === 'string' ? member.character.normalize('NFKC').trim().slice(0, 120) : undefined, image: typeof member.image === 'string' ? member.image.trim().slice(0, 500) : undefined } : '').filter((member) => typeof member === 'string' ? member.length > 0 : member.actor.length > 0);
+  const rawCast = Array.isArray(source.cast) ? source.cast.slice(0, 6) : [];
+  const cast = rawCast.map((member) => typeof member === 'string' ? member.normalize('NFKC').trim().slice(0, 120) : member && typeof member === 'object' && typeof member.actor === 'string' ? { actor: member.actor.normalize('NFKC').trim().slice(0, 120), character: typeof member.character === 'string' ? member.character.normalize('NFKC').trim().slice(0, 120) : undefined, image: typeof member.image === 'string' && validImage(member.image.trim()) ? member.image.trim().slice(0, 500) : undefined } : '').filter((member) => typeof member === 'string' ? member.length > 0 : member.actor.length > 0);
   const languages = listField(source, 'languages', allLanguages, errors);
   const poster = textField(source, 'poster', 1, 200, errors);
   const backdrop = textField(source, 'backdrop', 1, 200, errors);
-  if (!LOCAL_ASSET.test(poster)) errors.poster = 'Upload a local JPG/PNG image or use /og.png.';
-  if (!LOCAL_ASSET.test(backdrop)) errors.backdrop = 'Upload a local JPG/PNG image or use /og.png.';
+  if (!validImage(poster)) errors.poster = 'Use /og.png, a local upload, or an approved TMDB/Cloudflare HTTPS image URL.';
+  if (!validImage(backdrop)) errors.backdrop = 'Use /og.png, a local upload, or an approved TMDB/Cloudflare HTTPS image URL.';
 
   const publicationStatus = source.publicationStatus;
   const rightsStatus = source.rightsStatus;
