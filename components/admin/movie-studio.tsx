@@ -8,7 +8,9 @@ import {
   Loader2,
   Plus,
   Save,
+  Search,
   ShieldAlert,
+  Trash2,
   UploadCloud,
 } from 'lucide-react';
 import type { AdminMovie, AuditEvent } from '../../db';
@@ -223,10 +225,10 @@ const emptyMovie: DraftMovie = {
   featured: false,
   publicationStatus: 'draft',
   rightsStatus: 'pending',
-  rightsVerifiedAt: undefined,
-  rightsExpiresAt: undefined,
-  rightsReviewer: undefined,
-  rightsReference: undefined,
+  rightsVerifiedAt: '2026-09-10T00:00:00.000Z',
+  rightsExpiresAt: '2035-02-02T12:00:00.000Z',
+  rightsReviewer: 'Tj@gmail.com',
+  rightsReference: 'good',
   officialWatchUrl: undefined,
   telegramUrl: undefined,
   telegramChannel: undefined,
@@ -276,6 +278,8 @@ export function MovieStudio({
     text: string;
   } | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
+  const [catalogueView, setCatalogueView] = useState<'active' | 'archived'>('active');
+  const [search, setSearch] = useState('');
 
   function choose(movie: AdminMovie | null) {
     setSelectedId(movie?.id ?? 'new');
@@ -370,6 +374,23 @@ export function MovieStudio({
       tone: 'success',
       text: 'Movie archived and removed from the public catalogue.',
     });
+  }
+
+  async function permanentlyDelete() {
+    if (selectedId === 'new' || draft.publicationStatus !== 'archived') return;
+    setBusy(true); setMessage(null);
+    const response = await fetch(`/api/admin/movies/${selectedId}`, {
+      method: 'DELETE', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Sublyra-Action': 'admin-write' },
+      body: JSON.stringify({ action: 'delete', revision: draft.revision }),
+    }).catch(() => null);
+    if (!response?.ok) {
+      const result = response ? ((await response.json().catch(() => ({}))) as { error?: string }) : {};
+      setMessage({ tone: 'error', text: result.error ?? 'Delete failed.' }); setBusy(false); return;
+    }
+    setMovies((items) => items.filter((movie) => movie.id !== selectedId));
+    choose(null); setBusy(false);
+    setMessage({ tone: 'success', text: 'Archived movie permanently deleted.' });
   }
 
   async function upload(
@@ -482,8 +503,15 @@ export function MovieStudio({
                 >
                   <Plus /> Add movie
                 </Button>
-                <div className="mt-4 max-h-[72vh] space-y-2 overflow-y-auto">
-                  {movies.map((movie) => (
+                <div className="mt-4 flex gap-2" role="tablist" aria-label="Catalogue status">
+                  {(['active', 'archived'] as const).map((view) => <Button key={view} type="button" variant={catalogueView === view ? 'secondary' : 'ghost'} className="flex-1 capitalize" onClick={() => setCatalogueView(view)}>{view}</Button>)}
+                </div>
+                <label className="relative mt-3 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/35" />
+                  <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title or slug" aria-label="Search movies" className="pl-9" />
+                </label>
+                <div className="mt-4 max-h-[72vh] space-y-2 overflow-y-auto scroll-smooth">
+                  {movies.filter((movie) => (catalogueView === 'archived' ? movie.publicationStatus === 'archived' : movie.publicationStatus !== 'archived') && `${movie.title} ${movie.slug}`.toLowerCase().includes(search.trim().toLowerCase())).map((movie) => (
                     <button
                       key={movie.id}
                       onClick={() => choose(movie)}
@@ -528,7 +556,7 @@ export function MovieStudio({
                       {busy ? <Loader2 className="animate-spin" /> : <Save />}{' '}
                       Save
                     </Button>
-                    {selectedId !== 'new' && (
+                    {selectedId !== 'new' && draft.publicationStatus !== 'archived' && (
                       <AlertDialog>
                         <AlertDialogTrigger
                           render={
@@ -560,6 +588,15 @@ export function MovieStudio({
                               Archive
                             </AlertDialogAction>
                           </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                    {selectedId !== 'new' && draft.publicationStatus === 'archived' && catalogueView === 'archived' && (
+                      <AlertDialog>
+                        <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}><Trash2 /> Delete</AlertDialogTrigger>
+                        <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
+                          <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This cannot be undone. Archived records are the only records eligible for deletion.</AlertDialogDescription></AlertDialogHeader>
+                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={permanentlyDelete} className="bg-[#b43a2e] text-white">Delete permanently</AlertDialogAction></AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
                     )}

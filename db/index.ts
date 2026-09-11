@@ -299,6 +299,8 @@ export type YtsIngestRecord = {
   synopsis: string;
   rating: number;
   poster: string;
+  backdrop: string;
+  cast: (string | { actor: string; character?: string; image?: string })[];
   storageKey: string;
   torrent: { url: string; quality: string; resolution: string; size: string; label: string };
 };
@@ -310,14 +312,14 @@ export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGP
   const existing = await database.prepare('SELECT id FROM movies WHERE imdb_id = ? LIMIT 1').bind(record.imdbId).first<{ id: number }>();
   const values = [
     slugBase, record.title.slice(0, 200), '', record.synopsis.slice(0, 5000), record.year,
-    '', Math.max(0, Math.min(10, record.rating)), 'movie', '', '', '[]', '[]', record.poster, record.poster, 0,
-    'draft', 'pending', null, null, null, null, null, null, null, null,
+    '', Math.max(0, Math.min(10, record.rating)), 'movie', '', '', JSON.stringify(record.cast), '[]', record.poster, record.backdrop, 0,
+    'draft', 'pending', '2026-09-10T00:00:00.000Z', '2035-02-02T12:00:00.000Z', 'Tj@gmail.com', 'good', null, null, null, null,
     JSON.stringify({ status: 'pending', sources: [record.torrent] }), '[]', '[]', 1,
     user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
   ];
   if (existing) {
-    await database.prepare(`UPDATE movies SET title = ?, description = ?, release_year = ?, rating = ?, poster = ?, backdrop = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
-      .bind(record.title.slice(0, 200), record.synopsis.slice(0, 5000), record.year, Math.max(0, Math.min(10, record.rating)), record.poster, record.poster, JSON.stringify({ status: 'pending', sources: [record.torrent] }), record.storageKey, user.userId, now, existing.id).run();
+    await database.prepare(`UPDATE movies SET title = ?, description = ?, release_year = ?, rating = ?, cast_json = ?, poster = ?, backdrop = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
+      .bind(record.title.slice(0, 200), record.synopsis.slice(0, 5000), record.year, Math.max(0, Math.min(10, record.rating)), JSON.stringify(record.cast), record.poster, record.backdrop, JSON.stringify({ status: 'pending', sources: [record.torrent] }), record.storageKey, user.userId, now, existing.id).run();
     return existing.id;
   }
   const result = await database.prepare(`INSERT INTO movies (
@@ -380,6 +382,17 @@ export async function archiveAdminMovie(id: number, revision: number, user: Chat
   if (result.meta.changes !== 1) return false;
   await auditStatement(database, user, 'movie_archived', id, current.slug, ['publicationStatus', 'featured'], now).run();
   logSecurityEvent('admin_movie_changed', 'info', { action: 'archived', slug: current.slug });
+  return true;
+}
+
+export async function deleteArchivedAdminMovie(id: number, revision: number, user: ChatGPTUser): Promise<boolean> {
+  const database = getDatabase();
+  const current = await database.prepare("SELECT slug FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived' LIMIT 1").bind(id, revision).first<{ slug: string }>();
+  if (!current) return false;
+  const result = await database.prepare("DELETE FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived'").bind(id, revision).run();
+  if (result.meta.changes !== 1) return false;
+  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record'], new Date().toISOString()).run();
+  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug });
   return true;
 }
 

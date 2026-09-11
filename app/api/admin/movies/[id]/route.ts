@@ -1,4 +1,4 @@
-import { archiveAdminMovie, assertApprovedSourceDomains, updateAdminMovie } from '../../../../../db';
+import { archiveAdminMovie, assertApprovedSourceDomains, deleteArchivedAdminMovie, updateAdminMovie } from '../../../../../db';
 import { validateAdminMovieInput } from '../../../../../lib/admin/movie-input';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 import { logSecurityEvent } from '../../../../../lib/security/security-events';
@@ -46,12 +46,15 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   if ('response' in authorization) return authorization.response;
   const id = validIdentifier((await context.params).id);
   const body = await readBoundedJson(request, 1_024);
+  const action = body && typeof body === 'object' && !Array.isArray(body) && (body as Record<string, unknown>).action === 'delete' ? 'delete' : 'archive';
   const revision = body && typeof body === 'object' && !Array.isArray(body) ? validRevision((body as Record<string, unknown>).revision) : null;
-  if (!id || !revision) return Response.json({ error: 'Invalid archive request.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
+  if (!id || !revision) return Response.json({ error: 'Invalid archive/delete request.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   try {
-    const archived = await archiveAdminMovie(id, revision, authorization.user);
-    if (!archived) return Response.json({ error: 'This record changed in another session. Refresh and try again.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
-    return Response.json({ archived: true }, { headers: ADMIN_NO_STORE_HEADERS });
+    const changed = action === 'delete'
+      ? await deleteArchivedAdminMovie(id, revision, authorization.user)
+      : await archiveAdminMovie(id, revision, authorization.user);
+    if (!changed) return Response.json({ error: action === 'delete' ? 'Only archived movies can be permanently deleted.' : 'This record changed in another session. Refresh and try again.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
+    return Response.json(action === 'delete' ? { deleted: true } : { archived: true }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch {
     return Response.json({ error: 'The database is temporarily unavailable.' }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
   }

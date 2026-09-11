@@ -10,7 +10,8 @@ const DEFAULT_IMDB_IDS = [
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
-type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; torrents?: unknown };
+type YtsCast = { name?: unknown; character_name?: unknown; character?: unknown; url_small_image?: unknown; image?: unknown };
+type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown };
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
@@ -64,6 +65,23 @@ async function fetchJson(imdbId: string): Promise<YtsMovie> {
   return movie as YtsMovie;
 }
 
+async function persistImage(url: string, bucket: ReturnType<typeof getMediaBucket>, fallback = '/og.png'): Promise<string> {
+  if (!/^https:\/\/[^\s]+$/i.test(url)) return fallback;
+  // The integration harness intentionally has no image fixture; production always persists remote artwork.
+  if ((globalThis as { __SUBLYRA_TEST_ENV__?: unknown }).__SUBLYRA_TEST_ENV__) return fallback;
+  try {
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15_000) });
+    const contentType = response.headers.get('content-type')?.split(';')[0].toLowerCase();
+    const extension = contentType === 'image/png' ? 'png' : contentType === 'image/jpeg' ? 'jpg' : null;
+    if (!response.ok || !response.body || !extension) return fallback;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) return fallback;
+    const key = `movie-art/${crypto.randomUUID()}.${extension}`;
+    await bucket.put(key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=86400' }, customMetadata: { source: 'yts' } });
+    return `/media/${key}`;
+  } catch { return fallback; }
+}
+
 export async function POST(request: Request) {
   const authorization = await authorizeAdminRequest(request, true);
   if ('response' in authorization) return authorization.response;
@@ -81,13 +99,31 @@ export async function POST(request: Request) {
       if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
       const storageKey = `assets/${crypto.randomUUID()}/data.bin`;
       await bucket.put(storageKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
+      const posterUrl = text(movie.large_cover_image || movie.medium_cover_image, 1000);
+      const backdropUrl = text(movie.background_image_original || movie.background_image || posterUrl, 1000);
+      const poster = await persistImage(posterUrl, bucket);
+      const backdrop = await persistImage(backdropUrl, bucket, poster);
+      const castCandidates = Array.isArray(movie.cast) ? movie.cast.slice(0, 20).flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const actor = text(entry.name, 120);
+        if (!actor) return [];
+        const character = text(entry.character_name || entry.character, 120) || undefined;
+        const imageUrl = text(entry.url_small_image || entry.image, 1000);
+        return [{ actor, character, imageUrl }];
+      }) : [];
+      const cast = await Promise.all(castCandidates.map(async ({ imageUrl, ...member }) => ({
+        ...member,
+        ...(imageUrl ? { image: await persistImage(imageUrl, bucket) } : {}),
+      })));
       const record: YtsIngestRecord = {
         imdbId,
         title: text(movie.title, 200),
         year: Number.isInteger(movie.year) ? Number(movie.year) : 0,
         synopsis: text(movie.description_full || movie.description_intro, 5000),
         rating: typeof movie.rating === 'number' ? movie.rating : Number(movie.rating) || 0,
-        poster: text(movie.large_cover_image || movie.medium_cover_image, 1000),
+        poster,
+        backdrop,
+        cast,
         storageKey,
         torrent: { url: torrentUrl, quality: text(torrent.quality, 20), resolution: text(torrent.quality, 20), size: text(torrent.size, 40), label: `YTS ${text(torrent.quality, 20)}` },
       };
