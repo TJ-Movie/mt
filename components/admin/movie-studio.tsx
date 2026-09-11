@@ -109,10 +109,16 @@ function IngestionPanel({
   onMoviesRefreshed: (movies: AdminMovie[]) => void;
 }) {
   const [running, setRunning] = useState(false);
+  const [imdbInput, setImdbInput] = useState('');
   const [failures, setFailures] = useState<Array<{ imdbId: string; error: string }>>([]);
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
 
   async function triggerIngestion() {
+    const imdbIds = [...new Set(imdbInput.split(/[\s,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean))];
+    if (imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
+      setNotice({ tone: 'error', text: 'Enter up to 20 valid IMDb IDs, separated by commas or new lines.' });
+      return;
+    }
     setRunning(true);
     setFailures([]);
     setNotice({ tone: 'success', text: 'Ingestion in progress — fetching the YTS batch and securing torrent assets…' });
@@ -124,7 +130,7 @@ function IngestionPanel({
           'content-type': 'application/json',
           'x-sublyra-action': 'admin-write',
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify(imdbIds.length ? { imdbIds } : {}),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
@@ -167,17 +173,18 @@ function IngestionPanel({
           <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
           <h2 className="mt-2 font-serif text-2xl">Ingest movie metadata and torrents</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-            Fetches the configured 20-film IMDb batch, prefers 1080p (falling back to 720p), and queues each record for rights review.
+            Paste IMDb IDs to ingest a custom batch, or leave this blank to use the configured batch. Each selected title is queued with both 720p and 1080p sources for rights review.
           </p>
         </div>
-        <Button
-          onClick={triggerIngestion}
-          disabled={running}
-          className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60"
-        >
-          {running ? <Loader2 className="animate-spin" /> : <UploadCloud />}
-          {running ? 'Ingesting…' : 'Run YTS ingestion'}
-        </Button>
+        <div className="flex w-full max-w-md flex-col gap-3">
+          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">Custom IMDb IDs</label>
+          <Textarea id="custom-imdb-ids" value={imdbInput} onChange={(event) => setImdbInput(event.target.value)} placeholder="tt0111161, tt0068646" rows={2} disabled={running} />
+          <p className="text-xs text-white/45">Optional · comma, space, or newline separated · maximum 20</p>
+          <Button onClick={triggerIngestion} disabled={running} className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60">
+            {running ? <Loader2 className="animate-spin" /> : <UploadCloud />}
+            {running ? 'Ingesting…' : 'Run YTS ingestion'}
+          </Button>
+        </div>
       </div>
       {running && (
         <div className="mt-6 h-2 overflow-hidden rounded-full bg-white/10">
