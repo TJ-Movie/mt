@@ -7,14 +7,15 @@ if (!token) throw new Error('GitHub Git authentication unavailable');
 const base = 'https://api.github.com/repos/TJ-Movie/mt';
 const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
 const mode = process.argv[2];
-const path = mode === 'dispatch' ? '/actions/workflows/magnet-to-r2.yml/dispatches' : '/actions/workflows/magnet-to-r2.yml/runs?per_page=3';
+const requestedRun = process.argv.find((arg) => arg.startsWith('--run-id='))?.slice(9);
+const path = mode === 'dispatch' ? '/actions/workflows/magnet-to-r2.yml/dispatches' : (requestedRun ? `/actions/runs/${requestedRun}` : '/actions/workflows/magnet-to-r2.yml/runs?per_page=3');
 const requestedQuality = process.argv.find((arg) => arg.startsWith('--quality='))?.slice(10);
 const response = await fetch(base + path, { headers, ...(mode === 'dispatch' ? { method: 'POST', body: JSON.stringify({ ref: 'main', ...(requestedQuality ? { inputs: { quality: requestedQuality } } : {}) }) } : {}) });
 if (!response.ok) { console.error(`GitHub API HTTP ${response.status}`); process.exit(1); }
 if (mode === 'dispatch') console.log('Workflow dispatch accepted');
 else {
   const data = await response.json();
-  for (const run of data.workflow_runs.slice(0, 1)) {
+  for (const run of (requestedRun ? [data] : data.workflow_runs.slice(0, 1))) {
     console.log(JSON.stringify({ id: run.id, status: run.status, conclusion: run.conclusion, url: run.html_url }));
     const jobs = await fetch(`${base}/actions/runs/${run.id}/jobs`, { headers });
     const details = await jobs.json();
