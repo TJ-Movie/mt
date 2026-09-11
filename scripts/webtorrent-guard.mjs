@@ -19,6 +19,11 @@ export async function patchWebTorrent() {
   const patched = guardedSource(source);
   if (patched !== source) await writeFile(path, patched);
 }
+// Every entry point must verify the guard before Node caches the torrent module.
+export async function loadGuardedWebTorrent() {
+  await patchWebTorrent();
+  return (await import('webtorrent')).default;
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await patchWebTorrent();
   console.log('WebTorrent peer request lifecycle guard verified');

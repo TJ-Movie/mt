@@ -6,13 +6,14 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { guardedSource } from '../scripts/webtorrent-guard.mjs';
 import { runChild } from '../scripts/transfer-process.mjs';
+import { compileFunction } from 'node:vm';
 
 test('peer requests before storage initialization and after destruction fail safely', () => {
   const original = '      if (this.pieces[index]) return\n      this.store.get(index, { offset, length }, cb)';
   const patched = guardedSource(original);
   assert.equal(guardedSource(patched), patched, 'patch is idempotent');
   assert.throws(() => guardedSource('changed upstream code'), /changed/);
-  const handler = new Function('wire', 'index', 'offset', 'length', 'cb', patched);
+  const handler = compileFunction(patched, ['wire', 'index', 'offset', 'length', 'cb']);
   let destroyed = 0, reads = 0;
   const wire = { destroy() { destroyed++; } };
   for (const state of [{ destroyed: true, ready: true }, { destroyed: false, ready: false }, { destroyed: false, ready: true, store: null }]) {
@@ -21,6 +22,13 @@ test('peer requests before storage initialization and after destruction fail saf
   assert.equal(destroyed, 3);
   handler.call({ destroyed: false, ready: true, pieces: [], store: { get() { reads++; } } }, wire, 0, 0, 10, () => {});
   assert.equal(reads, 1);
+});
+
+test('lifecycle guard matches the locked dependency request handler', () => {
+  const source = readFileSync('node_modules/webtorrent/lib/torrent.js', 'utf8');
+  const patched = guardedSource(source);
+  assert.equal(guardedSource(patched), patched);
+  assert.match(patched, /if \(this.destroyed \|\| !this.ready \|\| !this.store\) return wire.destroy\(\)/);
 });
 
 test('an isolated process crash does not prevent the next film from running', async () => {

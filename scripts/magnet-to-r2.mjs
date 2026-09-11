@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
-import WebTorrent from 'webtorrent';
+import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { S3Client, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { runChild } from './transfer-process.mjs';
@@ -111,6 +111,7 @@ async function transfer(row, s3, bucket, limits) {
   try {
     folder = process.env.TRANSFER_CHILD_DIRECTORY || await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
     if (dirname(resolve(folder)) !== resolve(tmpdir()) || !basename(folder).startsWith('flixlyra-transfer-')) throw new Error('Invalid transfer scratch directory');
+    const WebTorrent = await loadGuardedWebTorrent();
     client = new WebTorrent({ webSeeds: false, maxConns: 30,
       downloadLimit: limits.download, uploadLimit: limits.upload });
     let source = sourceMagnet(row.download_sources_json);
