@@ -9,6 +9,7 @@ import { Readable } from 'node:stream';
 import WebTorrent from 'webtorrent';
 import { S3Client, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
+import { runChild } from './transfer-process.mjs';
 
 const exec = promisify(execFile);
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
@@ -94,7 +95,7 @@ async function remoteDescriptor(json) {
 }
 
 async function transfer(row, s3, bucket, limits) {
-  const token = randomUUID();
+  const token = process.env.TRANSFER_CHILD_TOKEN || randomUUID();
   const key = `assets/${randomUUID()}/data.bin`;
   const now = Math.floor(Date.now() / 1000);
   const claimed = await sql(`UPDATE movies SET ingest_status='transferring', transfer_token=${quote(token)},
@@ -108,7 +109,8 @@ async function transfer(row, s3, bucket, limits) {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    folder = await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
+    folder = process.env.TRANSFER_CHILD_DIRECTORY || await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
+    if (dirname(resolve(folder)) !== resolve(tmpdir()) || !basename(folder).startsWith('flixlyra-transfer-')) throw new Error('Invalid transfer scratch directory');
     client = new WebTorrent({ webSeeds: false, maxConns: 30,
       downloadLimit: limits.download, uploadLimit: limits.upload });
     let source = sourceMagnet(row.download_sources_json);
@@ -176,7 +178,10 @@ async function transfer(row, s3, bucket, limits) {
   } finally {
     clearTimeout(timer);
     stream?.destroy();
-    if (client) await new Promise(resolve => client.destroy(resolve));
+    if (client) await new Promise(resolve => {
+      const timer = setTimeout(resolve, 10000);
+      client.destroy(() => { clearTimeout(timer); resolve(); });
+    });
     // Only the unique temporary directory created by this transfer is removed.
     if (folder && dirname(resolve(folder)) === resolve(tmpdir()) && basename(folder).startsWith('flixlyra-transfer-')) {
       await rm(folder, { recursive: true, force: true });
@@ -189,6 +194,10 @@ async function transfer(row, s3, bucket, limits) {
 export async function main() {
   const limits = transferLimits();
   const deadline = Date.now() + limits.run * 1000;
+  let interrupted = false;
+  const markInterrupted = () => { interrupted = true; process.exitCode = 1; };
+  process.once('SIGTERM', markInterrupted);
+  process.once('SIGINT', markInterrupted);
   if (process.env.GITHUB_ACTIONS === 'true' && !process.env.CLOUDFLARE_API_TOKEN) throw new Error('Missing CLOUDFLARE_API_TOKEN for D1');
   if (process.env.GITHUB_ACTIONS === 'true' && process.argv.includes('--watch')) throw new Error('--watch is not supported on GitHub Actions');
   for (const name of ['R2_ACCOUNT_ID', 'R2_BUCKET_NAME', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY']) {
@@ -203,22 +212,62 @@ export async function main() {
   const s3 = new S3Client({ region: 'auto', endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
   try {
+    const childId = process.argv.find(arg => arg.startsWith('--transfer-id='))?.slice(14);
+    if (childId !== undefined) {
+      if (!/^[1-9]\d{0,9}$/.test(childId) || !/^[a-f0-9-]{36}$/.test(process.env.TRANSFER_CHILD_TOKEN || '')) throw new Error('Invalid child transfer identity');
+      const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE id=${Number(childId)}`);
+      if (rows.length) await transfer(rows[0], s3, process.env.R2_BUCKET_NAME, limits);
+      return;
+    }
     do {
       const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE
         (ingest_status='queued' OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
         ORDER BY id LIMIT ${limits.batch}`);
       for (const row of rows) {
-        if (Date.now() + (limits.timeout + 300) * 1000 > deadline) {
+        if (interrupted || Date.now() + (limits.timeout + 300) * 1000 > deadline) {
           console.log('Run budget reached; remaining records stay queued');
           return;
         }
-        await transfer(row, s3, process.env.R2_BUCKET_NAME, limits);
+        // Scope retries to this snapshot, never re-download ready rows or expand the batch.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          const token = randomUUID();
+          console.log(`Transfer ${row.id}: attempt ${attempt}/2`);
+          const scratch = await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
+          let result;
+          try {
+            result = await runChild([process.argv[1], `--transfer-id=${row.id}`], {
+              env: { ...process.env, TRANSFER_CHILD_TOKEN: token, TRANSFER_CHILD_DIRECTORY: scratch }, timeoutMs: (limits.timeout + 90) * 1000,
+            });
+          } finally {
+            // Also clean up after a force-killed child, before starting another film.
+            if (dirname(resolve(scratch)) === resolve(tmpdir()) && basename(scratch).startsWith('flixlyra-transfer-')) await rm(scratch, { recursive: true, force: true });
+          }
+          if (interrupted) return;
+          const state = await sql(`SELECT ingest_status FROM movies WHERE id=${Number(row.id)}`);
+          if (state[0]?.ingest_status === 'ready') break;
+          const message = result.timedOut ? 'Isolated transfer timed out' : `Isolated transfer exited ${result.code ?? result.signal}`;
+          // Recover only our own dead worker's lease; never overwrite another worker.
+          await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_lease_until=NULL
+            WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring'`);
+          if (attempt < 2 && Date.now() + (limits.timeout + 300) * 1000 <= deadline) {
+            const retry = await sql(`UPDATE movies SET ingest_status='queued', transfer_token=NULL WHERE id=${Number(row.id)}
+              AND ingest_status='failed' AND (transfer_token=${quote(token)} OR transfer_token IS NULL) RETURNING id`);
+            if (retry.length) continue;
+          }
+          process.exitCode = 1;
+          console.error(`Unfinished: ${row.id}: ${message}; continuing batch`);
+          break;
+        }
       }
       if (!process.argv.includes('--watch')) break;
       await new Promise(resolve => setTimeout(resolve, 30000));
     } while (true);
-  } finally { s3.destroy(); }
+  } finally { s3.destroy(); process.removeListener('SIGTERM', markInterrupted); process.removeListener('SIGINT', markInterrupted); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+  main().then(() => {
+    if (process.argv.some(arg => arg.startsWith('--transfer-id='))) process.exit(process.exitCode || 0);
+  }).catch(error => { console.error(error.message); process.exitCode = 1;
+    if (process.argv.some(arg => arg.startsWith('--transfer-id='))) process.exit(1);
+  });
 }

@@ -4,6 +4,37 @@ import { primaryMp4, sourceMagnet, transferLimits, hasDiskBudget, uploadStream }
 import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { guardedSource } from '../scripts/webtorrent-guard.mjs';
+import { runChild } from '../scripts/transfer-process.mjs';
+
+test('peer requests before storage initialization and after destruction fail safely', () => {
+  const original = '      if (this.pieces[index]) return\n      this.store.get(index, { offset, length }, cb)';
+  const patched = guardedSource(original);
+  assert.equal(guardedSource(patched), patched, 'patch is idempotent');
+  assert.throws(() => guardedSource('changed upstream code'), /changed/);
+  const handler = new Function('wire', 'index', 'offset', 'length', 'cb', patched);
+  let destroyed = 0, reads = 0;
+  const wire = { destroy() { destroyed++; } };
+  for (const state of [{ destroyed: true, ready: true }, { destroyed: false, ready: false }, { destroyed: false, ready: true, store: null }]) {
+    assert.doesNotThrow(() => handler.call(state, wire, 0, 0, 10, () => {}));
+  }
+  assert.equal(destroyed, 3);
+  handler.call({ destroyed: false, ready: true, pieces: [], store: { get() { reads++; } } }, wire, 0, 0, 10, () => {});
+  assert.equal(reads, 1);
+});
+
+test('an isolated process crash does not prevent the next film from running', async () => {
+  const failed = await runChild(['-e', 'process.exit(7)'], { timeoutMs: 5000 });
+  assert.equal(failed.code, 7);
+  const next = await runChild(['-e', 'process.exit(0)'], { timeoutMs: 5000 });
+  assert.equal(next.code, 0);
+});
+
+test('a hung child is terminated within its independent deadline', async () => {
+  const result = await runChild(['-e', 'setInterval(()=>{},1000)'], { timeoutMs: 300, graceMs: 100 });
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.code, 0);
+});
 
 test('torrent async stream becomes an AWS-compatible binary Node stream', async () => {
   const source = (async function* () { yield Buffer.from('video'); yield Buffer.from('-bytes'); })();

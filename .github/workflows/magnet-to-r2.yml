@@ -24,7 +24,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
       - name: Test transfer limits and selection
-        run: node --test tests/magnet-to-r2.test.mjs
+        run: |
+          node scripts/webtorrent-guard.mjs
+          node --test tests/magnet-to-r2.test.mjs
       - name: Transfer bounded queue batch
         timeout-minutes: 160
         env:
