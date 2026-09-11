@@ -15,6 +15,19 @@ const rows = [
 ].map(([id,title,imdb_id]) => ({id,title,imdb_id}));
 if (!rows.length) throw new Error('No draft records found');
 const statements = [];
+const uploads = [];
+async function mirror(url, keyName) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return '/og.png';
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const local = `tmp/r2-assets/${keyName}`;
+    await mkdir(local.slice(0, local.lastIndexOf('/')), { recursive: true });
+    await writeFile(local, bytes);
+    uploads.push({ key: keyName, file: local });
+    return `/media/${keyName}`;
+  } catch { return '/og.png'; }
+}
 for (const row of rows) {
   if (!/^tt\d+$/.test(row.imdb_id || '')) continue;
   const found = await tmdb(`/find/${encodeURIComponent(row.imdb_id)}?external_source=imdb_id`);
@@ -25,10 +38,11 @@ for (const row of rows) {
   const cast = [];
   for (const member of credits.slice(0, 6)) {
     if (!member.name) continue;
-    cast.push({ actor: member.name, character: member.character || undefined, image: member.profile_path ? `https://image.tmdb.org/t/p/original${member.profile_path}` : '/og.png' });
+    const source = member.profile_path ? `https://image.tmdb.org/t/p/original${member.profile_path}` : '';
+    cast.push({ actor: member.name, character: member.character || undefined, image: source ? await mirror(source, `cast/${row.imdb_id}-${cast.length + 1}.jpg`) : '/og.png' });
   }
-  const poster = detail.poster_path ? `https://image.tmdb.org/t/p/original${detail.poster_path}` : '/og.png';
-  const backdrop = detail.backdrop_path ? `https://image.tmdb.org/t/p/original${detail.backdrop_path}` : '/og.png';
+  const poster = detail.poster_path ? await mirror(`https://image.tmdb.org/t/p/original${detail.poster_path}`, `posters/${row.imdb_id}.jpg`) : '/og.png';
+  const backdrop = detail.backdrop_path ? await mirror(`https://image.tmdb.org/t/p/original${detail.backdrop_path}`, `backdrops/${row.imdb_id}.jpg`) : '/og.png';
   const runtime = Number.isInteger(detail.runtime) && detail.runtime > 0 ? `${Math.floor(detail.runtime / 60)}h ${detail.runtime % 60}m` : '';
   const tagline = detail.tagline?.trim() || `Watch ${row.title} in HD`;
   statements.push(`UPDATE movies SET poster=${sql(poster)}, backdrop=${sql(backdrop)}, cast_json=${sql(JSON.stringify(cast))}, runtime=${sql(runtime)}, tagline=${sql(tagline)} WHERE id=${Number(row.id)} AND publication_status='draft';`);
@@ -36,4 +50,5 @@ for (const row of rows) {
 const temp = 'tmp/tmdb-metadata-backfill.sql';
 await mkdir('tmp', { recursive: true });
 await writeFile(temp, `${statements.join('\n')}\n`, 'utf8');
-console.log(JSON.stringify({ drafts: rows.length, updated: statements.length, sqlFile: temp }));
+await writeFile('tmp/tmdb-r2-uploads.json', JSON.stringify(uploads), 'utf8');
+console.log(JSON.stringify({ drafts: rows.length, updated: statements.length, sqlFile: temp, uploads: uploads.length, manifest: 'tmp/tmdb-r2-uploads.json' }));

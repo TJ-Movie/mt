@@ -80,7 +80,7 @@ async function fetchJson(imdbId: string): Promise<YtsMovie> {
   return movie as YtsMovie;
 }
 
-async function persistImage(url: string, bucket: ReturnType<typeof getMediaBucket>, fallback = '/og.png'): Promise<string> {
+async function persistImage(url: string, bucket: ReturnType<typeof getMediaBucket>, fallback = '/og.png', objectKey = `movie-art/${crypto.randomUUID()}`): Promise<string> {
   if (!/^https:\/\/[^\s]+$/i.test(url)) return fallback;
   // The integration harness intentionally has no image fixture; production always persists remote artwork.
   if ((globalThis as { __SUBLYRA_TEST_ENV__?: unknown }).__SUBLYRA_TEST_ENV__) return fallback;
@@ -91,7 +91,7 @@ async function persistImage(url: string, bucket: ReturnType<typeof getMediaBucke
     if (!response.ok || !response.body || !extension) return fallback;
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) return fallback;
-    const key = `movie-art/${crypto.randomUUID()}.${extension}`;
+    const key = `${objectKey}.${extension}`;
     await bucket.put(key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=86400' }, customMetadata: { source: 'yts' } });
     return `/media/${key}`;
   } catch { return fallback; }
@@ -118,8 +118,8 @@ export async function POST(request: Request) {
       await bucket.put(storageKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
       const posterUrl = text(tmdb?.poster_path ? `https://image.tmdb.org/t/p/original${text(tmdb.poster_path, 500)}` : movie.large_cover_image || movie.medium_cover_image, 1000);
       const backdropUrl = text(tmdb?.backdrop_path ? `https://image.tmdb.org/t/p/original${text(tmdb.backdrop_path, 500)}` : movie.background_image_original || movie.background_image || posterUrl, 1000);
-      const poster = await persistImage(posterUrl, bucket);
-      const backdrop = await persistImage(backdropUrl, bucket, poster);
+      const poster = await persistImage(posterUrl, bucket, '/og.png', `posters/${imdbId}`);
+      const backdrop = await persistImage(backdropUrl, bucket, poster, `backdrops/${imdbId}`);
       const tmdbCast = tmdbCredits && Array.isArray(tmdbCredits.cast) ? tmdbCredits.cast : null;
       const castCandidates = (tmdbCast || (Array.isArray(movie.cast) ? movie.cast : [])).slice(0, 6).flatMap((entry) => {
         if (!isRecord(entry)) return [];
@@ -129,9 +129,9 @@ export async function POST(request: Request) {
         const imageUrl = text(entry.profile_path ? `https://image.tmdb.org/t/p/w185${text(entry.profile_path, 500)}` : entry.url_small_image || entry.image, 1000);
         return [{ actor, character, imageUrl }];
       });
-      const cast = await Promise.all(castCandidates.map(async ({ imageUrl, ...member }) => ({
+      const cast = await Promise.all(castCandidates.map(async ({ imageUrl, ...member }, index) => ({
         ...member,
-        image: imageUrl ? await persistImage(imageUrl, bucket, TMDB_FALLBACK_AVATAR) : TMDB_FALLBACK_AVATAR,
+        image: imageUrl ? await persistImage(imageUrl, bucket, TMDB_FALLBACK_AVATAR, `cast/${imdbId}-${index + 1}`) : TMDB_FALLBACK_AVATAR,
       })));
       const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
       const genre = (Array.isArray(movie.genres) ? movie.genres : [])
