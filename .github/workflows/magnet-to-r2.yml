@@ -5,6 +5,13 @@ on:
   repository_dispatch:
     types: [magnet-to-r2]
   workflow_dispatch:
+    inputs:
+      quality:
+        description: 'Quality to transfer'
+        required: false
+        default: both
+        type: choice
+        options: [both, 720p, 1080p]
 permissions:
   contents: read
 concurrency:
@@ -56,6 +63,7 @@ jobs:
           TRANSFER_UPLOAD_BPS: '524288'
           NODE_OPTIONS: --max-old-space-size=2048
           CI: 'true'
+          TRANSFER_QUALITY: ${{ inputs.quality || 'both' }}
         # Do not use --watch on ephemeral runners. Do not evaluate dispatch payloads.
         run: timeout --signal=TERM --kill-after=120s 155m node scripts/magnet-to-r2.mjs
       - name: Run summary

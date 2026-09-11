@@ -201,6 +201,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
 
 export async function main() {
   const limits = transferLimits();
+  const requestedQuality = /^(720p|1080p)$/.test(process.env.TRANSFER_QUALITY || '') ? process.env.TRANSFER_QUALITY : null;
   const deadline = Date.now() + limits.run * 1000;
   let interrupted = false;
   const markInterrupted = () => { interrupted = true; process.exitCode = 1; };
@@ -239,7 +240,7 @@ export async function main() {
         }
         const parsed = JSON.parse(row.download_sources_json || '{}');
         const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
-        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality).toLowerCase());
+        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()) && (!requestedQuality || String(s.quality).toLowerCase() === requestedQuality) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality).toLowerCase());
         // Scope retries to this snapshot, never re-download ready rows or expand the batch.
         for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 2; attempt++) {
           const token = randomUUID();
