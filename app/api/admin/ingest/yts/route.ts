@@ -115,12 +115,17 @@ export async function POST(request: Request) {
         ...member,
         ...(imageUrl ? { image: await persistImage(imageUrl, bucket) } : {}),
       })));
+      const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
+      const genre = (Array.isArray(movie.genres) ? movie.genres : [])
+        .map((value) => text(value, 40)).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
       const record: YtsIngestRecord = {
         imdbId,
         title: text(movie.title, 200),
         year: Number.isInteger(movie.year) ? Number(movie.year) : 0,
         synopsis: text(movie.description_full || movie.description_intro, 5000),
         rating: typeof movie.rating === 'number' ? movie.rating : Number(movie.rating) || 0,
+        genre,
+        director: text(movie.director, 160) || 'Pending editorial review',
         poster,
         backdrop,
         cast,
