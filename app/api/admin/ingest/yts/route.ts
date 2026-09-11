@@ -30,14 +30,10 @@ async function tmdbDetails(imdbId: string): Promise<Record<string, unknown> | nu
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
-function qualityRank(torrent: YtsTorrent): number {
-  const quality = text(torrent.quality, 20).toLowerCase();
-  return quality === '1080p' ? 0 : quality === '720p' ? 1 : 2;
-}
-function selectTorrent(value: unknown): YtsTorrent | null {
-  if (!Array.isArray(value)) return null;
+function selectTorrents(value: unknown): YtsTorrent[] {
+  if (!Array.isArray(value)) return [];
   const torrents = value.filter(isRecord).filter((torrent) => text(torrent.url, 1000).startsWith('https://') && ['720p', '1080p'].includes(text(torrent.quality, 20).toLowerCase()));
-  return (torrents.sort((a, b) => qualityRank(a) - qualityRank(b))[0] as YtsTorrent | undefined) ?? null;
+  return ['1080p', '720p'].map((quality) => torrents.find((torrent) => text(torrent.quality, 20).toLowerCase() === quality)).filter(Boolean) as YtsTorrent[];
 }
 function idsFromBody(body: unknown): string[] {
   if (!isRecord(body) || body.imdbIds === undefined) return DEFAULT_IMDB_IDS;
@@ -109,13 +105,19 @@ export async function POST(request: Request) {
       const movie = await fetchJson(imdbId);
       const tmdb = await tmdbDetails(imdbId);
       const tmdbCredits = isRecord(tmdb?.credits) ? tmdb.credits : null;
-      const torrent = selectTorrent(movie.torrents);
-      if (!torrent) throw new Error('NO_PREFERRED_TORRENT');
-      const torrentUrl = text(torrent.url, 1000);
-      const object = await fetch(torrentUrl, { signal: AbortSignal.timeout(20_000) });
-      if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
-      const storageKey = `assets/${crypto.randomUUID()}/data.bin`;
-      await bucket.put(storageKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
+      const torrents = selectTorrents(movie.torrents);
+      if (torrents.length !== 2) throw new Error('YTS_REQUIRES_720P_AND_1080P');
+      const preparedTorrents = [];
+      for (const torrent of torrents) {
+        const torrentUrl = text(torrent.url, 1000);
+        const object = await fetch(torrentUrl, { signal: AbortSignal.timeout(20_000) });
+        if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
+        const quality = text(torrent.quality, 20).toLowerCase();
+        const descriptorKey = `descriptors/${imdbId}-${quality}.torrent`;
+        await bucket.put(descriptorKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/x-bittorrent', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId, quality } });
+        preparedTorrents.push({ url: torrentUrl, quality, resolution: quality, size: text(torrent.size, 40), label: `YTS ${quality}`, descriptorKey });
+      }
+      const storageKey = preparedTorrents.find((torrent) => torrent.quality === '1080p')?.descriptorKey ?? preparedTorrents[0].descriptorKey;
       const posterUrl = text(tmdb?.poster_path ? `https://image.tmdb.org/t/p/original${text(tmdb.poster_path, 500)}` : movie.large_cover_image || movie.medium_cover_image, 1000);
       const backdropUrl = text(tmdb?.backdrop_path ? `https://image.tmdb.org/t/p/original${text(tmdb.backdrop_path, 500)}` : movie.background_image_original || movie.background_image || posterUrl, 1000);
       const poster = await persistImage(posterUrl, bucket, '/og.png', `posters/${imdbId}`);
@@ -150,10 +152,10 @@ export async function POST(request: Request) {
         backdrop,
         cast,
         storageKey,
-        torrent: { url: torrentUrl, quality: text(torrent.quality, 20), resolution: text(torrent.quality, 20), size: text(torrent.size, 40), label: `YTS ${text(torrent.quality, 20)}` },
+        torrents: preparedTorrents,
       };
       const id = await upsertYtsIngestMovie(record, authorization.user);
-      results.push({ imdbId, id, status: 'queued', quality: record.torrent.quality, storageKey });
+      results.push({ imdbId, id, status: 'queued', qualities: preparedTorrents.map((torrent) => torrent.quality), storageKey });
     } catch (error) {
       results.push({ imdbId, status: 'failed', error: error instanceof Error ? error.message.slice(0, 80) : 'INGEST_FAILED' });
     }

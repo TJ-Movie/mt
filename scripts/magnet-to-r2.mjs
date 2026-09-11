@@ -42,11 +42,11 @@ export function primaryMp4(files) {
   return files.filter(f => /\.mp4$/i.test(f.name) && !/(^|[\s._-])(sample|trailer)([\s._-]|$)/i.test(f.name))
     .sort((a, b) => b.length - a.length)[0];
 }
-export function sourceMagnet(json) {
+export function sourceMagnet(json, quality) {
   let parsed;
   try { parsed = JSON.parse(json); } catch { return null; }
   const sources = Array.isArray(parsed) ? parsed : parsed?.sources;
-  const source = sources?.find(s => /^magnet:\?/i.test(s.url));
+  const source = sources?.find(s => (!quality || String(s.quality).toLowerCase() === quality) && /^magnet:\?/i.test(s.url));
   if (!source) return null;
   const xt = new URL(source.url).searchParams.get('xt');
   // Drop arbitrary web seeds and other URL parameters supplied by the source.
@@ -71,16 +71,16 @@ async function sql(command) {
   return response.flatMap(r => r.results || []);
 }
 
-async function remoteDescriptor(json) {
+async function remoteDescriptor(json, quality) {
   const parsed = JSON.parse(json);
   const sources = Array.isArray(parsed) ? parsed : parsed.sources;
   const allowed = new Set((process.env.TORRENT_SOURCE_HOSTS || 'yts.gg').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-  const candidate = sources?.find(s => {
+  const candidate = sources?.find(s => (!quality || String(s.quality).toLowerCase() === quality) && s.url && !s.descriptorKey && (() => {
     try {
       const url = new URL(s.url);
       return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowed.has(url.hostname);
     } catch { return false; }
-  });
+  })());
   if (!candidate) throw new Error('No magnet, stored descriptor, or allowlisted HTTPS torrent source');
   const response = await fetch(candidate.url, { redirect: 'error', signal: AbortSignal.timeout(30000) });
   if (!response.ok || !response.body) throw new Error('Torrent descriptor fetch failed');
@@ -94,9 +94,10 @@ async function remoteDescriptor(json) {
   return Buffer.concat(chunks);
 }
 
-async function transfer(row, s3, bucket, limits) {
+async function transfer(row, s3, bucket, limits, requestedQuality) {
   const token = process.env.TRANSFER_CHILD_TOKEN || randomUUID();
-  const key = `assets/${randomUUID()}/data.bin`;
+  const quality = /^(720p|1080p)$/.test(requestedQuality || '') ? requestedQuality : null;
+  const key = `assets/${randomUUID()}/${quality || 'video'}.mp4`;
   const now = Math.floor(Date.now() / 1000);
   const claimed = await sql(`UPDATE movies SET ingest_status='transferring', transfer_token=${quote(token)},
     transfer_lease_until=${now + limits.timeout + 600}, transfer_error=NULL WHERE id=${Number(row.id)} AND
@@ -114,16 +115,20 @@ async function transfer(row, s3, bucket, limits) {
     const WebTorrent = await loadGuardedWebTorrent();
     client = new WebTorrent({ webSeeds: false, maxConns: 30,
       downloadLimit: limits.download, uploadLimit: limits.upload });
-    let source = sourceMagnet(row.download_sources_json);
-    if (!source && /^assets\/[0-9a-f-]{36}\/data\.bin$/.test(row.storage_key || '')) {
-      const descriptor = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: row.storage_key }), { abortSignal: AbortSignal.timeout(30000) });
+    const parsed = JSON.parse(row.download_sources_json || '{}');
+    const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
+    const selected = quality ? sources.find(s => String(s.quality).toLowerCase() === quality) : sources[0];
+    let source = sourceMagnet(row.download_sources_json, quality);
+    const descriptorKey = selected?.descriptorKey || (!quality ? row.storage_key : null);
+    if (!source && descriptorKey && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(descriptorKey)) {
+      const descriptor = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: descriptorKey }), { abortSignal: AbortSignal.timeout(30000) });
       if (!descriptor.ContentLength || descriptor.ContentLength > 2 * 1024 * 1024) {
         descriptor.Body?.destroy();
         throw new Error('Invalid torrent descriptor size');
       }
       source = Buffer.from(await descriptor.Body.transformToByteArray());
     }
-    if (!source) source = await remoteDescriptor(row.download_sources_json);
+    if (!source) source = await remoteDescriptor(row.download_sources_json, quality);
     const run = async () => {
       const torrent = await new Promise((resolve, reject) => {
         client.once('error', reject);
@@ -156,8 +161,10 @@ async function transfer(row, s3, bucket, limits) {
       const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       controller.signal.throwIfAborted();
       if (head.ContentLength !== file.length || head.ContentType !== 'video/mp4') throw new Error('Uploaded video verification failed');
-      const updated = await sql(`UPDATE movies SET ingest_status='ready', r2_storage_key=${quote(key)},
-        r2_video_bytes=${file.length}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
+      const nextSources = sources.map(s => (!quality || String(s.quality).toLowerCase() === quality) ? { ...s, r2StorageKey: key, r2Bytes: file.length } : s);
+      const allReady = nextSources.length > 0 && nextSources.every(s => typeof s.r2StorageKey === 'string');
+      const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'queued'"}, r2_storage_key=${quote(key)},
+        r2_video_bytes=${file.length}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
         WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);
       if (!updated.length) throw new Error('Transfer lease lost');
       committed = true;
@@ -214,10 +221,11 @@ export async function main() {
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
   try {
     const childId = process.argv.find(arg => arg.startsWith('--transfer-id='))?.slice(14);
+    const childQuality = process.argv.find(arg => arg.startsWith('--quality='))?.slice(10);
     if (childId !== undefined) {
       if (!/^[1-9]\d{0,9}$/.test(childId) || !/^[a-f0-9-]{36}$/.test(process.env.TRANSFER_CHILD_TOKEN || '')) throw new Error('Invalid child transfer identity');
       const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE id=${Number(childId)}`);
-      if (rows.length) await transfer(rows[0], s3, process.env.R2_BUCKET_NAME, limits);
+      if (rows.length) await transfer(rows[0], s3, process.env.R2_BUCKET_NAME, limits, childQuality);
       return;
     }
     do {
@@ -229,14 +237,17 @@ export async function main() {
           console.log('Run budget reached; remaining records stay queued');
           return;
         }
+        const parsed = JSON.parse(row.download_sources_json || '{}');
+        const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
+        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality).toLowerCase());
         // Scope retries to this snapshot, never re-download ready rows or expand the batch.
-        for (let attempt = 1; attempt <= 2; attempt++) {
+        for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 2; attempt++) {
           const token = randomUUID();
           console.log(`Transfer ${row.id}: attempt ${attempt}/2`);
           const scratch = await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
           let result;
           try {
-            result = await runChild([process.argv[1], `--transfer-id=${row.id}`], {
+            result = await runChild([process.argv[1], `--transfer-id=${row.id}`, ...(quality ? [`--quality=${quality}`] : [])], {
               env: { ...process.env, TRANSFER_CHILD_TOKEN: token, TRANSFER_CHILD_DIRECTORY: scratch }, timeoutMs: (limits.timeout + 90) * 1000,
             });
           } finally {
@@ -245,7 +256,7 @@ export async function main() {
           }
           if (interrupted) return;
           const state = await sql(`SELECT ingest_status FROM movies WHERE id=${Number(row.id)}`);
-          if (state[0]?.ingest_status === 'ready') break;
+          if (state[0]?.ingest_status === 'ready' || (quality && state[0]?.ingest_status === 'queued')) break;
           const message = result.timedOut ? 'Isolated transfer timed out' : `Isolated transfer exited ${result.code ?? result.signal}`;
           // Recover only our own dead worker's lease; never overwrite another worker.
           await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_lease_until=NULL

@@ -3,12 +3,14 @@ import { enforcePublicRateLimit } from '../../../../lib/security/public-rate-lim
 
 export async function GET(request: Request) {
   const headers = { 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer' };
-  const slug = new URL(request.url).searchParams.get('slug');
+  const requestUrl = new URL(request.url);
+  const slug = requestUrl.searchParams.get('slug');
+  const quality = requestUrl.searchParams.get('quality')?.toLowerCase();
   if (!slug || !/^[a-z0-9-]{1,160}$/.test(slug)) return new Response('Not found', { status: 404, headers });
   const rate = await enforcePublicRateLimit(request, 'downloads', 20, 60);
   if (!rate.allowed) return new Response('Try again later', { status: 429, headers: { ...headers, ...rate.headers } });
   try {
-    const video = await readyVideo(slug);
+    const video = await readyVideo(slug, quality);
     if (!video) return new Response('Download unavailable', { status: 404, headers });
     return new Response(null, { status: 302, headers: { ...headers, Location: await signedVideoUrl(video) } });
   } catch {

@@ -9,14 +9,25 @@ export function r2SigningConfigured(): boolean {
     /^[a-f0-9]{32}$/.test(process.env.R2_ACCOUNT_ID ?? '') && /^[a-z0-9-]+$/.test(process.env.R2_BUCKET_NAME ?? ''));
 }
 
-export async function readyVideo(slug: string) {
+export async function readyVideo(slug: string, requestedQuality?: string) {
   const movie = await getPublishedMovie(slug);
   if (!movie || !getRuntimeControls().externalLinksEnabled || rightsBlockers(movie).length) return null;
   const row = await getDatabase().prepare(
-    "SELECT r2_storage_key, r2_video_bytes FROM movies WHERE slug = ? AND ingest_status = 'ready'",
-  ).bind(slug).first<{ r2_storage_key: string; r2_video_bytes: number }>();
-  if (!row || !validVideoRecord(row.r2_storage_key, row.r2_video_bytes)) return null;
-  return { movie, key: row.r2_storage_key, bytes: row.r2_video_bytes };
+    "SELECT r2_storage_key, r2_video_bytes, download_sources_json FROM movies WHERE slug = ? AND ingest_status = 'ready'",
+  ).bind(slug).first<{ r2_storage_key: string; r2_video_bytes: number; download_sources_json: string }>();
+  if (!row) return null;
+  let key = row.r2_storage_key;
+  let bytes = row.r2_video_bytes;
+  if (/^(720p|1080p)$/.test(requestedQuality || '')) {
+    try {
+      const parsed = JSON.parse(row.download_sources_json || '{}');
+      const sources = Array.isArray(parsed) ? parsed : parsed.sources;
+      const source = Array.isArray(sources) && sources.find((item: unknown) => item && typeof item === 'object' && String((item as { quality?: unknown }).quality).toLowerCase() === requestedQuality);
+      if (source?.r2StorageKey && Number.isSafeInteger(source.r2Bytes)) { key = source.r2StorageKey; bytes = source.r2Bytes; }
+    } catch { return null; }
+  }
+  if (!validVideoRecord(key, bytes)) return null;
+  return { movie, key, bytes };
 }
 
 export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeof readyVideo>>>) {

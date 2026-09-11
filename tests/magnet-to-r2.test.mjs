@@ -90,7 +90,7 @@ test('workflow uses trusted triggers, pinned actions, scoped secrets and finite 
   const workflow = parse(readFileSync('.github/workflows/magnet-to-r2.yml', 'utf8'));
   assert.deepEqual(workflow.on.repository_dispatch.types, ['magnet-to-r2']);
   assert.ok('workflow_dispatch' in workflow.on);
-  assert.equal(workflow.on.schedule, undefined);
+  assert.deepEqual(workflow.on.schedule, [{ cron: '17 2 * * *' }]);
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   const job = workflow.jobs.transfer;

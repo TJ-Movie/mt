@@ -6,7 +6,11 @@ import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
 
 type Bindings = { DB?: D1Database; MEDIA?: R2Bucket };
-type StoredDownloadSource = NonNullable<Movie['downloadSources']>[number];
+type StoredDownloadSource = NonNullable<Movie['downloadSources']>[number] & {
+  descriptorKey?: string;
+  r2StorageKey?: string;
+  r2Bytes?: number;
+};
 type StoredEpisode = NonNullable<Movie['episodes']>[number];
 
 type MovieRow = {
@@ -118,7 +122,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 function isStoredDownloadSource(value: unknown): value is StoredDownloadSource {
   return isRecord(value) && ['label', 'quality', 'resolution', 'size', 'url']
-    .every((key) => typeof value[key] === 'string');
+    .every((key) => typeof value[key] === 'string') &&
+    (value.descriptorKey === undefined || typeof value.descriptorKey === 'string') &&
+    (value.r2StorageKey === undefined || typeof value.r2StorageKey === 'string') &&
+    (value.r2Bytes === undefined || Number.isSafeInteger(value.r2Bytes));
 }
 function safeSources(json: string): StoredDownloadSource[] {
   try {
@@ -306,7 +313,7 @@ export type YtsIngestRecord = {
   backdrop: string;
   cast: (string | { actor: string; character?: string; image?: string })[];
   storageKey: string;
-  torrent: { url: string; quality: string; resolution: string; size: string; label: string };
+  torrents: Array<{ url: string; quality: string; resolution: string; size: string; label: string; descriptorKey?: string }>;
 };
 
 export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGPTUser): Promise<number> {
@@ -321,12 +328,12 @@ export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGP
     slugBase, record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year,
     record.runtime, Math.max(0, Math.min(10, record.rating)), 'movie', genre, director, JSON.stringify(cast), '[]', record.poster, record.backdrop, 0,
     'draft', 'pending', '2026-09-10T00:00:00.000Z', '2035-02-02T12:00:00.000Z', 'Tj@gmail.com', 'good', null, null, null, null,
-    JSON.stringify({ status: 'pending', sources: [record.torrent] }), '[]', '[]', 1,
+    JSON.stringify({ status: 'pending', sources: record.torrents }), '[]', '[]', 1,
     user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
   ];
   if (existing) {
     await database.prepare(`UPDATE movies SET title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = CASE WHEN trim(genre) = '' THEN ? ELSE genre END, director = CASE WHEN trim(director) = '' THEN ? ELSE director END, cast_json = CASE WHEN trim(cast_json) IN ('', '[]') THEN ? ELSE cast_json END, poster = ?, backdrop = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
-      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), record.poster, record.backdrop, JSON.stringify({ status: 'pending', sources: [record.torrent] }), record.storageKey, user.userId, now, existing.id).run();
+      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), record.poster, record.backdrop, JSON.stringify({ status: 'pending', sources: record.torrents }), record.storageKey, user.userId, now, existing.id).run();
     return existing.id;
   }
   const result = await database.prepare(`INSERT INTO movies (

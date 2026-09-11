@@ -1,5 +1,7 @@
 name: Magnet to private R2
 on:
+  schedule:
+    - cron: '17 2 * * *'
   repository_dispatch:
     types: [magnet-to-r2]
   workflow_dispatch:
