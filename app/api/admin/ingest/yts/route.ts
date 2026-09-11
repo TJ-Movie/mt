@@ -1,4 +1,5 @@
 import { getMediaBucket, upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
+import { env } from 'cloudflare:workers';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 
 const DEFAULT_IMDB_IDS = [
@@ -12,6 +13,20 @@ const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
 type YtsCast = { name?: unknown; character_name?: unknown; character?: unknown; url_small_image?: unknown; image?: unknown };
 type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown };
+const TMDB_FALLBACK_AVATAR = '/og.png';
+function formatRuntime(minutes: number): string { return minutes > 0 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : ''; }
+async function tmdbDetails(imdbId: string): Promise<Record<string, unknown> | null> {
+  const key = (env as unknown as { TMDB_API_KEY?: string }).TMDB_API_KEY;
+  if (!key) return null;
+  try {
+    const find = await fetch(`https://api.themoviedb.org/3/find/${encodeURIComponent(imdbId)}?api_key=${encodeURIComponent(key)}&external_source=imdb_id`, { signal: AbortSignal.timeout(10_000) });
+    const found = await find.json() as { movie_results?: Array<{ id?: number }> };
+    const id = found.movie_results?.[0]?.id;
+    if (!id) return null;
+    const detail = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${encodeURIComponent(key)}&append_to_response=credits`, { signal: AbortSignal.timeout(10_000) });
+    return detail.ok ? await detail.json() as Record<string, unknown> : null;
+  } catch { return null; }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
@@ -92,6 +107,8 @@ export async function POST(request: Request) {
   for (const imdbId of ids) {
     try {
       const movie = await fetchJson(imdbId);
+      const tmdb = await tmdbDetails(imdbId);
+      const tmdbCredits = isRecord(tmdb?.credits) ? tmdb.credits : null;
       const torrent = selectTorrent(movie.torrents);
       if (!torrent) throw new Error('NO_PREFERRED_TORRENT');
       const torrentUrl = text(torrent.url, 1000);
@@ -99,21 +116,22 @@ export async function POST(request: Request) {
       if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
       const storageKey = `assets/${crypto.randomUUID()}/data.bin`;
       await bucket.put(storageKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId } });
-      const posterUrl = text(movie.large_cover_image || movie.medium_cover_image, 1000);
-      const backdropUrl = text(movie.background_image_original || movie.background_image || posterUrl, 1000);
+      const posterUrl = text(tmdb?.poster_path ? `https://image.tmdb.org/t/p/original${text(tmdb.poster_path, 500)}` : movie.large_cover_image || movie.medium_cover_image, 1000);
+      const backdropUrl = text(tmdb?.backdrop_path ? `https://image.tmdb.org/t/p/original${text(tmdb.backdrop_path, 500)}` : movie.background_image_original || movie.background_image || posterUrl, 1000);
       const poster = await persistImage(posterUrl, bucket);
       const backdrop = await persistImage(backdropUrl, bucket, poster);
-      const castCandidates = Array.isArray(movie.cast) ? movie.cast.slice(0, 20).flatMap((entry) => {
+      const tmdbCast = tmdbCredits && Array.isArray(tmdbCredits.cast) ? tmdbCredits.cast : null;
+      const castCandidates = (tmdbCast || (Array.isArray(movie.cast) ? movie.cast : [])).slice(0, 20).flatMap((entry) => {
         if (!isRecord(entry)) return [];
         const actor = text(entry.name, 120);
         if (!actor) return [];
         const character = text(entry.character_name || entry.character, 120) || undefined;
-        const imageUrl = text(entry.url_small_image || entry.image, 1000);
+        const imageUrl = text(entry.profile_path ? `https://image.tmdb.org/t/p/w185${text(entry.profile_path, 500)}` : entry.url_small_image || entry.image, 1000);
         return [{ actor, character, imageUrl }];
-      }) : [];
+      });
       const cast = await Promise.all(castCandidates.map(async ({ imageUrl, ...member }) => ({
         ...member,
-        ...(imageUrl ? { image: await persistImage(imageUrl, bucket) } : {}),
+        image: imageUrl ? await persistImage(imageUrl, bucket, TMDB_FALLBACK_AVATAR) : TMDB_FALLBACK_AVATAR,
       })));
       const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
       const genre = (Array.isArray(movie.genres) ? movie.genres : [])
@@ -124,6 +142,8 @@ export async function POST(request: Request) {
         year: Number.isInteger(movie.year) ? Number(movie.year) : 0,
         synopsis: text(movie.description_full || movie.description_intro, 5000),
         rating: typeof movie.rating === 'number' ? movie.rating : Number(movie.rating) || 0,
+        runtime: formatRuntime(Number(tmdb?.runtime) || Number(movie.runtime) || 0),
+        tagline: text(tmdb?.tagline, 200) || `Watch ${text(movie.title, 200)} in HD`,
         genre,
         director: text(movie.director, 160) || 'Pending editorial review',
         poster,
