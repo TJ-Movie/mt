@@ -39,7 +39,7 @@ export type ValidationResult =
   | { ok: false; errors: Record<string, string> };
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const LOCAL_ASSET = /^\/(?:og\.png|media\/movie-art\/[a-f0-9-]{36}\.(?:jpg|png))$/;
+const LOCAL_ASSET = /^\/(?:og\.png|media\/(?:movie-art\/[a-f0-9-]{36}|(?:posters|backdrops)\/tt\d{7,10}|cast\/tt\d{7,10}-[1-6])\.(?:jpg|png))$/;
 const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
 const validImage = (value: string) => LOCAL_ASSET.test(value) || REMOTE_IMAGE.test(value);
 
