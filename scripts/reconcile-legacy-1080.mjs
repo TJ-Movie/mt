@@ -16,9 +16,10 @@ for (const row of rows) {
   const parsed = JSON.parse(row.download_sources_json || '{}'); const sources = Array.isArray(parsed) ? parsed : (parsed.sources || []);
   const legacy = /^assets\/[0-9a-f-]+\/data\.bin$/.test(row.r2_storage_key || '') ? await head(row.r2_storage_key) : null;
   const next = sources.map((source) => String(source.quality).toLowerCase() === '1080p' && !source.r2StorageKey && legacy ? { ...source, r2StorageKey: row.r2_storage_key, r2Bytes: legacy.ContentLength } : source);
-  if (JSON.stringify(next) !== JSON.stringify(sources)) await sql(`UPDATE movies SET download_sources_json=${q(JSON.stringify({ status: parsed.status || 'pending', sources: next }))}, revision=revision+1, updated_at=${q(new Date().toISOString())} WHERE id=${Number(row.id)} AND publication_status='draft'`);
   const checks = await Promise.all(next.filter((source) => /^(720p|1080p)$/.test(String(source.quality).toLowerCase()) && source.r2StorageKey).map(async (source) => ({ quality: String(source.quality).toLowerCase(), ok: Boolean(await head(source.r2StorageKey)) })));
-  if (checks.every((x) => x.ok) && checks.some((x) => x.quality === '720p') && checks.some((x) => x.quality === '1080p')) mapped.push({ id: row.id, title: row.title, imdbId: row.imdb_id });
+  const complete = checks.every((x) => x.ok) && checks.some((x) => x.quality === '720p') && checks.some((x) => x.quality === '1080p');
+  if (JSON.stringify(next) !== JSON.stringify(sources) || (complete && parsed.status !== 'available')) await sql(`UPDATE movies SET download_sources_json=${q(JSON.stringify({ status: complete ? 'available' : (parsed.status || 'pending'), sources: next }))}, revision=revision+1, updated_at=${q(new Date().toISOString())} WHERE id=${Number(row.id)} AND publication_status='draft'`);
+  if (complete) mapped.push({ id: row.id, title: row.title, imdbId: row.imdb_id });
 }
 let token; const objects = [];
 do { const page = await s3.send(new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: token })); objects.push(...(page.Contents || [])); token = page.IsTruncated ? page.NextContinuationToken : undefined; } while (token);
