@@ -33,6 +33,15 @@ import {
   TableHeader,
   TableRow,
 } from '../ui/table';
+
+function hasDualQualityAssets(movie: Pick<AdminMovie, 'downloadSources'>): boolean {
+  const qualities = new Set((movie.downloadSources ?? []).filter((source) =>
+    /^(720p|1080p)$/i.test(source.quality || source.resolution || '') &&
+    typeof source.r2StorageKey === 'string' && source.r2StorageKey.length > 0 &&
+    typeof source.r2Bytes === 'number' && Number.isSafeInteger(source.r2Bytes) && source.r2Bytes > 0,
+  ).map((source) => (source.quality || source.resolution).toLowerCase()));
+  return qualities.has('720p') && qualities.has('1080p');
+}
 import {
   AlertDialog,
   AlertDialogAction,
@@ -534,11 +543,11 @@ export function MovieStudio({
                         <span
                           className={`rounded-full px-2 py-1 text-[11px] ${movie.publicationStatus === 'published' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/8 text-white/45'}`}
                         >
-                           {movie.ingestStatus === 'ready' ? 'Ready for Review' : movie.publicationStatus}
+                           {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) ? 'Ready for Review' : movie.publicationStatus}
                         </span>
                       </div>
                       <p className="mt-3 text-xs text-white/35">
-                         {movie.ingestStatus === 'ready' ? 'Ready for Review · ' : ''}Rights: {movie.rightsStatus} · rev {movie.revision}
+                         {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) ? 'Ready for Review · ' : ''}Rights: {movie.rightsStatus} · rev {movie.revision}
                       </p>
                     </button>
                   ))}
