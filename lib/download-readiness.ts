@@ -13,6 +13,7 @@ export function rightsBlockers(movie: Pick<Movie, 'publicationStatus' | 'rightsS
 }
 
 export function validVideoRecord(key: unknown, bytes: unknown): boolean {
-  return typeof key === 'string' && /^assets\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/data\.bin$/.test(key) &&
+  return typeof key === 'string' && (/^assets\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/data\.bin$/.test(key) ||
+    /^assets\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:720p|1080p)\.mp4$/.test(key)) &&
     typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes > 0;
 }
