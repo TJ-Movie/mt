@@ -24,12 +24,24 @@ export async function readyVideo(slug: string, requestedQuality?: string) {
       const parsed = JSON.parse(row.download_sources_json || '{}');
       const sources = Array.isArray(parsed) ? parsed : parsed.sources;
       const source = Array.isArray(sources) && sources.find((item: unknown) => item && typeof item === 'object' && String((item as { quality?: unknown }).quality).toLowerCase() === quality);
-      const sourceRecord = source as { r2StorageKey?: unknown; r2Bytes?: unknown; r2_storage_key?: unknown; r2_video_bytes?: unknown } | undefined;
-      const sourceKey = sourceRecord?.r2StorageKey ?? sourceRecord?.r2_storage_key;
-      const sourceBytes = sourceRecord?.r2Bytes ?? sourceRecord?.r2_video_bytes;
+      const sourceRecord = source as { r2StorageKey?: unknown; r2Bytes?: unknown; r2_storage_key?: unknown; r2_video_bytes?: unknown; r2Key?: unknown; bytes?: unknown; storageKey?: unknown } | undefined;
+      let sourceKey = sourceRecord?.r2StorageKey ?? sourceRecord?.r2_storage_key ?? sourceRecord?.r2Key ?? sourceRecord?.storageKey;
+      let sourceBytes = sourceRecord?.r2Bytes ?? sourceRecord?.r2_video_bytes ?? sourceRecord?.bytes;
+      // Some legacy rows only stored the folder's data.bin key. If the
+      // quality-specific sibling exists, use it without touching the other
+      // quality or changing the database row.
+      if (typeof sourceKey !== 'string' && /^assets\/[0-9a-f-]+\/data\.bin$/.test(row.r2_storage_key || '')) {
+        const sibling = row.r2_storage_key.replace(/\/data\.bin$/, `/${quality}.mp4`);
+        if (await getMediaBucket().head(sibling)) sourceKey = sibling;
+      }
       // An explicit quality must never fall back to the row's primary key: that
       // key may point at the other quality (usually the legacy 720p object).
-      if (typeof sourceKey !== 'string' || !((typeof sourceBytes === 'number' || (typeof sourceBytes === 'string' && /^\d+$/.test(sourceBytes))) && Number.isSafeInteger(Number(sourceBytes)))) return null;
+      if (typeof sourceKey !== 'string') return null;
+      if (!((typeof sourceBytes === 'number' || (typeof sourceBytes === 'string' && /^\d+$/.test(sourceBytes))) && Number.isSafeInteger(Number(sourceBytes)))) {
+        const object = await getMediaBucket().head(sourceKey);
+        if (!object?.size || (object.httpMetadata?.contentType !== 'video/mp4' && object.httpMetadata?.contentType !== 'application/octet-stream')) return null;
+        sourceBytes = object.size;
+      }
       key = sourceKey;
       bytes = Number(sourceBytes);
     } catch { return null; }
