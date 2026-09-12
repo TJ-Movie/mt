@@ -11,6 +11,7 @@ import {
 } from '../../db';
 import { requireAdminUser } from '../../lib/security/admin-auth';
 import { getRuntimeControls } from '../../lib/security/runtime-controls';
+import { AdminSessionGuard } from '../../components/admin/admin-session-guard';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = {
@@ -30,7 +31,7 @@ export default async function StudioPage() {
   const controls = getRuntimeControls();
 
   return (
-    <main className="min-h-screen bg-[#111310] text-[#f2efe9]">
+    <AdminSessionGuard><main className="min-h-screen bg-[#111310] text-[#f2efe9]">
       <header className="border-b border-white/10 bg-[#151714]">
         <div className="mx-auto flex max-w-[1500px] flex-col gap-5 px-4 py-6 sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
           <div>
@@ -64,6 +65,6 @@ export default async function StudioPage() {
       <div className="mx-auto max-w-[1500px] px-4 pb-12 sm:px-8 lg:px-12">
         <SourceGovernance initialDomains={domains} initialReports={reports} />
       </div>
-    </main>
+    </main></AdminSessionGuard>
   );
 }

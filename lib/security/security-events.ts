@@ -10,6 +10,8 @@ export type SecurityEventName =
   | 'outbound_redirect_denied'
   | 'public_rate_limit_exceeded'
   | 'public_rate_limit_unavailable'
+  | 'admin_rate_limit_exceeded'
+  | 'admin_rate_limit_unavailable'
   | 'public_request_rejected';
 
 type SecurityLevel = 'info' | 'warn' | 'error';
