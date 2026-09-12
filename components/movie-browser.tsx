@@ -464,10 +464,10 @@ export function MovieBrowser({
                       className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.035]"
                     />
                     <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
-                    <span className="absolute left-1.5 top-1.5 bg-[#de5d4f]/95 px-1.5 py-1 text-[10px] font-bold text-white backdrop-blur sm:left-3 sm:top-3 sm:px-2 sm:text-xs">
-                      {movie.rating.toFixed(1)}
+                    <span className="absolute left-1.5 top-1.5 rounded-sm bg-black/65 px-1.5 py-1 text-[10px] font-bold text-white backdrop-blur sm:left-3 sm:top-3 sm:px-2 sm:text-xs">
+                      ★ {movie.rating.toFixed(1)}
                     </span>
-                    <span className="absolute right-1.5 top-1.5 bg-[#f2efe9]/90 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider backdrop-blur sm:left-3 sm:right-auto sm:top-3 sm:px-2 sm:text-xs">
+                    <span className="absolute right-1.5 top-1.5 rounded-sm bg-black/65 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white backdrop-blur sm:left-3 sm:right-auto sm:top-3 sm:px-2 sm:text-xs">
                       {movie.languages.length} subtitles
                     </span>
                     <span className="absolute bottom-3 right-3 grid size-11 place-items-center rounded-full bg-[#de5d4f] text-white opacity-100 transition sm:translate-y-2 sm:opacity-0 sm:group-hover:translate-y-0 sm:group-hover:opacity-100">
@@ -476,7 +476,7 @@ export function MovieBrowser({
                   </div>
                   <div className="mt-2 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
                     <div className="min-w-0">
-                      <h3 className="truncate font-serif text-sm leading-tight sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
+                      <h3 className="block min-h-5 w-full truncate text-sm font-semibold leading-tight text-black sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:font-serif sm:text-xl">
                         {movie.title}
                       </h3>
                       <p className="mt-1.5 hidden text-sm text-black/45 sm:block">
