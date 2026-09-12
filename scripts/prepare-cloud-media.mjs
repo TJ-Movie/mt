@@ -120,27 +120,30 @@ async function markSkipped(plan, item, persist) {
   item.bytes = null;
   item.skipped = true;
   item.skipReason = 'download-failure';
-  console.warn(`⚠️ Warning: Skipping Movie ${item.id} due to download failure`);
   await persist(plan);
 }
-export async function prepareOne(ctx, plan, options = {}) {
+async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
   const acquireItem = options.acquire || acquire;
+  const persist = options.saveManifest || saveManifest;
+  const wait = options.pause || pause;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await acquireItem(ctx, item, attempt);
+      await persist(plan);
+      return true;
+    } catch {
+      console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt }));
+      if (attempt < maxAttempts) await wait(5000 * 2 ** (attempt - 1));
+    }
+  }
+  return false;
+}
+export async function prepareOne(ctx, plan, options = {}) {
   const persist = options.saveManifest || saveManifest;
   for (const item of plan.files.filter(f => !f.verified && !f.skipped && !f.file)) {
     try {
-      let acquired = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          await acquireItem(ctx, item, attempt);
-          await persist(plan);
-          acquired = true;
-          break;
-        } catch (error) {
-          console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt }));
-          if (attempt < 3) await pause(5000 * 2 ** (attempt - 1));
-        }
-      }
-      if (acquired) return item;
+      if (await acquireWithRetries(ctx, plan, item, 3, options)) return item;
+      console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
       await markSkipped(plan, item, persist);
     } catch {
       await markSkipped(plan, item, persist);
@@ -150,11 +153,36 @@ export async function prepareOne(ctx, plan, options = {}) {
 }
 export async function prepareAll(ctx, plan, options = {}) {
   const persist = options.saveManifest || saveManifest;
+  const failedQueue = [];
   let prepared = 0;
-  while (plan.files.some(f => !f.verified && !f.skipped && !f.file)) {
-    const item = await prepareOne(ctx, plan, options);
-    if (!item) break;
-    prepared += 1;
+  const pending = plan.files.filter(f => !f.verified && !f.skipped && !f.file);
+  for (const item of pending) {
+    try {
+      if (await acquireWithRetries(ctx, plan, item, 3, options)) prepared += 1;
+      else {
+        console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
+        failedQueue.push(item);
+      }
+    } catch {
+      console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
+      failedQueue.push(item);
+    }
+  }
+  if (failedQueue.length) {
+    console.log(`Starting Second-Chance Retry Pass for ${failedQueue.length} skipped movies...`);
+    for (const item of failedQueue) {
+      try {
+        delete item.skipped;
+        delete item.skipReason;
+        const acquireItem = options.acquire || acquire;
+        await acquireItem(ctx, item, 4);
+        await persist(plan);
+        prepared += 1;
+      } catch {
+        console.error(`❌ Permanently skipping Movie ${item.id} (Unresolvable dead stream).`);
+        await markSkipped(plan, item, persist);
+      }
+    }
   }
   await persist(plan);
   return { prepared, skipped: plan.files.filter(f => f.skipped).length };

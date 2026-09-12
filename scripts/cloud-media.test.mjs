@@ -50,7 +50,7 @@ test('manifest accepts completed snapshots but rejects missing or corrupt staged
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
-test('preparation skips a failed movie and continues with later movies', async () => {
+test('two-pass preparation retries queued movies after the primary batch', async () => {
   const root = await mkdtemp(join(tmpdir(),'cloud-media-prepare-test-'));
   const plan = { schema:'flixlyra-cloud-v1', files: [
     { id:14, quality:'720p', key:stableKey(14,'720p'), bytes:null, file:null, verified:false },
@@ -59,30 +59,75 @@ test('preparation skips a failed movie and continues with later movies', async (
   const attempts = new Map();
   const saved = [];
   const warnings = [];
+  const logs = [];
+  const errors = [];
   const originalWarn = console.warn;
+  const originalLog = console.log;
+  const originalError = console.error;
   console.warn = message => warnings.push(String(message));
+  console.log = message => logs.push(String(message));
+  console.error = message => errors.push(String(message));
   try {
     const result = await prepareAll({}, plan, {
-      acquire: async (_ctx, item) => {
-        attempts.set(item.id, (attempts.get(item.id) || 0) + 1);
-        if (item.id === 14) throw new Error('dead stream');
+      acquire: async (_ctx, item, attempt) => {
+        attempts.set(item.id, [...(attempts.get(item.id) || []), attempt]);
+        if (item.id === 14 && attempt < 4) throw new Error('dead stream');
         item.file = join(root, `${item.id}.mp4`);
         item.bytes = 12;
         await writeFile(item.file, Buffer.from('0000ftyp0000'));
       },
+      pause: async () => {},
       saveManifest: async snapshot => saved.push(structuredClone(snapshot)),
     });
-    assert.deepEqual(result, { prepared:1, skipped:1 });
-    assert.equal(attempts.get(14), 3);
-    assert.equal(attempts.get(15), 1);
-    assert.equal(plan.files[0].skipped, true);
-    assert.equal(plan.files[0].file, null);
+    assert.deepEqual(result, { prepared:2, skipped:0 });
+    assert.deepEqual(attempts.get(14), [1,2,3,4]);
+    assert.deepEqual(attempts.get(15), [1]);
+    assert.equal(plan.files[0].skipped, undefined);
+    assert.equal(plan.files[0].file, join(root, '14.mp4'));
     assert.equal(plan.files[1].skipped, undefined);
     assert.equal(plan.files[1].file, join(root, '15.mp4'));
     assert.ok(saved.some(snapshot => snapshot.files[1].file === join(root, '15.mp4')));
-    assert.ok(warnings.includes('⚠️ Warning: Skipping Movie 14 due to download failure'));
+    assert.ok(logs.includes('Starting Second-Chance Retry Pass for 1 skipped movies...'));
+    assert.ok(errors.length === 0);
   } finally {
     console.warn = originalWarn;
+    console.log = originalLog;
+    console.error = originalError;
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
+test('two-pass preparation permanently skips a movie after the final retry', async () => {
+  const root = await mkdtemp(join(tmpdir(),'cloud-media-permanent-skip-test-'));
+  const plan = { schema:'flixlyra-cloud-v1', files: [{
+    id:14, quality:'720p', key:stableKey(14,'720p'), bytes:null, file:null, verified:false,
+  }] };
+  const attempts = [];
+  const warnings = [];
+  const logs = [];
+  const errors = [];
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.warn = message => warnings.push(String(message));
+  console.log = message => logs.push(String(message));
+  console.error = message => errors.push(String(message));
+  try {
+    const result = await prepareAll({}, plan, {
+      acquire: async (_ctx, _item, attempt) => { attempts.push(attempt); throw new Error('dead stream'); },
+      pause: async () => {},
+      saveManifest: async () => {},
+    });
+    assert.deepEqual(result, { prepared:0, skipped:1 });
+    assert.deepEqual(attempts, [1,2,3,4]);
+    assert.ok(warnings.includes('⚠️ Pass 1 failed for Movie 14. Queuing for final retry pass.'));
+    assert.ok(logs.includes('Starting Second-Chance Retry Pass for 1 skipped movies...'));
+    assert.ok(errors.includes('❌ Permanently skipping Movie 14 (Unresolvable dead stream).'));
+    assert.equal(plan.files[0].skipped, true);
+  } finally {
+    console.warn = originalWarn;
+    console.log = originalLog;
+    console.error = originalError;
     await rm(root,{recursive:true,force:true});
   }
 });
