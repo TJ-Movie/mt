@@ -277,7 +277,15 @@ export async function drainCloudPlan(plan, sync) {
         if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item); reconciled.add(item.key); }
       }
       let pending = plan.files.filter(f => !f.verified && !f.skipped);
-      if (!pending.length) { console.log('[complete] cloud snapshot verified in R2 and D1'); return; }
+      if (!pending.length) {
+        const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
+        if (skippedIds.length) {
+          const marked = await markPermanentlyFailed(ctx, skippedIds, plan);
+          if (marked !== skippedIds.length) throw new Error('Could not persist all permanent media failure states');
+        }
+        console.log('[complete] cloud snapshot verified in R2 and D1');
+        return;
+      }
       const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
         if (!item) continue;
         await sync(item);
