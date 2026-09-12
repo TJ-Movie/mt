@@ -71,7 +71,7 @@ async function sql(command) {
   return response.flatMap(r => r.results || []);
 }
 
-async function remoteDescriptor(json, quality) {
+export async function remoteDescriptor(json, quality) {
   const parsed = JSON.parse(json);
   const sources = Array.isArray(parsed) ? parsed : parsed.sources;
   const allowed = new Set((process.env.TORRENT_SOURCE_HOSTS || 'yts.gg').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -94,7 +94,7 @@ async function remoteDescriptor(json, quality) {
   return Buffer.concat(chunks);
 }
 
-async function alternativeDescriptor(imdbId, quality, currentUrl) {
+export async function alternativeDescriptor(imdbId, quality, currentUrl) {
   if (!imdbId || !quality) return null;
   const response = await fetch(`https://movies-api.accel.li/api/v2/movie_details.json?imdb_id=${encodeURIComponent(imdbId)}`, { signal: AbortSignal.timeout(15000) });
   if (!response.ok) return null;
