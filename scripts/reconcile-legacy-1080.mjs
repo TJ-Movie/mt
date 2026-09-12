@@ -29,5 +29,6 @@ const duplicates = objects.filter((o) => /\/1080p\.mp4$/.test(o.Key || ''));
 const referenced = new Set((await sql("SELECT download_sources_json FROM movies WHERE publication_status='draft'")).flatMap((row) => { try { const p = JSON.parse(row.download_sources_json || '{}'); const s = Array.isArray(p) ? p : p.sources || []; return s.map((x) => x.r2StorageKey).filter(Boolean); } catch { return []; } }));
 const deletable = duplicates.filter((o) => !referenced.has(o.Key));
 if (deletable.length) await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: deletable.map((o) => ({ Key: o.Key })), Quiet: true } }));
-console.log(JSON.stringify({ mappedLegacy1080: rows.length, deletedDuplicate1080: deletable.length, inspected, completeTitles: mapped }, null, 2));
+const targetRows = await sql("SELECT id,title,imdb_id,publication_status,ingest_status,download_sources_json FROM movies WHERE imdb_id IN ('tt0499549','tt1630029')");
+console.log(JSON.stringify({ mappedLegacy1080: rows.length, deletedDuplicate1080: deletable.length, inspected, targetRows, completeTitles: mapped }, null, 2));
 s3.destroy();
