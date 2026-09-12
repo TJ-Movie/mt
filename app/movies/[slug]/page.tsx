@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { MediaSourcesGateway } from '../../../components/media-sources-gateway';
-import { readyVideo } from '../../../lib/r2-download';
 import { notFound } from 'next/navigation';
 import {
   ArrowLeft,
@@ -21,7 +20,6 @@ import { getRuntimeControls } from '../../../lib/security/runtime-controls';
 import { MovieComments } from '../../../components/movie-comments';
 import { CastList } from '../../../components/cast-list';
 import { TrailerModal } from '../../../components/trailer-modal';
-import { DownloadOptionsDialog } from '../../../components/download-options-dialog';
 import { ShareButtons } from '../../../components/share-buttons';
 
 export function generateStaticParams() {
@@ -75,7 +73,6 @@ export default async function MoviePage({
   ).ok;
   const sourcesAvailable =
     controls.externalLinksEnabled && movie.rightsStatus === 'verified';
-  const directVideo = await readyVideo(movie.slug);
   return (
     <main className="min-h-screen bg-[#171815] text-white">
       <section className="relative min-h-[680px] overflow-hidden sm:min-h-[720px]">
@@ -148,8 +145,10 @@ export default async function MoviePage({
                     <Play size={17} /> Official link pending
                   </span>
                 )}
-                {directVideo ? (
-                  <DownloadOptionsDialog slug={movie.slug} title={movie.title} sources={movie.downloadSources ?? []} />
+                {movie.contentType !== 'series' ? (
+                  <a href={`/movies/${movie.slug}/download`} target="_blank" rel="noopener noreferrer" className="flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold hover:bg-white/10">
+                    <Download size={17} /> Download
+                  </a>
                   ) : movie.contentType === 'series' && telegramAvailable ? (
                   <details className="group relative min-[430px]:w-auto">
                     <summary className="flex min-h-12 cursor-pointer list-none items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold">
