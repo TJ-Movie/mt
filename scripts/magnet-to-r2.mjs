@@ -101,7 +101,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
   const now = Math.floor(Date.now() / 1000);
   const claimed = await sql(`UPDATE movies SET ingest_status='transferring', transfer_token=${quote(token)},
     transfer_lease_until=${now + limits.timeout + 600}, transfer_error=NULL WHERE id=${Number(row.id)} AND
-    (ingest_status='queued' OR (ingest_status='transferring' AND transfer_lease_until < ${now})) RETURNING id`);
+    (ingest_status IN ('queued','processing') OR (ingest_status='transferring' AND transfer_lease_until < ${now})) RETURNING id`);
   if (!claimed.length) return;
   let folder, client, upload, stream, timer;
   let committed = false;
@@ -163,7 +163,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       if (head.ContentLength !== file.length || head.ContentType !== 'video/mp4') throw new Error('Uploaded video verification failed');
       const nextSources = sources.map(s => (!quality || String(s.quality).toLowerCase() === quality) ? { ...s, r2StorageKey: key, r2Bytes: file.length } : s);
       const allReady = nextSources.length > 0 && nextSources.every(s => typeof s.r2StorageKey === 'string');
-      const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'queued'"}, r2_storage_key=${quote(key)},
+      const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'processing'"}, r2_storage_key=${quote(key)},
         r2_video_bytes=${file.length}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
         WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);
       if (!updated.length) throw new Error('Transfer lease lost');
@@ -231,7 +231,7 @@ export async function main() {
     }
     do {
       const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE
-        (ingest_status='queued' OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
+        (ingest_status IN ('queued','processing') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
         ORDER BY id LIMIT ${limits.batch}`);
       for (const row of rows) {
         if (interrupted || Date.now() + (limits.timeout + 300) * 1000 > deadline) {
@@ -257,13 +257,13 @@ export async function main() {
           }
           if (interrupted) return;
           const state = await sql(`SELECT ingest_status FROM movies WHERE id=${Number(row.id)}`);
-          if (state[0]?.ingest_status === 'ready' || (quality && state[0]?.ingest_status === 'queued')) break;
+          if (state[0]?.ingest_status === 'ready' || (quality && ['queued', 'processing'].includes(state[0]?.ingest_status))) break;
           const message = result.timedOut ? 'Isolated transfer timed out' : `Isolated transfer exited ${result.code ?? result.signal}`;
           // Recover only our own dead worker's lease; never overwrite another worker.
           await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_lease_until=NULL
             WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring'`);
           if (attempt < 2 && Date.now() + (limits.timeout + 300) * 1000 <= deadline) {
-            const retry = await sql(`UPDATE movies SET ingest_status='queued', transfer_token=NULL WHERE id=${Number(row.id)}
+            const retry = await sql(`UPDATE movies SET ingest_status='processing', transfer_token=NULL WHERE id=${Number(row.id)}
               AND ingest_status='failed' AND (transfer_token=${quote(token)} OR transfer_token IS NULL) RETURNING id`);
             if (retry.length) continue;
           }

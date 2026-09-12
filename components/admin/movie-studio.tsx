@@ -534,11 +534,11 @@ export function MovieStudio({
                         <span
                           className={`rounded-full px-2 py-1 text-[11px] ${movie.publicationStatus === 'published' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/8 text-white/45'}`}
                         >
-                          {movie.publicationStatus}
+                           {movie.ingestStatus === 'ready' ? 'Ready for Review' : movie.publicationStatus}
                         </span>
                       </div>
                       <p className="mt-3 text-xs text-white/35">
-                        Rights: {movie.rightsStatus} · rev {movie.revision}
+                         {movie.ingestStatus === 'ready' ? 'Ready for Review · ' : ''}Rights: {movie.rightsStatus} · rev {movie.revision}
                       </p>
                     </button>
                   ))}

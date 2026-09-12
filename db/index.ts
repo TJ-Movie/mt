@@ -309,6 +309,7 @@ export type YtsIngestRecord = {
   tagline: string;
   genre?: string;
   director?: string;
+  officialWatchUrl?: string;
   poster: string;
   backdrop: string;
   cast: (string | { actor: string; character?: string; image?: string })[];
@@ -327,13 +328,13 @@ export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGP
   const values = [
     slugBase, record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year,
     record.runtime, Math.max(0, Math.min(10, record.rating)), 'movie', genre, director, JSON.stringify(cast), '[]', record.poster, record.backdrop, 0,
-    'draft', 'pending', '2026-09-10T00:00:00.000Z', '2035-02-02T12:00:00.000Z', 'Tj@gmail.com', 'good', null, null, null, null,
+    'draft', 'pending', '2026-09-10T00:00:00.000Z', '2035-02-02T12:00:00.000Z', 'Tj@gmail.com', 'good', record.officialWatchUrl ?? null, null, null, null,
     JSON.stringify({ status: 'pending', sources: record.torrents }), '[]', '[]', 1,
-    user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
+    user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'processing',
   ];
   if (existing) {
-    await database.prepare(`UPDATE movies SET title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = CASE WHEN trim(genre) = '' THEN ? ELSE genre END, director = CASE WHEN trim(director) = '' THEN ? ELSE director END, cast_json = CASE WHEN trim(cast_json) IN ('', '[]') THEN ? ELSE cast_json END, poster = ?, backdrop = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
-      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), record.poster, record.backdrop, JSON.stringify({ status: 'pending', sources: record.torrents }), record.storageKey, user.userId, now, existing.id).run();
+    await database.prepare(`UPDATE movies SET title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = CASE WHEN trim(genre) = '' THEN ? ELSE genre END, director = CASE WHEN trim(director) = '' THEN ? ELSE director END, cast_json = CASE WHEN trim(cast_json) IN ('', '[]') THEN ? ELSE cast_json END, poster = ?, backdrop = ?, official_watch_url = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'processing', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
+      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), record.poster, record.backdrop, record.officialWatchUrl ?? null, JSON.stringify({ status: 'pending', sources: record.torrents }), record.storageKey, user.userId, now, existing.id).run();
     return existing.id;
   }
   const result = await database.prepare(`INSERT INTO movies (

@@ -23,7 +23,7 @@ async function tmdbDetails(imdbId: string): Promise<Record<string, unknown> | nu
     const found = await find.json() as { movie_results?: Array<{ id?: number }> };
     const id = found.movie_results?.[0]?.id;
     if (!id) return null;
-    const detail = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${encodeURIComponent(key)}&append_to_response=credits`, { signal: AbortSignal.timeout(10_000) });
+    const detail = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${encodeURIComponent(key)}&append_to_response=credits,videos`, { signal: AbortSignal.timeout(10_000) });
     return detail.ok ? await detail.json() as Record<string, unknown> : null;
   } catch { return null; }
 }
@@ -34,6 +34,24 @@ function selectTorrents(value: unknown): YtsTorrent[] {
   if (!Array.isArray(value)) return [];
   const torrents = value.filter(isRecord).filter((torrent) => text(torrent.url, 1000).startsWith('https://') && ['720p', '1080p'].includes(text(torrent.quality, 20).toLowerCase()));
   return ['1080p', '720p'].map((quality) => torrents.find((torrent) => text(torrent.quality, 20).toLowerCase() === quality)).filter(Boolean) as YtsTorrent[];
+}
+function officialTrailerUrl(tmdb: Record<string, unknown> | null): string | undefined {
+  const videos = isRecord(tmdb?.videos) && Array.isArray(tmdb.videos.results) ? tmdb.videos.results : [];
+  const candidates = videos.filter(isRecord).filter((video) => text(video.site, 30).toLowerCase() === 'youtube' && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 20)) && text(video.type, 30).toLowerCase() === 'trailer');
+  const selected = candidates.find((video) => video.official === true) || candidates[0];
+  return selected ? `https://www.youtube.com/watch?v=${text(selected.key, 20)}` : undefined;
+}
+function tmdbDirector(tmdb: Record<string, unknown> | null): string | undefined {
+  const credits = isRecord(tmdb?.credits) && Array.isArray(tmdb.credits.crew) ? tmdb.credits.crew : [];
+  const director = credits.find((member) => isRecord(member) && text(member.job, 40).toLowerCase() === 'director' && text(member.name, 160));
+  return director && isRecord(director) ? text(director.name, 160) : undefined;
+}
+function mapGenres(tmdb: Record<string, unknown> | null, yts: unknown): string {
+  const aliases: Record<string, string> = { 'science fiction': 'Sci-Fi', 'sci-fi': 'Sci-Fi', 'action': 'Action', 'adventure': 'Adventure', 'drama': 'Drama', 'thriller': 'Thriller' };
+  const tmdbGenres = isRecord(tmdb) && Array.isArray(tmdb.genres) ? tmdb.genres.map((genre) => isRecord(genre) ? text(genre.name, 40) : '').map((genre) => aliases[genre.toLowerCase()] || '').filter(Boolean) : [];
+  if (tmdbGenres.length) return [...new Set(tmdbGenres)].slice(0, 3).join(', ');
+  const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
+  return (Array.isArray(yts) ? yts : []).map((value) => text(value, 40)).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
 }
 function idsFromBody(body: unknown): string[] {
   if (!isRecord(body) || body.imdbIds === undefined) return DEFAULT_IMDB_IDS;
@@ -135,9 +153,7 @@ export async function POST(request: Request) {
         ...member,
         image: imageUrl ? await persistImage(imageUrl, bucket, TMDB_FALLBACK_AVATAR, `cast/${imdbId}-${index + 1}`) : TMDB_FALLBACK_AVATAR,
       })));
-      const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
-      const genre = (Array.isArray(movie.genres) ? movie.genres : [])
-        .map((value) => text(value, 40)).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
+      const genre = mapGenres(tmdb, movie.genres);
       const record: YtsIngestRecord = {
         imdbId,
         title: text(movie.title, 200),
@@ -147,7 +163,8 @@ export async function POST(request: Request) {
         runtime: formatRuntime(Number(tmdb?.runtime) || Number(movie.runtime) || 0),
         tagline: text(tmdb?.tagline, 200) || `Watch ${text(movie.title, 200)} in HD`,
         genre,
-        director: text(movie.director, 160) || 'Pending editorial review',
+        director: tmdbDirector(tmdb) || text(movie.director, 160) || 'Pending editorial review',
+        officialWatchUrl: officialTrailerUrl(tmdb),
         poster,
         backdrop,
         cast,
