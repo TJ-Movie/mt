@@ -38,8 +38,8 @@ export default async function MovieDownloadPage({
           <div className="mt-8 grid gap-3">
             {options.map((option) => (
               option.ready ? (
-                <a key={option.quality} href={`/api/download/resolve?slug=${encodeURIComponent(movie.slug)}&quality=${encodeURIComponent(option.quality)}`} className="flex min-h-14 items-center justify-between rounded-2xl bg-[#ef796d] px-5 py-4 font-semibold hover:bg-[#f58a7f]">
-                  <span>{option.quality} Direct Download <span className="ml-2 text-sm font-normal text-white/75">· {option.size}</span></span>
+                <a key={option.quality} href={`/api/download/resolve?slug=${encodeURIComponent(movie.slug)}&quality=${encodeURIComponent(option.quality)}`} className="flex min-h-14 items-center justify-between rounded-2xl bg-[#ef796d] px-5 py-4 font-semibold hover:bg-[#f58a7f] max-[380px]:px-3 max-[380px]:text-sm">
+                  <span className="whitespace-nowrap">{option.quality} Direct Download <span className="ml-2 text-sm font-normal text-white/75">· {option.size}</span></span>
                   <Download size={18} />
                 </a>
               ) : (

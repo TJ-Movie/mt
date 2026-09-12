@@ -29,7 +29,7 @@ export async function readyVideo(slug: string, requestedQuality?: string) {
       const sourceBytes = sourceRecord?.r2Bytes ?? sourceRecord?.r2_video_bytes;
       // An explicit quality must never fall back to the row's primary key: that
       // key may point at the other quality (usually the legacy 720p object).
-      if (typeof sourceKey !== 'string' || !Number.isSafeInteger(sourceBytes)) return null;
+      if (typeof sourceKey !== 'string' || !((typeof sourceBytes === 'number' || (typeof sourceBytes === 'string' && /^\d+$/.test(sourceBytes))) && Number.isSafeInteger(Number(sourceBytes)))) return null;
       key = sourceKey;
       bytes = Number(sourceBytes);
     } catch { return null; }
@@ -45,7 +45,9 @@ export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeo
   const bucket = process.env.R2_BUCKET_NAME;
   if (!accessKeyId || !secretAccessKey || !account || !/^[a-f0-9]{32}$/.test(account) || !bucket || !/^[a-z0-9-]+$/.test(bucket)) throw new Error('R2 signing is not configured');
   const object = await getMediaBucket().head(video.key);
-  if (!object || object.size !== video.bytes || object.httpMetadata?.contentType !== 'video/mp4') throw new Error('Video object unavailable');
+  const contentType = object?.httpMetadata?.contentType;
+  const legacyContainer = /^assets\/[0-9a-f-]+\/data\.bin$/.test(video.key);
+  if (!object || object.size !== video.bytes || (contentType !== 'video/mp4' && !(legacyContainer && contentType === 'application/octet-stream'))) throw new Error('Video object unavailable');
   const title = video.movie.title.replace(/[\u0000-\u001f\u007f"\\/<>:|?*]/g, '_').slice(0, 120) || 'Movie';
   const ascii = title.replace(/[^\x20-\x7e]/g, '_');
   const url = new URL(`https://${account}.r2.cloudflarestorage.com/${bucket}/${video.key}`);
