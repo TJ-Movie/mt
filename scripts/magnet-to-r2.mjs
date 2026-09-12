@@ -122,7 +122,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
   const now = Math.floor(Date.now() / 1000);
   const claimed = await sql(`UPDATE movies SET ingest_status='transferring', transfer_token=${quote(token)},
     transfer_lease_until=${now + limits.timeout + 600}, transfer_error=NULL WHERE id=${Number(row.id)} AND
-    (ingest_status IN ('queued','processing') OR (ingest_status='transferring' AND transfer_lease_until < ${now})) RETURNING id`);
+    (ingest_status IN ('queued','processing','ready') OR (ingest_status='transferring' AND transfer_lease_until < ${now})) RETURNING id`);
   if (!claimed.length) return;
   let folder, client, upload, stream, timer;
   let committed = false;
@@ -258,8 +258,8 @@ export async function main() {
       return;
     }
     do {
-      const rows = await sql(`SELECT id, imdb_id, storage_key, download_sources_json FROM movies WHERE
-        (ingest_status IN ('queued','processing') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
+      const rows = await sql(`SELECT id, imdb_id, storage_key, ingest_status, download_sources_json FROM movies WHERE
+        (ingest_status IN ('queued','processing','ready') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
         ORDER BY id LIMIT ${limits.batch}`);
       for (const row of rows) {
         if (interrupted || Date.now() + (limits.timeout + 300) * 1000 > deadline) {
@@ -268,7 +268,8 @@ export async function main() {
         }
         const parsed = JSON.parse(row.download_sources_json || '{}');
         const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
-        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()) && (!requestedQuality || String(s.quality ?? s.resolution).toLowerCase() === requestedQuality) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality ?? s.resolution).toLowerCase());
+        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()) && (!requestedQuality || String(s.quality ?? s.resolution).toLowerCase() === requestedQuality) && (typeof s.r2StorageKey !== 'string' || !Number.isSafeInteger(s.r2Bytes) || s.r2Bytes <= 0)).map(s => String(s.quality ?? s.resolution).toLowerCase());
+        if (!qualities.length && ['queued', 'processing', 'ready'].includes(row.ingest_status)) continue;
         // Scope retries to this snapshot, never re-download ready rows or expand the batch.
         for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 3; attempt++) {
           const token = randomUUID();
