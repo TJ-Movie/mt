@@ -122,10 +122,23 @@ async function markSkipped(plan, item, persist) {
   item.skipReason = 'download-failure';
   await persist(plan);
 }
-export async function markPermanentlyFailed(ctx, ids) {
+function failureState(plan, id) {
+  const present = new Set((plan?.files || [])
+    .filter(item => item.id === id && (item.verified || item.file))
+    .map(item => item.quality));
+  const missing = ['720p', '1080p'].filter(quality => !present.has(quality));
+  if (present.size === 1 && missing.length === 1) {
+    return {
+      status: 'HALF',
+      ingestStatus: 'half',
+      error: `Missing ${missing[0]}: Dead stream / 404`,
+    };
+  }
+  return { status: 'FAILED', ingestStatus: 'failed', error: 'Dead stream / 404' };
+}
+export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
-  const primarySql = "UPDATE movies SET status = 'FAILED', sync_error = 'Dead stream / 404', ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = CURRENT_TIMESTAMP WHERE id = ?";
-  const compatibilitySql = "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?";
+  let half = 0;
   const isTransient = (error) => /fetch failed|network|timeout|timed out|ECONN|ETIMEDOUT|429|5\d\d/i.test(String(error?.message || error));
   const queryWithRetry = async (sql, params) => {
     let lastError;
@@ -142,19 +155,30 @@ export async function markPermanentlyFailed(ctx, ids) {
     throw lastError;
   };
   for (const id of [...new Set(ids)]) {
+    const state = failureState(plan, id);
+    const primarySql = `UPDATE movies SET status = '${state.status}', sync_error = '${state.error}', ingest_status = '${state.ingestStatus}', transfer_error = '${state.error}', updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+    const compatibilitySql = state.status === 'FAILED'
+      ? "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
+      : "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?";
     try {
       await queryWithRetry(primarySql, [id]);
       marked += 1;
+      if (state.status === 'HALF') half += 1;
     } catch {
       try {
-        await queryWithRetry(compatibilitySql, [new Date().toISOString(), id]);
+        const compatibilityParams = state.status === 'FAILED'
+          ? [new Date().toISOString(), id]
+          : [state.ingestStatus, state.error, new Date().toISOString(), id];
+        await queryWithRetry(compatibilitySql, compatibilityParams);
         marked += 1;
+        if (state.status === 'HALF') half += 1;
       } catch (error) {
         console.error(`⚠️ Could not mark Movie ${id} as FAILED in D1: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
   console.log(`❌ Marked ${marked} movies as FAILED in D1 Database.`);
+  if (half) console.log(`⚠️ Marked ${half} movies as HALF (one quality missing) in D1 Database.`);
   return marked;
 }
 async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
@@ -221,7 +245,7 @@ export async function prepareAll(ctx, plan, options = {}) {
       }
     }
   }
-  const markedFailed = await markPermanentlyFailed(ctx, permanentlyFailedIds);
+  const markedFailed = await markPermanentlyFailed(ctx, permanentlyFailedIds, plan);
   await persist(plan);
   return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed };
 }

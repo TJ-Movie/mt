@@ -150,6 +150,27 @@ test('permanent D1 failure marking falls back to the repository schema and survi
   assert.equal(unavailable, 0);
 });
 
+test('permanent failure preserves a successfully prepared quality as a half-ready record', async () => {
+  const calls = [];
+  const plan = { files: [
+    { id: 16, quality: '720p', verified: true, file: null },
+    { id: 16, quality: '1080p', verified: false, file: null },
+  ] };
+  const marked = await markPermanentlyFailed({
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      if (sql.includes("status = 'HALF'")) throw new Error('missing compatibility columns');
+      return [];
+    },
+  }, [16], plan);
+  assert.equal(marked, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /status = 'HALF'/);
+  assert.match(calls[0].sql, /ingest_status = 'half'/);
+  assert.match(calls[1].sql, /ingest_status = \?/);
+  assert.deepEqual(calls[1].params.slice(0, 2), ['half', 'Missing 1080p: Dead stream / 404']);
+});
+
 test('verification accepts a manifest containing only skipped pending movies', async () => {
   const root = await mkdtemp(join(tmpdir(),'cloud-media-skipped-test-'));
   try {
