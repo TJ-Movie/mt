@@ -454,7 +454,7 @@ export function MovieBrowser({
         </div>
         {filtered.length ? (
           <>
-            <div className="grid grid-cols-1 gap-x-4 gap-y-10 min-[390px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-10 lg:grid-cols-5">
               {filtered.map((movie, index) => (
                 <a key={movie.slug} href={contentHref(movie)} className="group">
                   <div className="relative aspect-[2/3] overflow-hidden bg-[#d9d5ce]">
@@ -464,23 +464,26 @@ export function MovieBrowser({
                       className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.035]"
                     />
                     <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
-                    <span className="absolute left-3 top-3 bg-[#f2efe9]/90 px-2 py-1 text-xs font-semibold uppercase tracking-wider backdrop-blur">
+                    <span className="absolute left-1.5 top-1.5 bg-[#de5d4f]/95 px-1.5 py-1 text-[10px] font-bold text-white backdrop-blur sm:left-3 sm:top-3 sm:px-2 sm:text-xs">
+                      {movie.rating.toFixed(1)}
+                    </span>
+                    <span className="absolute right-1.5 top-1.5 bg-[#f2efe9]/90 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider backdrop-blur sm:left-3 sm:right-auto sm:top-3 sm:px-2 sm:text-xs">
                       {movie.languages.length} subtitles
                     </span>
                     <span className="absolute bottom-3 right-3 grid size-11 place-items-center rounded-full bg-[#de5d4f] text-white opacity-100 transition sm:translate-y-2 sm:opacity-0 sm:group-hover:translate-y-0 sm:group-hover:opacity-100">
                       <Play size={16} fill="currentColor" />
                     </span>
                   </div>
-                  <div className="mt-4 flex items-start justify-between gap-3">
+                  <div className="mt-2 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
                     <div className="min-w-0">
-                      <h3 className="break-words font-serif text-xl leading-tight">
+                      <h3 className="truncate font-serif text-sm leading-tight sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
                         {movie.title}
                       </h3>
-                      <p className="mt-1.5 text-sm text-black/45">
+                      <p className="mt-1.5 hidden text-sm text-black/45 sm:block">
                         {movie.year} · {movie.runtime}
                       </p>
                     </div>
-                    <span className="shrink-0 pt-1 text-xs font-semibold">
+                    <span className="hidden shrink-0 pt-1 text-xs font-semibold sm:block">
                       {String(index + 1).padStart(2, '0')}
                     </span>
                   </div>
