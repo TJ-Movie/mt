@@ -94,6 +94,28 @@ async function remoteDescriptor(json, quality) {
   return Buffer.concat(chunks);
 }
 
+async function alternativeDescriptor(imdbId, quality, currentUrl) {
+  if (!imdbId || !quality) return null;
+  const response = await fetch(`https://movies-api.accel.li/api/v2/movie_details.json?imdb_id=${encodeURIComponent(imdbId)}`, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) return null;
+  const payload = await response.json();
+  const torrents = Array.isArray(payload?.data?.movie?.torrents) ? payload.data.movie.torrents : [];
+  const allowed = new Set((process.env.TORRENT_SOURCE_HOSTS || 'yts.gg').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+  for (const candidate of torrents) {
+    if (String(candidate.quality ?? candidate.resolution).toLowerCase() !== quality || candidate.url === currentUrl) continue;
+    try {
+      const url = new URL(candidate.url);
+      if (url.protocol !== 'https:' || !allowed.has(url.hostname)) continue;
+      const descriptor = await fetch(candidate.url, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+      if (!descriptor.ok || !descriptor.body) continue;
+      const chunks = []; let length = 0;
+      for await (const chunk of descriptor.body) { length += chunk.byteLength; if (length > 2 * 1024 * 1024) break; chunks.push(Buffer.from(chunk)); }
+      if (length > 0 && length <= 2 * 1024 * 1024) return Buffer.concat(chunks);
+    } catch { /* try next candidate */ }
+  }
+  return null;
+}
+
 async function transfer(row, s3, bucket, limits, requestedQuality) {
   const token = process.env.TRANSFER_CHILD_TOKEN || randomUUID();
   const quality = /^(720p|1080p)$/.test(requestedQuality || '') ? requestedQuality : null;
@@ -130,6 +152,10 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       source = Buffer.from(await descriptor.Body.transformToByteArray());
     }
     if (!source) source = await remoteDescriptor(row.download_sources_json, effectiveQuality);
+    if (Number(process.env.TRANSFER_ATTEMPT || 1) > 1) {
+      const alternative = await alternativeDescriptor(row.imdb_id, effectiveQuality, selected?.url);
+      if (alternative) source = alternative;
+    }
     const run = async () => {
       const torrent = await new Promise((resolve, reject) => {
         client.once('error', reject);
@@ -227,12 +253,12 @@ export async function main() {
     const childQuality = process.argv.find(arg => arg.startsWith('--quality='))?.slice(10);
     if (childId !== undefined) {
       if (!/^[1-9]\d{0,9}$/.test(childId) || !/^[a-f0-9-]{36}$/.test(process.env.TRANSFER_CHILD_TOKEN || '')) throw new Error('Invalid child transfer identity');
-      const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE id=${Number(childId)}`);
+      const rows = await sql(`SELECT id, imdb_id, storage_key, download_sources_json FROM movies WHERE id=${Number(childId)}`);
       if (rows.length) await transfer(rows[0], s3, process.env.R2_BUCKET_NAME, limits, childQuality);
       return;
     }
     do {
-      const rows = await sql(`SELECT id, storage_key, download_sources_json FROM movies WHERE
+      const rows = await sql(`SELECT id, imdb_id, storage_key, download_sources_json FROM movies WHERE
         (ingest_status IN ('queued','processing') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
         ORDER BY id LIMIT ${limits.batch}`);
       for (const row of rows) {
@@ -244,14 +270,14 @@ export async function main() {
         const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
         const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()) && (!requestedQuality || String(s.quality ?? s.resolution).toLowerCase() === requestedQuality) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality ?? s.resolution).toLowerCase());
         // Scope retries to this snapshot, never re-download ready rows or expand the batch.
-        for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 2; attempt++) {
+        for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 3; attempt++) {
           const token = randomUUID();
-          console.log(`Transfer ${row.id}: attempt ${attempt}/2`);
+          console.log(`Transfer ${row.id}: attempt ${attempt}/3`);
           const scratch = await mkdtemp(join(tmpdir(), 'flixlyra-transfer-'));
           let result;
           try {
             result = await runChild([process.argv[1], `--transfer-id=${row.id}`, ...(quality ? [`--quality=${quality}`] : [])], {
-              env: { ...process.env, TRANSFER_CHILD_TOKEN: token, TRANSFER_CHILD_DIRECTORY: scratch }, timeoutMs: (limits.timeout + 90) * 1000,
+              env: { ...process.env, TRANSFER_ATTEMPT: String(attempt), TRANSFER_CHILD_TOKEN: token, TRANSFER_CHILD_DIRECTORY: scratch }, timeoutMs: (limits.timeout + 90) * 1000,
             });
           } finally {
             // Also clean up after a force-killed child, before starting another film.
@@ -264,10 +290,13 @@ export async function main() {
           // Recover only our own dead worker's lease; never overwrite another worker.
           await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_lease_until=NULL
             WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring'`);
-          if (attempt < 2 && Date.now() + (limits.timeout + 300) * 1000 <= deadline) {
+          if (attempt < 3 && Date.now() + (limits.timeout + 300) * 1000 <= deadline) {
             const retry = await sql(`UPDATE movies SET ingest_status='processing', transfer_token=NULL WHERE id=${Number(row.id)}
               AND ingest_status='failed' AND (transfer_token=${quote(token)} OR transfer_token IS NULL) RETURNING id`);
-            if (retry.length) continue;
+            if (retry.length) {
+              await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+              continue;
+            }
           }
           process.exitCode = 1;
           console.error(`Unfinished: ${row.id}: ${message}; continuing batch`);
