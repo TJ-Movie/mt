@@ -88,6 +88,50 @@ export function getMediaBucket(): R2Bucket {
   return bucket;
 }
 
+type MovieMediaRow = {
+  poster: string;
+  backdrop: string;
+  subtitle_url: string | null;
+  cast_json: string;
+  episodes_json: string;
+  download_sources_json: string;
+  streaming_sources_json: string;
+  storage_key: string | null;
+  r2_storage_key: string | null;
+};
+
+const SAFE_R2_CLEANUP_KEY = /^(?:assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent)$/;
+
+function addR2CleanupKey(keys: Set<string>, value: unknown): void {
+  if (typeof value !== 'string') return;
+  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value;
+  if (SAFE_R2_CLEANUP_KEY.test(candidate)) keys.add(candidate);
+}
+
+function collectNestedR2Keys(keys: Set<string>, value: unknown, depth = 0): void {
+  if (depth > 8 || value === null || value === undefined) return;
+  if (typeof value === 'string') {
+    addR2CleanupKey(keys, value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 500)) collectNestedR2Keys(keys, item, depth + 1);
+    return;
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>).slice(0, 100)) collectNestedR2Keys(keys, item, depth + 1);
+  }
+}
+
+export function collectMovieR2Keys(row: MovieMediaRow): string[] {
+  const keys = new Set<string>();
+  for (const value of [row.poster, row.backdrop, row.subtitle_url, row.storage_key, row.r2_storage_key]) addR2CleanupKey(keys, value);
+  for (const json of [row.cast_json, row.episodes_json, row.download_sources_json, row.streaming_sources_json]) {
+    try { collectNestedR2Keys(keys, JSON.parse(json || 'null')); } catch { /* Ignore malformed legacy JSON. */ }
+  }
+  return [...keys];
+}
+
 function safeStringArray(json: string): string[] {
   try {
     const value: unknown = JSON.parse(json);
@@ -402,12 +446,23 @@ export async function archiveAdminMovie(id: number, revision: number, user: Chat
 
 export async function deleteArchivedAdminMovie(id: number, revision: number, user: ChatGPTUser): Promise<boolean> {
   const database = getDatabase();
-  const current = await database.prepare("SELECT slug FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived' LIMIT 1").bind(id, revision).first<{ slug: string }>();
+  const current = await database.prepare(`SELECT slug, poster, backdrop, subtitle_url, cast_json, episodes_json,
+    download_sources_json, streaming_sources_json, storage_key, r2_storage_key
+    FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived' LIMIT 1`).bind(id, revision).first<MovieMediaRow & { slug: string }>();
   if (!current) return false;
+
+  const keys = collectMovieR2Keys(current);
+  const references = keys.length ? await database.batch(keys.map((key) => database.prepare(`SELECT 1 AS referenced FROM movies
+    WHERE id <> ? AND (r2_storage_key = ? OR storage_key = ? OR poster = ? OR backdrop = ? OR subtitle_url = ?
+      OR cast_json LIKE ? OR episodes_json LIKE ? OR download_sources_json LIKE ? OR streaming_sources_json LIKE ?)
+    LIMIT 1`).bind(id, key, key, `/media/${key}`, `/media/${key}`, `/media/${key}`, `%${key}%`, `%${key}%`, `%${key}%`, `%${key}%`))) : [];
+  const deletable = keys.filter((_, index) => !references[index]?.results?.length);
+  if (deletable.length) await getMediaBucket().delete(deletable);
+
   const result = await database.prepare("DELETE FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived'").bind(id, revision).run();
   if (result.meta.changes !== 1) return false;
-  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record'], new Date().toISOString()).run();
-  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug });
+  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record', ...(deletable.length ? ['r2_media'] : [])], new Date().toISOString()).run();
+  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug, r2ObjectsDeleted: deletable.length });
   return true;
 }
 
