@@ -457,12 +457,27 @@ export async function deleteArchivedAdminMovie(id: number, revision: number, use
       OR cast_json LIKE ? OR episodes_json LIKE ? OR download_sources_json LIKE ? OR streaming_sources_json LIKE ?)
     LIMIT 1`).bind(id, key, key, `/media/${key}`, `/media/${key}`, `/media/${key}`, `%${key}%`, `%${key}%`, `%${key}%`, `%${key}%`))) : [];
   const deletable = keys.filter((_, index) => !references[index]?.results?.length);
-  if (deletable.length) await getMediaBucket().delete(deletable);
+  let deletedR2Objects = 0;
+  if (deletable.length) {
+    try {
+      const bucket = getMediaBucket();
+      for (const key of deletable) {
+        try {
+          await bucket.delete(key);
+          deletedR2Objects += 1;
+        } catch (error) {
+          console.warn(JSON.stringify({ event: 'r2_movie_cleanup_failed', movieId: id, key, error: error instanceof Error ? error.message : String(error) }));
+        }
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ event: 'r2_movie_cleanup_unavailable', movieId: id, error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
 
   const result = await database.prepare("DELETE FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived'").bind(id, revision).run();
   if (result.meta.changes !== 1) return false;
-  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record', ...(deletable.length ? ['r2_media'] : [])], new Date().toISOString()).run();
-  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug, r2ObjectsDeleted: deletable.length });
+  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record', ...(deletedR2Objects ? ['r2_media'] : [])], new Date().toISOString()).run();
+  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug, r2ObjectsDeleted: deletedR2Objects, r2ObjectsAttempted: deletable.length });
   return true;
 }
 

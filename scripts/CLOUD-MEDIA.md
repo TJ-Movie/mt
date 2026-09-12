@@ -25,4 +25,13 @@ unavailable peers, invalid secrets or insufficient disk can still prevent comple
 Acquisition has bounded retries/timeouts, and later scheduled runs resume from
 durable R2/D1 state. A continuous loop does not remove GitHub's job time limit.
 
+Permanent Admin deletion also attempts to remove the movie's unshared R2 media
+before deleting its D1 row. For direct D1 deletions or historical leftovers, run
+`node scripts/purge-orphaned-r2.mjs --dry-run` first, then
+`node scripts/purge-orphaned-r2.mjs` after reviewing the
+candidate count. The GitHub Actions `r2-sync` manual dispatch exposes the same
+operation as an explicit `purge_orphans` option. Normal push and scheduled syncs
+never purge orphaned objects. Archived movies remain protected because they still
+exist in D1 and may be restored.
+
 Checks: `node --test scripts/cloud-media.test.mjs` and `node --check` on the scripts.

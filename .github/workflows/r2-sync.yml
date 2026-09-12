@@ -3,6 +3,12 @@ name: Smart R2 media sync
 on:
   push:
   workflow_dispatch:
+    inputs:
+      purge_orphans:
+        description: 'Delete R2 objects not referenced by any D1 movie (irreversible)'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '41 */6 * * *'
 
@@ -52,3 +58,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: node scripts/smart-r2-sync.mjs --manifest=tmp/r2-video-manifest.json --media-dir=tmp/media --quality=720p,1080p --concurrency=5
+
+      - name: Purge Orphaned R2 Objects
+        if: github.event_name == 'workflow_dispatch' && inputs.purge_orphans == true
+        run: node scripts/purge-orphaned-r2.mjs
