@@ -97,7 +97,6 @@ async function remoteDescriptor(json, quality) {
 async function transfer(row, s3, bucket, limits, requestedQuality) {
   const token = process.env.TRANSFER_CHILD_TOKEN || randomUUID();
   const quality = /^(720p|1080p)$/.test(requestedQuality || '') ? requestedQuality : null;
-  const key = `assets/${randomUUID()}/${quality || 'video'}.mp4`;
   const now = Math.floor(Date.now() / 1000);
   const claimed = await sql(`UPDATE movies SET ingest_status='transferring', transfer_token=${quote(token)},
     transfer_lease_until=${now + limits.timeout + 600}, transfer_error=NULL WHERE id=${Number(row.id)} AND
@@ -117,9 +116,11 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       downloadLimit: limits.download, uploadLimit: limits.upload });
     const parsed = JSON.parse(row.download_sources_json || '{}');
     const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
-    const selected = quality ? sources.find(s => String(s.quality).toLowerCase() === quality) : sources[0];
-    let source = sourceMagnet(row.download_sources_json, quality);
-    const descriptorKey = selected?.descriptorKey || (!quality ? row.storage_key : null);
+    const selected = quality ? sources.find(s => String(s.quality).toLowerCase() === quality) : sources.find(s => /^(1080p|720p)$/.test(String(s.quality).toLowerCase()));
+    const effectiveQuality = quality || (selected && /^(720p|1080p)$/.test(String(selected.quality).toLowerCase()) ? String(selected.quality).toLowerCase() : null);
+    const key = `assets/${randomUUID()}/${effectiveQuality || 'video'}.mp4`;
+    let source = sourceMagnet(row.download_sources_json, effectiveQuality);
+    const descriptorKey = selected?.descriptorKey || (!effectiveQuality ? row.storage_key : null);
     if (!source && descriptorKey && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(descriptorKey)) {
       const descriptor = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: descriptorKey }), { abortSignal: AbortSignal.timeout(30000) });
       if (!descriptor.ContentLength || descriptor.ContentLength > 2 * 1024 * 1024) {
@@ -128,7 +129,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       }
       source = Buffer.from(await descriptor.Body.transformToByteArray());
     }
-    if (!source) source = await remoteDescriptor(row.download_sources_json, quality);
+    if (!source) source = await remoteDescriptor(row.download_sources_json, effectiveQuality);
     const run = async () => {
       const torrent = await new Promise((resolve, reject) => {
         client.once('error', reject);
@@ -161,8 +162,9 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       controller.signal.throwIfAborted();
       if (head.ContentLength !== file.length || head.ContentType !== 'video/mp4') throw new Error('Uploaded video verification failed');
-      const nextSources = sources.map(s => (!quality || String(s.quality).toLowerCase() === quality) ? { ...s, r2StorageKey: key, r2Bytes: file.length } : s);
-      const allReady = nextSources.length > 0 && nextSources.every(s => typeof s.r2StorageKey === 'string');
+      const nextSources = sources.map(s => (effectiveQuality && String(s.quality).toLowerCase() === effectiveQuality) ? { ...s, r2StorageKey: key, r2Bytes: file.length } : s);
+      const qualitySources = nextSources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()));
+      const allReady = ['720p', '1080p'].every(required => qualitySources.some(s => String(s.quality).toLowerCase() === required && typeof s.r2StorageKey === 'string' && Number.isSafeInteger(s.r2Bytes) && s.r2Bytes > 0));
       const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'processing'"}, r2_storage_key=${quote(key)},
         r2_video_bytes=${file.length}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
         WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);

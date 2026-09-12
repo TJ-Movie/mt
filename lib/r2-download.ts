@@ -18,12 +18,20 @@ export async function readyVideo(slug: string, requestedQuality?: string) {
   if (!row) return null;
   let key = row.r2_storage_key;
   let bytes = row.r2_video_bytes;
-  if (/^(720p|1080p)$/.test(requestedQuality || '')) {
+  const quality = /^(720p|1080p)$/.test(requestedQuality || '') ? requestedQuality : undefined;
+  if (quality) {
     try {
       const parsed = JSON.parse(row.download_sources_json || '{}');
       const sources = Array.isArray(parsed) ? parsed : parsed.sources;
-      const source = Array.isArray(sources) && sources.find((item: unknown) => item && typeof item === 'object' && String((item as { quality?: unknown }).quality).toLowerCase() === requestedQuality);
-      if (source?.r2StorageKey && Number.isSafeInteger(source.r2Bytes)) { key = source.r2StorageKey; bytes = source.r2Bytes; }
+      const source = Array.isArray(sources) && sources.find((item: unknown) => item && typeof item === 'object' && String((item as { quality?: unknown }).quality).toLowerCase() === quality);
+      const sourceRecord = source as { r2StorageKey?: unknown; r2Bytes?: unknown; r2_storage_key?: unknown; r2_video_bytes?: unknown } | undefined;
+      const sourceKey = sourceRecord?.r2StorageKey ?? sourceRecord?.r2_storage_key;
+      const sourceBytes = sourceRecord?.r2Bytes ?? sourceRecord?.r2_video_bytes;
+      // An explicit quality must never fall back to the row's primary key: that
+      // key may point at the other quality (usually the legacy 720p object).
+      if (typeof sourceKey !== 'string' || !Number.isSafeInteger(sourceBytes)) return null;
+      key = sourceKey;
+      bytes = Number(sourceBytes);
     } catch { return null; }
   }
   if (!validVideoRecord(key, bytes)) return null;
