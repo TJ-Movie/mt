@@ -23,10 +23,16 @@ export async function readyVideo(slug: string, requestedQuality?: string) {
     try {
       const parsed = JSON.parse(row.download_sources_json || '{}');
       const sources = Array.isArray(parsed) ? parsed : parsed.sources;
-      const source = Array.isArray(sources) && sources.find((item: unknown) => item && typeof item === 'object' && String((item as { quality?: unknown }).quality).toLowerCase() === quality);
-      const sourceRecord = source as { r2StorageKey?: unknown; r2Bytes?: unknown; r2_storage_key?: unknown; r2_video_bytes?: unknown; r2Key?: unknown; bytes?: unknown; storageKey?: unknown } | undefined;
+      const source = Array.isArray(sources) && sources.find((item: unknown) => {
+        if (!item || typeof item !== 'object') return false;
+        const record = item as { quality?: unknown; resolution?: unknown };
+        return String(record.quality ?? record.resolution ?? '').toLowerCase() === quality;
+      });
+      const sourceRecord = source as { r2StorageKey?: unknown; r2Bytes?: unknown; r2_storage_key?: unknown; r2_video_bytes?: unknown; r2Key?: unknown; bytes?: unknown; storageKey?: unknown; r2?: { key?: unknown; bytes?: unknown } } | undefined;
       let sourceKey = sourceRecord?.r2StorageKey ?? sourceRecord?.r2_storage_key ?? sourceRecord?.r2Key ?? sourceRecord?.storageKey;
       let sourceBytes = sourceRecord?.r2Bytes ?? sourceRecord?.r2_video_bytes ?? sourceRecord?.bytes;
+      if (sourceKey === undefined) sourceKey = sourceRecord?.r2?.key;
+      if (sourceBytes === undefined) sourceBytes = sourceRecord?.r2?.bytes;
       // Some legacy rows only stored the folder's data.bin key. If the
       // quality-specific sibling exists, use it without touching the other
       // quality or changing the database row.

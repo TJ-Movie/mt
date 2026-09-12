@@ -46,7 +46,7 @@ export function sourceMagnet(json, quality) {
   let parsed;
   try { parsed = JSON.parse(json); } catch { return null; }
   const sources = Array.isArray(parsed) ? parsed : parsed?.sources;
-  const source = sources?.find(s => (!quality || String(s.quality).toLowerCase() === quality) && /^magnet:\?/i.test(s.url));
+  const source = sources?.find(s => (!quality || String(s.quality ?? s.resolution).toLowerCase() === quality) && /^magnet:\?/i.test(s.url));
   if (!source) return null;
   const xt = new URL(source.url).searchParams.get('xt');
   // Drop arbitrary web seeds and other URL parameters supplied by the source.
@@ -75,7 +75,7 @@ async function remoteDescriptor(json, quality) {
   const parsed = JSON.parse(json);
   const sources = Array.isArray(parsed) ? parsed : parsed.sources;
   const allowed = new Set((process.env.TORRENT_SOURCE_HOSTS || 'yts.gg').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-  const candidate = sources?.find(s => (!quality || String(s.quality).toLowerCase() === quality) && s.url && !s.descriptorKey && (() => {
+  const candidate = sources?.find(s => (!quality || String(s.quality ?? s.resolution).toLowerCase() === quality) && s.url && !s.descriptorKey && (() => {
     try {
       const url = new URL(s.url);
       return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowed.has(url.hostname);
@@ -116,8 +116,8 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       downloadLimit: limits.download, uploadLimit: limits.upload });
     const parsed = JSON.parse(row.download_sources_json || '{}');
     const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
-    const selected = quality ? sources.find(s => String(s.quality).toLowerCase() === quality) : sources.find(s => /^(1080p|720p)$/.test(String(s.quality).toLowerCase()));
-    const effectiveQuality = quality || (selected && /^(720p|1080p)$/.test(String(selected.quality).toLowerCase()) ? String(selected.quality).toLowerCase() : null);
+    const selected = quality ? sources.find(s => String(s.quality ?? s.resolution).toLowerCase() === quality) : sources.find(s => /^(1080p|720p)$/.test(String(s.quality ?? s.resolution).toLowerCase()));
+    const effectiveQuality = quality || (selected && /^(720p|1080p)$/.test(String(selected.quality ?? selected.resolution).toLowerCase()) ? String(selected.quality ?? selected.resolution).toLowerCase() : null);
     const key = `assets/${randomUUID()}/${effectiveQuality || 'video'}.mp4`;
     let source = sourceMagnet(row.download_sources_json, effectiveQuality);
     const descriptorKey = selected?.descriptorKey || (!effectiveQuality ? row.storage_key : null);
@@ -162,9 +162,9 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
       const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       controller.signal.throwIfAborted();
       if (head.ContentLength !== file.length || head.ContentType !== 'video/mp4') throw new Error('Uploaded video verification failed');
-      const nextSources = sources.map(s => (effectiveQuality && String(s.quality).toLowerCase() === effectiveQuality) ? { ...s, r2StorageKey: key, r2Bytes: file.length } : s);
-      const qualitySources = nextSources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()));
-      const allReady = ['720p', '1080p'].every(required => qualitySources.some(s => String(s.quality).toLowerCase() === required && typeof s.r2StorageKey === 'string' && Number.isSafeInteger(s.r2Bytes) && s.r2Bytes > 0));
+      const nextSources = sources.map(s => (effectiveQuality && String(s.quality ?? s.resolution).toLowerCase() === effectiveQuality) ? { ...s, quality: effectiveQuality, r2StorageKey: key, r2Bytes: file.length } : s);
+      const qualitySources = nextSources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()));
+      const allReady = ['720p', '1080p'].every(required => qualitySources.some(s => String(s.quality ?? s.resolution).toLowerCase() === required && typeof s.r2StorageKey === 'string' && Number.isSafeInteger(s.r2Bytes) && s.r2Bytes > 0));
       const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'processing'"}, r2_storage_key=${quote(key)},
         r2_video_bytes=${file.length}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
         WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);
@@ -242,7 +242,7 @@ export async function main() {
         }
         const parsed = JSON.parse(row.download_sources_json || '{}');
         const sources = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.sources) ? parsed.sources : []);
-        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality).toLowerCase()) && (!requestedQuality || String(s.quality).toLowerCase() === requestedQuality) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality).toLowerCase());
+        const qualities = sources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()) && (!requestedQuality || String(s.quality ?? s.resolution).toLowerCase() === requestedQuality) && typeof s.r2StorageKey !== 'string').map(s => String(s.quality ?? s.resolution).toLowerCase());
         // Scope retries to this snapshot, never re-download ready rows or expand the batch.
         for (const quality of (qualities.length ? qualities : [undefined])) for (let attempt = 1; attempt <= 2; attempt++) {
           const token = randomUUID();
