@@ -122,6 +122,24 @@ async function markSkipped(plan, item, persist) {
   item.skipReason = 'download-failure';
   await persist(plan);
 }
+export async function markPermanentlyFailed(ctx, ids) {
+  let marked = 0;
+  for (const id of [...new Set(ids)]) {
+    try {
+      await ctx.query("UPDATE movies SET status = 'FAILED', sync_error = 'Dead stream / 404', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+      marked += 1;
+    } catch {
+      try {
+        await ctx.query("UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?", [new Date().toISOString(), id]);
+        marked += 1;
+      } catch (error) {
+        console.error(`⚠️ Could not mark Movie ${id} as FAILED in D1: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  console.log(`❌ Marked ${marked} movies as FAILED in D1 Database.`);
+  return marked;
+}
 async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
   const acquireItem = options.acquire || acquire;
   const persist = options.saveManifest || saveManifest;
@@ -154,6 +172,7 @@ export async function prepareOne(ctx, plan, options = {}) {
 export async function prepareAll(ctx, plan, options = {}) {
   const persist = options.saveManifest || saveManifest;
   const failedQueue = [];
+  const permanentlyFailedIds = [];
   let prepared = 0;
   const pending = plan.files.filter(f => !f.verified && !f.skipped && !f.file);
   for (const item of pending) {
@@ -180,12 +199,14 @@ export async function prepareAll(ctx, plan, options = {}) {
         prepared += 1;
       } catch {
         console.error(`❌ Permanently skipping Movie ${item.id} (Unresolvable dead stream).`);
+        if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
         await markSkipped(plan, item, persist);
       }
     }
   }
+  const markedFailed = await markPermanentlyFailed(ctx, permanentlyFailedIds);
   await persist(plan);
-  return { prepared, skipped: plan.files.filter(f => f.skipped).length };
+  return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed };
 }
 export async function commitItem(ctx, item) {
   const object = await ctx.head(item.key);

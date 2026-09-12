@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { stableKey, makePlan, commitItem, prepareAll } from './prepare-cloud-media.mjs';
+import { stableKey, makePlan, commitItem, prepareAll, markPermanentlyFailed } from './prepare-cloud-media.mjs';
 import { verifyPlan } from './verify-cloud-media.mjs';
 
 test('stable keys survive runner restarts and distinguish qualities', () => {
@@ -79,7 +79,7 @@ test('two-pass preparation retries queued movies after the primary batch', async
       pause: async () => {},
       saveManifest: async snapshot => saved.push(structuredClone(snapshot)),
     });
-    assert.deepEqual(result, { prepared:2, skipped:0 });
+    assert.deepEqual(result, { prepared:2, skipped:0, permanentlyFailedIds:[], markedFailed:0 });
     assert.deepEqual(attempts.get(14), [1,2,3,4]);
     assert.deepEqual(attempts.get(15), [1]);
     assert.equal(plan.files[0].skipped, undefined);
@@ -113,12 +113,12 @@ test('two-pass preparation permanently skips a movie after the final retry', asy
   console.log = message => logs.push(String(message));
   console.error = message => errors.push(String(message));
   try {
-    const result = await prepareAll({}, plan, {
+    const result = await prepareAll({ query: async () => [] }, plan, {
       acquire: async (_ctx, _item, attempt) => { attempts.push(attempt); throw new Error('dead stream'); },
       pause: async () => {},
       saveManifest: async () => {},
     });
-    assert.deepEqual(result, { prepared:0, skipped:1 });
+    assert.deepEqual(result, { prepared:0, skipped:1, permanentlyFailedIds:[14], markedFailed:1 });
     assert.deepEqual(attempts, [1,2,3,4]);
     assert.ok(warnings.includes('⚠️ Pass 1 failed for Movie 14. Queuing for final retry pass.'));
     assert.ok(logs.includes('Starting Second-Chance Retry Pass for 1 skipped movies...'));
@@ -130,6 +130,24 @@ test('two-pass preparation permanently skips a movie after the final retry', asy
     console.error = originalError;
     await rm(root,{recursive:true,force:true});
   }
+});
+
+test('permanent D1 failure marking falls back to the repository schema and survives a DB glitch', async () => {
+  const calls = [];
+  const marked = await markPermanentlyFailed({
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      if (sql.includes("status = 'FAILED'")) throw new Error('missing compatibility columns');
+      return [];
+    },
+  }, [14,14]);
+  assert.equal(marked, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].sql, /status = 'FAILED'/);
+  assert.match(calls[1].sql, /ingest_status = 'failed'/);
+
+  const unavailable = await markPermanentlyFailed({ query: async () => { throw new Error('network glitch'); } }, [15]);
+  assert.equal(unavailable, 0);
 });
 
 test('verification accepts a manifest containing only skipped pending movies', async () => {
