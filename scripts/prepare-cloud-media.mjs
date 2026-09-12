@@ -115,14 +115,49 @@ async function acquire(ctx, item, attempt) {
     if (!item.file) await rm(work, { recursive: true, force: true });
   }
 }
-export async function prepareOne(ctx, plan) {
-  for (const item of plan.files.filter(f => !f.verified)) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try { await acquire(ctx, item, attempt); await saveManifest(plan); return item; }
-      catch { console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt })); if (attempt < 3) await pause(5000 * 2 ** (attempt - 1)); }
+async function markSkipped(plan, item, persist) {
+  item.file = null;
+  item.bytes = null;
+  item.skipped = true;
+  item.skipReason = 'download-failure';
+  console.warn(`⚠️ Warning: Skipping Movie ${item.id} due to download failure`);
+  await persist(plan);
+}
+export async function prepareOne(ctx, plan, options = {}) {
+  const acquireItem = options.acquire || acquire;
+  const persist = options.saveManifest || saveManifest;
+  for (const item of plan.files.filter(f => !f.verified && !f.skipped && !f.file)) {
+    try {
+      let acquired = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await acquireItem(ctx, item, attempt);
+          await persist(plan);
+          acquired = true;
+          break;
+        } catch (error) {
+          console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt }));
+          if (attempt < 3) await pause(5000 * 2 ** (attempt - 1));
+        }
+      }
+      if (acquired) return item;
+      await markSkipped(plan, item, persist);
+    } catch {
+      await markSkipped(plan, item, persist);
     }
   }
-  throw new Error('No pending video could be acquired; next scheduled run will resume from D1/R2');
+  return null;
+}
+export async function prepareAll(ctx, plan, options = {}) {
+  const persist = options.saveManifest || saveManifest;
+  let prepared = 0;
+  while (plan.files.some(f => !f.verified && !f.skipped && !f.file)) {
+    const item = await prepareOne(ctx, plan, options);
+    if (!item) break;
+    prepared += 1;
+  }
+  await persist(plan);
+  return { prepared, skipped: plan.files.filter(f => f.skipped).length };
 }
 export async function commitItem(ctx, item) {
   const object = await ctx.head(item.key);
@@ -151,9 +186,10 @@ export async function drainCloudPlan(plan, sync) {
       for (const item of plan.files) {
         if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item); reconciled.add(item.key); }
       }
-      let pending = plan.files.filter(f => !f.verified);
+      let pending = plan.files.filter(f => !f.verified && !f.skipped);
       if (!pending.length) { console.log('[complete] cloud snapshot verified in R2 and D1'); return; }
       const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
+        if (!item) continue;
         await sync(item);
         await commitItem(ctx, item);
         item.verified = true;
@@ -172,7 +208,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     await mkdir(mediaRoot, { recursive: true });
     const plan = await makePlan(ctx);
     await saveManifest(plan);
-    if (plan.files.some(f => !f.verified)) await prepareOne(ctx, plan);
-    console.log(JSON.stringify({ event: 'prepared', total: plan.files.length, verified: plan.files.filter(f => f.verified).length }));
+    const result = await prepareAll(ctx, plan);
+    console.log(JSON.stringify({ event: 'prepared', total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result }));
   } finally { ctx.s3.destroy(); }
 }
