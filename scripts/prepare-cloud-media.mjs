@@ -124,13 +124,30 @@ async function markSkipped(plan, item, persist) {
 }
 export async function markPermanentlyFailed(ctx, ids) {
   let marked = 0;
+  const primarySql = "UPDATE movies SET status = 'FAILED', sync_error = 'Dead stream / 404', ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+  const compatibilitySql = "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?";
+  const isTransient = (error) => /fetch failed|network|timeout|timed out|ECONN|ETIMEDOUT|429|5\d\d/i.test(String(error?.message || error));
+  const queryWithRetry = async (sql, params) => {
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await ctx.query(sql, params);
+        return true;
+      } catch (error) {
+        lastError = error;
+        if (!isTransient(error) || attempt === 3) break;
+        await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+      }
+    }
+    throw lastError;
+  };
   for (const id of [...new Set(ids)]) {
     try {
-      await ctx.query("UPDATE movies SET status = 'FAILED', sync_error = 'Dead stream / 404', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+      await queryWithRetry(primarySql, [id]);
       marked += 1;
     } catch {
       try {
-        await ctx.query("UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?", [new Date().toISOString(), id]);
+        await queryWithRetry(compatibilitySql, [new Date().toISOString(), id]);
         marked += 1;
       } catch (error) {
         console.error(`⚠️ Could not mark Movie ${id} as FAILED in D1: ${error instanceof Error ? error.message : String(error)}`);
