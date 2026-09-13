@@ -456,7 +456,7 @@ export function MovieBrowser({
         {filtered.length ? (
           <>
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-10 lg:grid-cols-5">
-              {filtered.map((movie, index) => (
+              {filtered.map((movie) => (
                 <a key={movie.slug} href={contentHref(movie)} className="group text-stone-900">
                   <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-stone-200 shadow-[0_12px_30px_rgba(41,37,36,0.16)]">
                     <img
@@ -472,7 +472,7 @@ export function MovieBrowser({
                       <Play size={16} fill="currentColor" />
                     </span>
                   </div>
-                  <div className="mt-3 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
+                  <div className="mt-3 flex items-start gap-2 sm:mt-4 sm:gap-3">
                     <div className="min-w-0">
                       <h3 className="block min-h-5 w-full line-clamp-2 font-serif text-sm font-semibold leading-tight text-stone-900 sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
                         {movie.title}
@@ -481,9 +481,6 @@ export function MovieBrowser({
                         {movie.year} · {movie.runtime}
                       </p>
                     </div>
-                    <span className="hidden shrink-0 pt-1 text-xs font-semibold text-stone-500 sm:block">
-                      {String(index + 1).padStart(2, '0')}
-                    </span>
                   </div>
                 </a>
               ))}
