@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import fs, { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, rm, statfs, stat, open } from 'node:fs/promises';
 import { resolve, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { S3Client, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
-import { primaryMp4, uploadStream, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
+import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
@@ -95,11 +96,12 @@ export async function validateMp4(filePath, expectedBytes) {
   return { bytes: info.size, expectedBytes };
 }
 
-function progressStream(stream, item, totalBytes) {
+function progressStream(item, totalBytes) {
   let downloaded = 0;
   let nextPercent = 10;
   let lastLoggedAt = 0;
   const startedAt = Date.now();
+  const progressPassThrough = new PassThrough();
   const report = (force = false) => {
     const now = Date.now();
     const percent = totalBytes > 0 ? Math.min(100, Math.floor(downloaded / totalBytes * 100)) : 0;
@@ -111,12 +113,15 @@ function progressStream(stream, item, totalBytes) {
     while (nextPercent <= percent) nextPercent += 10;
   };
   report(true);
-  stream.on('data', chunk => {
+  // Observe the intermediate PassThrough only. Attaching a data listener to
+  // WebTorrent's raw stream can put it into flowing mode before pipeline()
+  // attaches its destination, which may drain chunks before they reach disk.
+  progressPassThrough.on('data', chunk => {
     downloaded += chunk.byteLength ?? chunk.length ?? 0;
     report();
   });
-  stream.on('end', () => report(true));
-  return stream;
+  progressPassThrough.on('end', () => report(true));
+  return progressPassThrough;
 }
 export function sourcesOf(value) {
   const parsed = JSON.parse(value || '{}');
@@ -235,7 +240,13 @@ async function acquire(ctx, item, attempt) {
     if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new Error('Insufficient runner disk for this video');
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
-    await pipeline(uploadStream(progressStream(file.createReadStream(), item, file.length)), createWriteStream(filePath), { signal: controller.signal });
+    const readStream = file.createReadStream();
+    const progressPassThrough = progressStream(item, file.length);
+    await pipeline(readStream, progressPassThrough, createWriteStream(filePath), { signal: controller.signal });
+    const written = fs.statSync(filePath);
+    if (!written.isFile() || written.size <= 10 * 1024 * 1024) {
+      throw new Error('NEW_FILE_ZERO_BYTES_OR_CORRUPT');
+    }
     const validated = await validateMp4(filePath, file.length);
     item.file = filePath; item.bytes = validated.bytes;
   } finally {
