@@ -293,7 +293,16 @@ export async function listPublishedMovies(): Promise<Movie[]> {
 }
 
 export async function getPublishedMovie(slug: string): Promise<Movie | undefined> {
-  return (await listPublishedMovies()).find((movie) => movie.slug === slug);
+  try {
+    const row = await getDatabase()
+      .prepare(`SELECT ${MOVIE_COLUMNS} FROM movies WHERE slug = ? AND publication_status = 'published' LIMIT 1`)
+      .bind(slug)
+      .first<MovieRow>();
+    return row ? rowToMovie(row) : undefined;
+  } catch {
+    logSecurityEvent('catalogue_database_unavailable', 'error');
+    return undefined;
+  }
 }
 
 export async function initializeStarterCatalogue(user: ChatGPTUser): Promise<void> {

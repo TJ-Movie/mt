@@ -18,16 +18,19 @@ function clean(value: unknown, max: number): string | null {
   return normalized.length > 0 && normalized.length <= max ? normalized : null;
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ slug: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const slug = clean((await params).slug, 80);
   if (!slug) return Response.json({ error: 'Invalid movie.' }, { status: 400, headers: HEADERS });
-  const movie = await getPublishedMovie(slug);
-  if (!movie) return Response.json({ error: 'Movie not found.' }, { status: 404, headers: HEADERS });
+  const rateLimit = await enforcePublicRateLimit(request, 'comments', 60, 60);
+  if (!rateLimit.allowed) return Response.json({ error: 'Too many requests. Try again later.' }, { status: 429, headers: { ...HEADERS, ...rateLimit.headers } });
   try {
-    const rows = await getDatabase().prepare(`SELECT id, display_name, body, created_at FROM movie_comments WHERE movie_slug = ? AND status = 'visible' ORDER BY id DESC LIMIT 50`).bind(slug).all<{ id: number; display_name: string; body: string; created_at: string }>();
-    return Response.json({ comments: rows.results.map((row) => ({ id: row.id, name: row.display_name, body: row.body, createdAt: row.created_at })) }, { headers: HEADERS });
+    const database = getDatabase();
+    const movie = await database.prepare("SELECT id FROM movies WHERE slug = ? AND publication_status = 'published' LIMIT 1").bind(slug).first<{ id: number }>();
+    if (!movie) return Response.json({ error: 'Movie not found.' }, { status: 404, headers: { ...HEADERS, ...rateLimit.headers } });
+    const rows = await database.prepare(`SELECT id, display_name, body, created_at FROM movie_comments WHERE movie_slug = ? AND status = 'visible' ORDER BY id DESC LIMIT 50`).bind(slug).all<{ id: number; display_name: string; body: string; created_at: string }>();
+    return Response.json({ comments: rows.results.map((row) => ({ id: row.id, name: row.display_name, body: row.body, createdAt: row.created_at })) }, { headers: { ...HEADERS, ...rateLimit.headers } });
   } catch {
-    return Response.json({ comments: [] }, { headers: HEADERS });
+    return Response.json({ comments: [] }, { headers: { ...HEADERS, ...rateLimit.headers } });
   }
 }
 

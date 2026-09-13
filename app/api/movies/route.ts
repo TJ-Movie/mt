@@ -2,6 +2,8 @@ import { toPublicMovie } from '../../../lib/public-movie';
 import { logSecurityEvent } from '../../../lib/security/security-events';
 import { listPublishedMovies } from '../../../db';
 import { contentTypes } from '../../../lib/catalogue-options';
+import { enforcePublicRateLimit } from '../../../lib/security/public-rate-limit';
+import { availableQualitiesFromD1 } from '../../../lib/r2-download';
 
 const MAX_QUERY_LENGTH = 80;
 const MAX_FILTER_LENGTH = 30;
@@ -51,6 +53,8 @@ export async function GET(request: Request) {
   if (query === null || genre === null || language === null || type === null) return badRequest('text_limit');
   if (type && type !== 'all' && !contentTypes.includes(type as typeof contentTypes[number])) return badRequest('content_type');
   if (page === null || limit === null) return badRequest('pagination_bounds');
+  const rate = await enforcePublicRateLimit(request, 'catalogue', 120, 60);
+  if (!rate.allowed) return new Response('Try again later', { status: 429, headers: { ...ERROR_HEADERS, ...rate.headers } });
 
   const movies = await listPublishedMovies();
   const filtered = movies.filter((movie) => {
@@ -62,7 +66,13 @@ export async function GET(request: Request) {
     return (!query || text.includes(query)) && (!genre || genre === 'all' || movieGenres.includes(genre)) && (!language || language === 'all languages' || movie.languages.some((item) => item.toLowerCase() === language)) && (!type || type === 'all' || movie.contentType === type);
   });
   const start = (page - 1) * limit;
-  const results = filtered.slice(start, start + limit).map(toPublicMovie);
+  // The D1 row carries qualities that were persisted only after R2 HEAD/size
+  // verification. Do not perform two R2 HEAD requests per movie here: a
+  // public limit of 24 must remain comfortably below Worker subrequest caps.
+  const results = filtered.slice(start, start + limit).map((movie) => ({
+    ...toPublicMovie(movie),
+    available_qualities: availableQualitiesFromD1(movie),
+  }));
   const totalPages = Math.max(1, Math.ceil(filtered.length / limit));
 
   return Response.json({
@@ -75,5 +85,5 @@ export async function GET(request: Request) {
       totalPages,
       hasNextPage: page < totalPages,
     },
-  }, { headers: SUCCESS_HEADERS });
+  }, { headers: { ...SUCCESS_HEADERS, ...rate.headers } });
 }
