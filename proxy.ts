@@ -73,7 +73,7 @@ function buildContentSecurityPolicy(nonce: string): string {
     "script-src-attr 'none'",
     `style-src 'self' 'nonce-${nonce}'`,
     "style-src-attr 'none'",
-    "img-src 'self' data:",
+    "img-src 'self' data: https://image.tmdb.org https://*.yts.mx https://*.yts.lt https://*.yts.am https://*.yts.rs https://*.yts.pm",
     "font-src 'self' data:",
     "connect-src 'self'",
     "media-src 'self'",

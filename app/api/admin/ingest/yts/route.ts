@@ -1,4 +1,4 @@
-import { getMediaBucket, upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
+import { upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
 import { env } from 'cloudflare:workers';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 
@@ -13,70 +13,38 @@ const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
 type YtsCast = { name?: unknown; character_name?: unknown; character?: unknown; url_small_image?: unknown; image?: unknown };
 type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown };
-const TMDB_FALLBACK_AVATAR = '/og.png';
+type RuntimeEnv = { GITHUB_ACTIONS_TOKEN?: string; GITHUB_TOKEN?: string; GITHUB_REPOSITORY?: string; GITHUB_WORKFLOW_FILE?: string; GITHUB_WORKFLOW_REF?: string };
+const MAX_SUBREQUESTS = 40;
+const DEFAULT_REPOSITORY = 'TJ-Movie/mt';
+const DEFAULT_WORKFLOW = 'r2-sync.yml';
+const DEFAULT_REF = 'main';
 function formatRuntime(minutes: number): string { return minutes > 0 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : ''; }
-async function tmdbDetails(imdbId: string): Promise<Record<string, unknown> | null> {
-  const key = (env as unknown as { TMDB_API_KEY?: string }).TMDB_API_KEY;
-  if (!key) return null;
-  try {
-    const find = await fetch(`https://api.themoviedb.org/3/find/${encodeURIComponent(imdbId)}?api_key=${encodeURIComponent(key)}&external_source=imdb_id`, { signal: AbortSignal.timeout(10_000) });
-    const found = await find.json() as { movie_results?: Array<{ id?: number }> };
-    const id = found.movie_results?.[0]?.id;
-    if (!id) return null;
-    const detail = await fetch(`https://api.themoviedb.org/3/movie/${id}?api_key=${encodeURIComponent(key)}&append_to_response=credits,videos`, { signal: AbortSignal.timeout(10_000) });
-    return detail.ok ? await detail.json() as Record<string, unknown> : null;
-  } catch { return null; }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
+function remoteImage(value: unknown, fallback = '/og.png'): string {
+  const candidate = text(value, 1000);
+  try {
+    const url = new URL(candidate);
+    const hostname = url.hostname.toLowerCase();
+    const allowed = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') || hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') || hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
+    return url.protocol === 'https:' && allowed ? url.toString() : fallback;
+  } catch { return fallback; }
+}
 function selectTorrents(value: unknown): YtsTorrent[] {
   if (!Array.isArray(value)) return [];
   const torrents = value.filter(isRecord).filter((torrent) => text(torrent.url, 1000).startsWith('https://') && ['720p', '1080p'].includes(text(torrent.quality, 20).toLowerCase()));
   return ['1080p', '720p'].map((quality) => torrents.find((torrent) => text(torrent.quality, 20).toLowerCase() === quality)).filter(Boolean) as YtsTorrent[];
 }
-function officialTrailerUrl(tmdb: Record<string, unknown> | null): string | undefined {
-  const videos = isRecord(tmdb?.videos) && Array.isArray(tmdb.videos.results) ? tmdb.videos.results : [];
-  const candidates = videos.filter(isRecord).filter((video) => text(video.site, 30).toLowerCase() === 'youtube' && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 20)) && text(video.type, 30).toLowerCase() === 'trailer');
-  const selected = candidates.find((video) => video.official === true) || candidates[0];
-  return selected ? `https://www.youtube.com/watch?v=${text(selected.key, 20)}` : undefined;
-}
-function tmdbDirector(tmdb: Record<string, unknown> | null): string | undefined {
-  const credits = isRecord(tmdb?.credits) && Array.isArray(tmdb.credits.crew) ? tmdb.credits.crew : [];
-  const director = credits.find((member) => isRecord(member) && text(member.job, 40).toLowerCase() === 'director' && text(member.name, 160));
-  return director && isRecord(director) ? text(director.name, 160) : undefined;
-}
-function mapGenres(tmdb: Record<string, unknown> | null, yts: unknown): string {
+function mapGenres(yts: unknown): string {
   const aliases: Record<string, string> = { 'science fiction': 'Sci-Fi', 'sci-fi': 'Sci-Fi', 'action': 'Action', 'adventure': 'Adventure', 'drama': 'Drama', 'thriller': 'Thriller' };
-  const tmdbGenres = isRecord(tmdb) && Array.isArray(tmdb.genres) ? tmdb.genres.map((genre) => isRecord(genre) ? text(genre.name, 40) : '').map((genre) => aliases[genre.toLowerCase()] || '').filter(Boolean) : [];
-  if (tmdbGenres.length) return [...new Set(tmdbGenres)].slice(0, 3).join(', ');
   const supportedGenres = new Set(['Adventure', 'Drama', 'Sci-Fi', 'Thriller', 'Action']);
-  return (Array.isArray(yts) ? yts : []).map((value) => text(value, 40)).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
+  return (Array.isArray(yts) ? yts : []).map((value) => text(value, 40)).map((genre) => aliases[genre.toLowerCase()] || genre).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
 }
 function idsFromBody(body: unknown): string[] {
   if (!isRecord(body) || body.imdbIds === undefined) return DEFAULT_IMDB_IDS;
   if (!Array.isArray(body.imdbIds)) return [];
   return [...new Set(body.imdbIds.filter((id): id is string => typeof id === 'string' && /^tt\d{7,10}$/.test(id.trim())).map((id) => id.trim()))].slice(0, 20);
-}
-
-async function torrentBytes(response: Response): Promise<Uint8Array> {
-  const reader = response.body!.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 2 * 1024 * 1024) throw new Error('TORRENT_TOO_LARGE');
-      chunks.push(value);
-    }
-  } finally { await reader.cancel(); }
-  if (!size) throw new Error('TORRENT_EMPTY');
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return bytes;
 }
 
 async function fetchJson(imdbId: string): Promise<YtsMovie> {
@@ -94,21 +62,68 @@ async function fetchJson(imdbId: string): Promise<YtsMovie> {
   return movie as YtsMovie;
 }
 
-async function persistImage(url: string, bucket: ReturnType<typeof getMediaBucket>, fallback = '/og.png', objectKey = `movie-art/${crypto.randomUUID()}`): Promise<string> {
-  if (!/^https:\/\/[^\s]+$/i.test(url)) return fallback;
-  // The integration harness intentionally has no image fixture; production always persists remote artwork.
-  if ((globalThis as { __SUBLYRA_TEST_ENV__?: unknown }).__SUBLYRA_TEST_ENV__) return fallback;
+function castFromYts(value: unknown): (string | { actor: string; character?: string; image?: string })[] {
+  if (!Array.isArray(value)) return [];
+  const cast: (string | { actor: string; character?: string; image?: string })[] = [];
+  for (const entry of value.slice(0, 6)) {
+    if (typeof entry === 'string') {
+      const actor = text(entry, 120);
+      if (actor) cast.push(actor);
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const actor = text(entry.name || entry.actor, 120);
+    if (!actor) continue;
+    const character = text(entry.character_name || entry.character, 120) || undefined;
+    const image = remoteImage(entry.url_small_image || entry.image, '') || undefined;
+    cast.push({ actor, character, image });
+  }
+  return cast;
+}
+
+function githubSettings(): Required<Pick<RuntimeEnv, 'GITHUB_ACTIONS_TOKEN' | 'GITHUB_REPOSITORY' | 'GITHUB_WORKFLOW_FILE' | 'GITHUB_WORKFLOW_REF'>> {
+  const runtime = env as unknown as RuntimeEnv;
+  return {
+    GITHUB_ACTIONS_TOKEN: runtime.GITHUB_ACTIONS_TOKEN?.trim() || runtime.GITHUB_TOKEN?.trim() || '',
+    GITHUB_REPOSITORY: runtime.GITHUB_REPOSITORY?.trim() || DEFAULT_REPOSITORY,
+    GITHUB_WORKFLOW_FILE: runtime.GITHUB_WORKFLOW_FILE?.trim() || DEFAULT_WORKFLOW,
+    GITHUB_WORKFLOW_REF: runtime.GITHUB_WORKFLOW_REF?.trim() || DEFAULT_REF,
+  };
+}
+
+async function triggerR2Sync(): Promise<boolean> {
+  const settings = githubSettings();
+  if (!settings.GITHUB_ACTIONS_TOKEN) {
+    console.warn('[ingest] GitHub R2 sync dispatch skipped: GITHUB_ACTIONS_TOKEN is not configured. D1 records were saved.');
+    return false;
+  }
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(settings.GITHUB_REPOSITORY) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_FILE) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_REF)) {
+    console.warn('[ingest] GitHub R2 sync dispatch skipped: invalid repository, workflow, or ref configuration. D1 records were saved.');
+    return false;
+  }
   try {
-    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15_000) });
-    const contentType = response.headers.get('content-type')?.split(';')[0].toLowerCase();
-    const extension = contentType === 'image/png' ? 'png' : contentType === 'image/jpeg' ? 'jpg' : null;
-    if (!response.ok || !response.body || !extension) return fallback;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length || bytes.byteLength > 8 * 1024 * 1024) return fallback;
-    const key = `${objectKey}.${extension}`;
-    await bucket.put(key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=86400' }, customMetadata: { source: 'yts' } });
-    return `/media/${key}`;
-  } catch { return fallback; }
+    const response = await fetch(`https://api.github.com/repos/${settings.GITHUB_REPOSITORY}/actions/workflows/${encodeURIComponent(settings.GITHUB_WORKFLOW_FILE)}/dispatches`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${settings.GITHUB_ACTIONS_TOKEN}`,
+        'content-type': 'application/json',
+        'user-agent': 'flixlyra-yts-ingest',
+        'x-github-api-version': '2022-11-28',
+      },
+      body: JSON.stringify({ ref: settings.GITHUB_WORKFLOW_REF }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      console.warn(`[ingest] GitHub R2 sync dispatch returned HTTP ${response.status}; D1 records were saved.`);
+      return false;
+    }
+    console.log(`[ingest] GitHub R2 sync dispatched for ${settings.GITHUB_REPOSITORY}@${settings.GITHUB_WORKFLOW_REF}.`);
+    return true;
+  } catch (error) {
+    console.warn(`[ingest] GitHub R2 sync dispatch failed: ${error instanceof Error ? error.message.slice(0, 160) : 'request error'}; D1 records were saved.`);
+    return false;
+  }
 }
 
 export async function POST(request: Request) {
@@ -116,66 +131,53 @@ export async function POST(request: Request) {
   if ('response' in authorization) return authorization.response;
   const ids = idsFromBody(await readBoundedJson(request, 4096));
   if (!ids.length) return Response.json({ error: 'Provide up to 20 valid IMDb IDs.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
-  const bucket = getMediaBucket();
   const results: Array<Record<string, unknown>> = [];
-  for (const imdbId of ids) {
+  // Each ID consumes one YTS request. Artwork and torrent descriptors are
+  // intentionally not fetched here; keeping this route at <= 20 external
+  // requests leaves room for the single GitHub dispatch request under the
+  // Cloudflare Worker subrequest limit.
+  if (ids.length + 1 >= MAX_SUBREQUESTS) throw new Error('INGEST_BATCH_SUBREQUEST_BUDGET_EXCEEDED');
+  const fetched = await Promise.all(ids.map(async (imdbId) => {
+    try { return { imdbId, movie: await fetchJson(imdbId) }; }
+    catch (error) { return { imdbId, error }; }
+  }));
+  let inserted = 0;
+  for (const entry of fetched) {
+    const { imdbId } = entry;
     try {
-      const movie = await fetchJson(imdbId);
-      const tmdb = await tmdbDetails(imdbId);
-      const tmdbCredits = isRecord(tmdb?.credits) ? tmdb.credits : null;
+      if ('error' in entry) throw entry.error;
+      const movie = entry.movie;
       const torrents = selectTorrents(movie.torrents);
       if (torrents.length !== 2) throw new Error('YTS_REQUIRES_720P_AND_1080P');
-      const preparedTorrents = [];
-      for (const torrent of torrents) {
-        const torrentUrl = text(torrent.url, 1000);
-        const object = await fetch(torrentUrl, { signal: AbortSignal.timeout(20_000) });
-        if (!object.ok || !object.body) throw new Error(`TORRENT_${object.status}`);
+      const preparedTorrents = torrents.map((torrent) => {
         const quality = text(torrent.quality, 20).toLowerCase();
-        const descriptorKey = `descriptors/${imdbId}-${quality}.torrent`;
-        await bucket.put(descriptorKey, await torrentBytes(object), { httpMetadata: { contentType: 'application/x-bittorrent', cacheControl: 'private, no-store' }, customMetadata: { source: 'yts', imdbId, quality } });
-        preparedTorrents.push({ url: torrentUrl, quality, resolution: quality, size: text(torrent.size, 40), label: `YTS ${quality}`, descriptorKey });
-      }
-      const storageKey = preparedTorrents.find((torrent) => torrent.quality === '1080p')?.descriptorKey ?? preparedTorrents[0].descriptorKey;
-      const posterUrl = text(tmdb?.poster_path ? `https://image.tmdb.org/t/p/original${text(tmdb.poster_path, 500)}` : movie.large_cover_image || movie.medium_cover_image, 1000);
-      const backdropUrl = text(tmdb?.backdrop_path ? `https://image.tmdb.org/t/p/original${text(tmdb.backdrop_path, 500)}` : movie.background_image_original || movie.background_image || posterUrl, 1000);
-      const poster = await persistImage(posterUrl, bucket, '/og.png', `posters/${imdbId}`);
-      const backdrop = await persistImage(backdropUrl, bucket, poster, `backdrops/${imdbId}`);
-      const tmdbCast = tmdbCredits && Array.isArray(tmdbCredits.cast) ? tmdbCredits.cast : null;
-      const castCandidates = (tmdbCast || (Array.isArray(movie.cast) ? movie.cast : [])).slice(0, 6).flatMap((entry) => {
-        if (!isRecord(entry)) return [];
-        const actor = text(entry.name, 120);
-        if (!actor) return [];
-        const character = text(entry.character_name || entry.character, 120) || undefined;
-        const imageUrl = text(entry.profile_path ? `https://image.tmdb.org/t/p/w185${text(entry.profile_path, 500)}` : entry.url_small_image || entry.image, 1000);
-        return [{ actor, character, imageUrl }];
+        return { url: text(torrent.url, 1000), quality, resolution: quality, size: text(torrent.size, 40), label: `YTS ${quality}` };
       });
-      const cast = await Promise.all(castCandidates.map(async ({ imageUrl, ...member }, index) => ({
-        ...member,
-        image: imageUrl ? await persistImage(imageUrl, bucket, TMDB_FALLBACK_AVATAR, `cast/${imdbId}-${index + 1}`) : TMDB_FALLBACK_AVATAR,
-      })));
-      const genre = mapGenres(tmdb, movie.genres);
+      const poster = remoteImage(movie.large_cover_image || movie.medium_cover_image);
+      const backdrop = remoteImage(movie.background_image_original || movie.background_image || poster, poster);
       const record: YtsIngestRecord = {
         imdbId,
         title: text(movie.title, 200),
         year: Number.isInteger(movie.year) ? Number(movie.year) : 0,
         synopsis: text(movie.description_full || movie.description_intro, 5000),
         rating: typeof movie.rating === 'number' ? movie.rating : Number(movie.rating) || 0,
-        runtime: formatRuntime(Number(tmdb?.runtime) || Number(movie.runtime) || 0),
-        tagline: text(tmdb?.tagline, 200) || `Watch ${text(movie.title, 200)} in HD`,
-        genre,
-        director: tmdbDirector(tmdb) || text(movie.director, 160) || 'Pending editorial review',
-        officialWatchUrl: officialTrailerUrl(tmdb),
+        runtime: formatRuntime(Number(movie.runtime) || 0),
+        tagline: `Watch ${text(movie.title, 200)} in HD`,
+        genre: mapGenres(movie.genres),
+        director: text(movie.director, 160) || 'Pending editorial review',
         poster,
         backdrop,
-        cast,
-        storageKey,
+        cast: castFromYts(movie.cast),
+        storageKey: null,
         torrents: preparedTorrents,
       };
       const id = await upsertYtsIngestMovie(record, authorization.user);
-      results.push({ imdbId, id, status: 'queued', qualities: preparedTorrents.map((torrent) => torrent.quality), storageKey });
+      inserted += 1;
+      results.push({ imdbId, id, status: 'queued', qualities: preparedTorrents.map((torrent) => torrent.quality), storageKey: null });
     } catch (error) {
       results.push({ imdbId, status: 'failed', error: error instanceof Error ? error.message.slice(0, 80) : 'INGEST_FAILED' });
     }
   }
-  return Response.json({ results }, { headers: ADMIN_NO_STORE_HEADERS });
+  const workflowTriggered = inserted > 0 ? await triggerR2Sync() : false;
+  return Response.json({ results, workflow: { name: DEFAULT_WORKFLOW, triggered: workflowTriggered } }, { headers: ADMIN_NO_STORE_HEADERS });
 }

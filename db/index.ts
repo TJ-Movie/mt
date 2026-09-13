@@ -390,7 +390,7 @@ export type YtsIngestRecord = {
   poster: string;
   backdrop: string;
   cast: (string | { actor: string; character?: string; image?: string })[];
-  storageKey: string;
+  storageKey: string | null;
   torrents: Array<{ url: string; quality: string; resolution: string; size: string; label: string; descriptorKey?: string }>;
 };
 
