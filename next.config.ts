@@ -13,6 +13,22 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'flixlyra.com', pathname: '/media/**' },
+      { protocol: 'https', hostname: 'image.tmdb.org', pathname: '/**' },
+      { protocol: 'https', hostname: 'yts.mx', pathname: '/**' },
+      { protocol: 'https', hostname: '**.yts.mx', pathname: '/**' },
+      { protocol: 'https', hostname: 'yts.lt', pathname: '/**' },
+      { protocol: 'https', hostname: '**.yts.lt', pathname: '/**' },
+      { protocol: 'https', hostname: 'yts.am', pathname: '/**' },
+      { protocol: 'https', hostname: '**.yts.am', pathname: '/**' },
+      { protocol: 'https', hostname: 'yts.rs', pathname: '/**' },
+      { protocol: 'https', hostname: '**.yts.rs', pathname: '/**' },
+      { protocol: 'https', hostname: 'yts.pm', pathname: '/**' },
+      { protocol: 'https', hostname: '**.yts.pm', pathname: '/**' },
+    ],
+  },
   async headers() {
     return [
       { source: '/(.*)', headers: securityHeaders },

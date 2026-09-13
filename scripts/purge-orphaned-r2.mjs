@@ -7,7 +7,7 @@ import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/c
 
 const exec = promisify(execFile);
 const MAX_DELETE_BATCH = 1_000;
-const MANAGED_R2_KEY = /^(?:assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent|movies\/\d+(?:\/|-).+|media\/\d+-(?:720p|1080p)\.mp4)$/;
+const MANAGED_R2_KEY = /^(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent|movies\/\d+(?:\/|-).+|media\/\d+-(?:720p|1080p)\.mp4)$/;
 const PREFIXED_MOVIE_KEY = /^(?:movies|media)\/(\d+)(?:\/|-)/;
 
 function parseEnvFile(text) {
@@ -42,7 +42,7 @@ function movieIdFromKey(key) {
 
 function addReferencedKey(keys, value) {
   if (typeof value !== 'string') return;
-  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value;
+  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value.startsWith('https://flixlyra.com/media/') ? value.slice('https://flixlyra.com/media/'.length) : value;
   if (MANAGED_R2_KEY.test(candidate)) keys.add(candidate);
 }
 

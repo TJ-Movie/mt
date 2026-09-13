@@ -105,11 +105,11 @@ type MovieMediaRow = {
   r2_storage_key: string | null;
 };
 
-const SAFE_R2_CLEANUP_KEY = /^(?:assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent)$/;
+const SAFE_R2_CLEANUP_KEY = /^(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent)$/;
 
 function addR2CleanupKey(keys: Set<string>, value: unknown): void {
   if (typeof value !== 'string') return;
-  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value;
+  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value.startsWith('https://flixlyra.com/media/') ? value.slice('https://flixlyra.com/media/'.length) : value;
   if (SAFE_R2_CLEANUP_KEY.test(candidate)) keys.add(candidate);
 }
 

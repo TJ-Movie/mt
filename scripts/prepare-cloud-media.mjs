@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
-import { S3Client, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 
@@ -15,6 +15,9 @@ export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 2;
+const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
+const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
+const ARTWORK_CONCURRENCY = 4;
 const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const activeTimers = new Set();
@@ -65,6 +68,164 @@ function formatBytes(bytes) {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
   return `${bytes} B`;
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function artworkUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    const allowedHost = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') ||
+      hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') ||
+      hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowedHost ? url.toString() : null;
+  } catch { return null; }
+}
+
+function publicArtworkUrl(key) {
+  const base = (process.env.R2_PUBLIC_BASE_URL || 'https://flixlyra.com/media').replace(/\/+$/, '');
+  return `${base}/${key}`;
+}
+
+function artworkKey(movieId, kind) {
+  if (!Number.isSafeInteger(Number(movieId)) || Number(movieId) < 1 || !['poster', 'backdrop'].includes(kind)) return null;
+  return `artworks/${Number(movieId)}/${kind}.jpg`;
+}
+
+function isManagedArtworkUrl(value, movieId, kind) {
+  const key = artworkKey(movieId, kind);
+  if (!key || typeof value !== 'string') return false;
+  const expected = publicArtworkUrl(key);
+  if (value === expected || value === `/media/${key}`) return true;
+  try {
+    const current = new URL(value);
+    const target = new URL(expected);
+    return current.origin === target.origin && current.pathname === target.pathname;
+  } catch { return false; }
+}
+
+async function downloadArtwork(url) {
+  const source = artworkUrl(url);
+  if (!source) return null;
+  const response = await fetch(source, { redirect: 'error', signal: AbortSignal.timeout(30_000) });
+  if (!response.ok || !response.body) throw new Error(`ARTWORK_${response.status}`);
+  const contentType = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+  if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(contentType)) throw new Error('ARTWORK_UNSUPPORTED_CONTENT_TYPE');
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_TOO_LARGE');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.byteLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_EMPTY_OR_TOO_LARGE');
+  return { bytes, contentType };
+}
+
+async function fetchArtworkMetadata(imdbId) {
+  if (!/^tt\d{7,10}$/.test(String(imdbId || ''))) return null;
+  try {
+    const response = await fetch(`${YTS_ENDPOINT}?imdb_id=${encodeURIComponent(imdbId)}`, { signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`YTS_ARTWORK_${response.status}`);
+    const payload = await response.json();
+    return isRecord(payload?.data?.movie) ? payload.data.movie : null;
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'artwork-metadata-warning', imdbId, error: safeLogError(error) }));
+    return null;
+  }
+}
+
+async function syncArtworkForMovie(ctx, row) {
+  const updates = {};
+  let metadata;
+  let metadataLoaded = false;
+  const getMetadata = async () => {
+    if (!metadataLoaded) {
+      metadataLoaded = true;
+      metadata = await fetchArtworkMetadata(row.imdb_id);
+    }
+    return metadata;
+  };
+
+  for (const kind of ['poster', 'backdrop']) {
+    const key = artworkKey(row.id, kind);
+    if (!key) continue;
+    try {
+      const existing = await ctx.headArtwork(key);
+      if (existing && Number(existing.ContentLength) > 0 && String(existing.ContentType || '').startsWith('image/')) {
+        if (!isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
+        continue;
+      }
+
+      const current = artworkUrl(row[kind]);
+      const fields = kind === 'poster'
+        ? ['large_cover_image', 'medium_cover_image']
+        : ['background_image_original', 'background_image'];
+      const sources = [];
+      if (current) sources.push(current);
+      const yts = current ? null : await getMetadata();
+      for (const field of fields) {
+        const source = artworkUrl(yts?.[field]);
+        if (source && !sources.includes(source)) sources.push(source);
+      }
+      if (!sources.length) {
+        console.warn(JSON.stringify({ event: 'artwork-source-missing', id: row.id, imdbId: row.imdb_id, kind }));
+        continue;
+      }
+
+      let uploaded = false;
+      for (const source of sources) {
+        try {
+          const downloaded = await downloadArtwork(source);
+          if (!downloaded) continue;
+          await ctx.s3.send(new PutObjectCommand({
+            Bucket: ctx.bucket,
+            Key: key,
+            Body: downloaded.bytes,
+            ContentType: downloaded.contentType,
+            CacheControl: 'public, max-age=31536000, immutable',
+            Metadata: { source: 'yts-artwork', movieId: String(row.id), kind },
+          }));
+          const verified = await ctx.headArtwork(key);
+          if (!verified || Number(verified.ContentLength) !== downloaded.bytes.byteLength) throw new Error('ARTWORK_R2_VERIFY_FAILED');
+          updates[kind] = publicArtworkUrl(key);
+          uploaded = true;
+          break;
+        } catch (error) {
+          console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) }));
+        }
+      }
+      if (!uploaded) console.warn(JSON.stringify({ event: 'artwork-unavailable', id: row.id, imdbId: row.imdb_id, kind }));
+    } catch (error) {
+      console.warn(JSON.stringify({ event: 'artwork-sync-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) }));
+    }
+  }
+
+  const fields = Object.keys(updates);
+  if (fields.length) {
+    const assignments = fields.map((field) => `${field} = ?`);
+    await ctx.query(`UPDATE movies SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...fields.map((field) => updates[field]), row.id]);
+  }
+  return { id: row.id, synced: fields };
+}
+
+async function syncAllArtwork(ctx) {
+  const rows = await ctx.query("SELECT id, imdb_id, poster, backdrop FROM movies WHERE publication_status <> 'archived' ORDER BY id");
+  let cursor = 0;
+  const results = [];
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= rows.length) return;
+      const row = rows[index];
+      try { results.push(await syncArtworkForMovie(ctx, row)); }
+      catch (error) { console.warn(JSON.stringify({ event: 'artwork-movie-warning', id: row.id, error: safeLogError(error) })); }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(ARTWORK_CONCURRENCY, rows.length) }, worker));
+  const synced = results.filter((result) => result.synced.length > 0).length;
+  console.log(JSON.stringify({ event: 'artwork-sync-complete', scanned: rows.length, updated: synced, fields: results.reduce((total, result) => total + result.synced.length, 0) }));
+  return { scanned: rows.length, updated: synced };
 }
 
 export function maxMoviesFromArgs(argv = process.argv) {
@@ -188,7 +349,12 @@ export async function context() {
     try { return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) }); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
-  return { s3, bucket, query, head };
+  async function headArtwork(key) {
+    if (!/^artworks\/\d+\/(?:poster|backdrop)\.jpg$/.test(key || '')) return null;
+    try { return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) }); }
+    catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
+  }
+  return { s3, bucket, query, head, headArtwork };
 }
 const validVideo = object => object?.ContentLength > 0 && ['video/mp4', 'application/octet-stream'].includes(object.ContentType);
 export async function saveManifest(plan) {
@@ -515,11 +681,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     ctx = await context();
     await mkdir(mediaRoot, { recursive: true });
+    let artwork = { scanned: 0, updated: 0 };
+    try { artwork = await syncAllArtwork(ctx); }
+    catch (error) { console.warn(JSON.stringify({ event: 'artwork-backfill-warning', error: safeLogError(error) })); }
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
     const result = await prepareAll(ctx, plan);
-    summary = { event: 'prepared', maxMovies, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
+    summary = { event: 'prepared', maxMovies, artwork, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
   } catch (error) {
     fatalError = error;
   } finally {
