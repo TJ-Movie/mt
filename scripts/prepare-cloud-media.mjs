@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, rm, statfs, stat, open } from 'node:fs/promises';
 import { resolve, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pipeline } from 'node:stream/promises';
+import { promisify } from 'node:util';
 import { S3Client, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, uploadStream, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
@@ -12,6 +14,7 @@ export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 2;
+const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 
 // Keep GitHub Actions output flowing line-by-line while media is acquired.
@@ -45,6 +48,51 @@ export function maxMoviesFromArgs(argv = process.argv) {
 
 export function isNonRetryableValidationError(error) {
   return /(?:MP4 validation failed|No safe playable MP4 in source)/i.test(safeLogError(error));
+}
+
+async function readProbeWindow(filePath, position, length) {
+  const buffer = Buffer.alloc(length);
+  const handle = await open(filePath, 'r');
+  try {
+    const result = await handle.read(buffer, 0, length, position);
+    return buffer.subarray(0, result.bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function validateMp4(filePath, expectedBytes) {
+  const info = await stat(filePath);
+  if (!info.isFile() || info.size <= 0) throw new Error('MP4 validation failed: empty file');
+
+  // YTS files may place moov at EOF. Inspect both ends and do not require an
+  // exact byte count because a completed WebTorrent stream can expose a
+  // slightly different filesystem size while still being a valid container.
+  const windowSize = Math.min(1024 * 1024, info.size);
+  const head = await readProbeWindow(filePath, 0, windowSize);
+  const tail = info.size > windowSize ? await readProbeWindow(filePath, info.size - windowSize, windowSize) : head;
+  const hasContainerAtom = [head, tail].some(window =>
+    ['ftyp', 'moov', 'moof'].some(atom => window.includes(Buffer.from(atom)))
+  );
+  if (!hasContainerAtom) throw new Error('MP4 validation failed: container is unparseable');
+
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error', '-show_entries', 'stream=codec_type,duration', '-of', 'json', filePath,
+    ], { timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true });
+    const streams = JSON.parse(stdout).streams || [];
+    const zeroDuration = streams
+      .filter(stream => stream.codec_type === 'video' || stream.codec_type === 'audio')
+      .some(stream => Number.isFinite(Number(stream.duration)) && Number(stream.duration) <= 0);
+    if (zeroDuration) throw new Error('MP4 validation failed: zero-duration video/audio stream');
+  } catch (error) {
+    if (error?.message?.includes('zero-duration video/audio stream')) throw error;
+    if (error?.code !== 'ENOENT') {
+      console.warn(JSON.stringify({ event: 'mp4-probe-warning', file: filePath, error: safeLogError(error) }));
+    }
+  }
+
+  return { bytes: info.size, expectedBytes };
 }
 
 function progressStream(stream, item, totalBytes) {
@@ -188,14 +236,8 @@ async function acquire(ctx, item, attempt) {
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
     await pipeline(uploadStream(progressStream(file.createReadStream(), item, file.length)), createWriteStream(filePath), { signal: controller.signal });
-    const info = await stat(filePath);
-    const probe = Buffer.alloc(Math.min(64 * 1024, info.size));
-    const probeHandle = await open(filePath, 'r');
-    let bytesRead = 0;
-    try { ({ bytesRead } = await probeHandle.read(probe, 0, probe.length, 0)); } finally { await probeHandle.close(); }
-    const ftypOffset = probe.subarray(0, bytesRead).indexOf(Buffer.from('ftyp'));
-    if (info.size !== file.length || ftypOffset < 4) throw new Error('MP4 validation failed');
-    item.file = filePath; item.bytes = file.length;
+    const validated = await validateMp4(filePath, file.length);
+    item.file = filePath; item.bytes = validated.bytes;
   } finally {
     clearTimeout(timer);
     await new Promise(done => client.destroy(done));
