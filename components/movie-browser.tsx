@@ -404,14 +404,14 @@ export function MovieBrowser({
             </h2>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_180px_210px]">
-            <label className="flex min-h-12 items-center gap-3 border-b border-black/25 py-3">
-              <Search size={18} className="shrink-0 text-black/40" />
+            <label className="flex min-h-12 items-center gap-3 rounded-xl border border-stone-300/80 bg-white/70 px-4 py-3 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white">
+              <Search size={18} className="shrink-0 text-stone-500" />
               <input
                 value={query}
                 maxLength={80}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search title, director or cast"
-                className="min-w-0 w-full bg-transparent text-base outline-none placeholder:text-black/35 sm:text-sm"
+                className="min-w-0 w-full bg-transparent text-base outline-none placeholder:text-stone-500 sm:text-sm"
               />
             </label>
             <FilterSelect
@@ -457,31 +457,31 @@ export function MovieBrowser({
           <>
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-10 lg:grid-cols-5">
               {filtered.map((movie, index) => (
-                <a key={movie.slug} href={contentHref(movie)} className="group overflow-hidden rounded-2xl bg-neutral-900 text-white">
-                  <div className="relative aspect-[2/3] overflow-hidden bg-neutral-900">
+                <a key={movie.slug} href={contentHref(movie)} className="group text-stone-900">
+                  <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-stone-200 shadow-[0_12px_30px_rgba(41,37,36,0.16)]">
                     <img
                       src={movie.poster}
                       alt={`${movie.title} poster`}
                       className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.035]"
                     />
-                    <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
-                    <span className="absolute right-1.5 top-1.5 rounded-sm bg-black/85 px-1.5 py-1 text-[10px] font-bold text-amber-300 sm:right-3 sm:top-3 sm:px-2 sm:text-xs">
+                    <div className="absolute inset-0 bg-stone-900/0 transition group-hover:bg-stone-900/10" />
+                    <span className="absolute right-1.5 top-1.5 rounded-sm border border-stone-300/80 bg-white/85 px-1.5 py-1 text-[10px] font-bold text-stone-900 sm:right-3 sm:top-3 sm:px-2 sm:text-xs">
                       ★ {movie.rating.toFixed(1)}
                     </span>
                     <span className="absolute bottom-3 right-3 grid size-11 place-items-center rounded-full bg-[#de5d4f] text-white opacity-100 transition sm:translate-y-2 sm:opacity-0 sm:group-hover:translate-y-0 sm:group-hover:opacity-100">
                       <Play size={16} fill="currentColor" />
                     </span>
                   </div>
-                  <div className="mt-2 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
+                  <div className="mt-3 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
                     <div className="min-w-0">
-                      <h3 className="block min-h-5 w-full line-clamp-2 font-serif text-sm font-semibold leading-tight text-white sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
+                      <h3 className="block min-h-5 w-full line-clamp-2 font-serif text-sm font-semibold leading-tight text-stone-900 sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
                         {movie.title}
                       </h3>
-                      <p className="mt-1.5 text-xs text-white/55 sm:text-sm">
+                      <p className="mt-1.5 text-xs text-stone-600 sm:text-sm">
                         {movie.year} · {movie.runtime}
                       </p>
                     </div>
-                    <span className="hidden shrink-0 pt-1 text-xs font-semibold text-white/60 sm:block">
+                    <span className="hidden shrink-0 pt-1 text-xs font-semibold text-stone-500 sm:block">
                       {String(index + 1).padStart(2, '0')}
                     </span>
                   </div>
@@ -614,13 +614,13 @@ function FilterSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative flex min-h-12 items-center rounded-xl border border-black/10 bg-neutral-900 px-4 text-white">
+    <label className="relative flex min-h-12 items-center rounded-xl border border-stone-300/80 bg-stone-200/50 px-4 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white/70">
       <span className="sr-only">{label}</span>
       <select
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full appearance-none bg-transparent pr-7 text-base outline-none placeholder:text-white/45 sm:text-sm"
+        className="h-12 w-full appearance-none bg-transparent pr-7 text-base text-stone-900 outline-none sm:text-sm"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -630,7 +630,7 @@ function FilterSelect({
       </select>
       <ChevronDown
         size={15}
-        className="pointer-events-none absolute right-4 top-4 text-white/55"
+        className="pointer-events-none absolute right-4 top-4 text-stone-500"
       />
     </label>
   );
