@@ -164,7 +164,7 @@ export function MovieBrowser({
             </a>
             <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-white/70 lg:flex">
               <a className="text-white" href="#top">Discover</a>
-              <a href="#collection">Movies</a>
+              <a href="#movie-grid">Movies</a>
               <a href="#languages">Languages</a>
               <a href="/content-policy">Content policy</a>
             </nav>
@@ -250,7 +250,7 @@ export function MovieBrowser({
         id="top"
         aria-roledescription="carousel"
         aria-label="Featured content"
-        className="relative min-h-[680px] overflow-hidden pt-16 sm:min-h-[760px] sm:pt-20"
+        className="relative min-h-[560px] overflow-hidden pt-12 sm:min-h-[760px] sm:pt-20"
       >
         {heroMovies.map((movie, index) => {
           const active = index === heroIndex;
@@ -260,7 +260,7 @@ export function MovieBrowser({
               key={movie.slug}
               aria-hidden={!active}
               aria-label={`${index + 1} of ${heroMovies.length}: ${movie.title}`}
-              className={`absolute inset-0 pt-16 transition-[opacity,transform] duration-1000 ease-out motion-reduce:transition-none sm:pt-20 ${active ? 'z-10 translate-x-0 opacity-100' : 'pointer-events-none z-0 translate-x-4 opacity-0'}`}
+              className={`absolute inset-0 pt-12 transition-[opacity,transform] duration-1000 ease-out motion-reduce:transition-none sm:pt-20 ${active ? 'z-10 translate-x-0 opacity-100' : 'pointer-events-none z-0 translate-x-4 opacity-0'}`}
             >
               <img
                 src={movie.backdrop}
@@ -269,8 +269,8 @@ export function MovieBrowser({
               />
               <div className="absolute inset-0 bg-gradient-to-r from-neutral-950 via-neutral-950/75 via-40% to-transparent" />
               <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-transparent to-black/30" />
-              <div className="relative mx-auto flex min-h-[616px] max-w-[1480px] items-end px-4 pb-24 text-white sm:min-h-[680px] sm:px-8 lg:items-center lg:px-12 lg:pb-0">
-                <div className="relative z-10 w-full max-w-3xl pt-16 sm:pt-24">
+              <div className="relative mx-auto flex min-h-[520px] max-w-[1480px] items-center px-4 py-6 text-white sm:min-h-[680px] sm:items-end sm:px-8 sm:py-0 lg:items-center lg:px-12">
+                <div className="relative z-10 w-full max-w-3xl sm:pt-24">
                   <div className="mb-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-[.2em] text-white/65 drop-shadow-md sm:mb-7 sm:tracking-[.25em]">
                     <span className="h-px w-8 bg-[#de5d4f] sm:w-10" />{' '}
                     {featuredMovies.length
@@ -302,7 +302,7 @@ export function MovieBrowser({
                     <span>{movie.genre}</span>
                     <span>{movie.languages.length} subtitle languages</span>
                   </div>
-                  <p className="mt-5 line-clamp-3 max-w-xl text-base leading-7 text-white/65 drop-shadow-md sm:mt-6 sm:line-clamp-none">
+                  <p className="mt-5 hidden max-w-xl text-base leading-7 text-white/65 drop-shadow-md sm:mt-6 sm:block">
                     {movie.description}
                   </p>
                   <div className="mt-6 grid gap-3 min-[430px]:flex min-[430px]:flex-wrap sm:mt-8">
@@ -315,13 +315,18 @@ export function MovieBrowser({
                       {movie.contentType === 'series' ? 'series' : 'film'}{' '}
                       <ArrowRight size={17} />
                     </a>
-                    <a
-                      href="#discover"
+                    <button
+                      type="button"
+                      onClick={() =>
+                        document
+                          .getElementById('movie-grid')
+                          ?.scrollIntoView({ behavior: 'smooth' })
+                      }
                       tabIndex={active ? 0 : -1}
                       className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/25 bg-black/45 px-5 py-3.5 text-sm font-semibold sm:px-6"
                     >
                       <Search size={16} /> Search all films
-                    </a>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -394,16 +399,16 @@ export function MovieBrowser({
 
       <section
         id="discover"
-        className="mx-auto max-w-[1480px] px-4 py-14 sm:px-8 sm:py-20 lg:px-12"
+        className="mx-auto my-4 max-w-[1480px] px-4 py-6 sm:my-10 sm:px-8 sm:py-20 lg:px-12"
       >
-        <div className="grid gap-8 lg:grid-cols-[.65fr_1.35fr] lg:items-end">
+        <div className="grid gap-4 lg:grid-cols-[.65fr_1.35fr] lg:items-end lg:gap-8">
           <div>
             <p className="section-kicker">Curated cinema</p>
             <h2 className="mt-3 max-w-lg font-serif text-4xl leading-[.98] tracking-[-.04em] sm:text-6xl">
               Find your next story.
             </h2>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[1fr_180px_210px]">
+          <div className="grid gap-2 sm:grid-cols-[1fr_180px_210px] sm:gap-3">
             <label className="flex min-h-12 items-center gap-3 rounded-xl border border-stone-300/80 bg-white/70 px-4 py-3 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white">
               <Search size={18} className="shrink-0 text-stone-500" />
               <input
@@ -430,7 +435,7 @@ export function MovieBrowser({
         </div>
       </section>
 
-      <div className="mx-auto max-w-[1480px] px-4 sm:px-8 lg:px-12">
+      <div className="mx-auto mb-4 max-w-[1480px] px-4 sm:mb-0 sm:px-8 lg:px-12">
         <div className="max-w-[180px]">
           <FilterSelect
             label="Type"
@@ -442,10 +447,10 @@ export function MovieBrowser({
       </div>
 
       <section
-        id="collection"
+        id="movie-grid"
         className="mx-auto max-w-[1480px] px-4 pb-16 sm:px-8 sm:pb-20 lg:px-12"
       >
-        <div className="mb-8 flex items-end justify-between border-b border-black/15 pb-4">
+        <div className="mb-4 flex items-end justify-between border-b border-black/15 pb-3 sm:mb-8 sm:pb-4">
           <p className="text-sm text-black/50">
             {filtered.length} {filtered.length === 1 ? 'film' : 'films'} found
           </p>
