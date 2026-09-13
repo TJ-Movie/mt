@@ -10,7 +10,53 @@ import { primaryMp4, uploadStream, sourceMagnet, remoteDescriptor, alternativeDe
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
+const MAX_RETRIES = 5;
 const pause = ms => new Promise(done => setTimeout(done, ms));
+
+// Keep GitHub Actions output flowing line-by-line while media is acquired.
+process.stdout._handle?.setBlocking?.(true);
+process.stderr._handle?.setBlocking?.(true);
+
+const SECRET_ENV_NAMES = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN'];
+function safeLogError(error) {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const name of SECRET_ENV_NAMES) {
+    const secret = process.env[name];
+    if (secret) message = message.replaceAll(secret, '[redacted]');
+  }
+  return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]');
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function progressStream(stream, item, totalBytes) {
+  let downloaded = 0;
+  let nextPercent = 10;
+  let lastLoggedAt = 0;
+  const startedAt = Date.now();
+  const report = (force = false) => {
+    const now = Date.now();
+    const percent = totalBytes > 0 ? Math.min(100, Math.floor(downloaded / totalBytes * 100)) : 0;
+    if (!force && percent < nextPercent && now - lastLoggedAt < 10_000) return;
+    const seconds = Math.max((now - startedAt) / 1000, 0.001);
+    const speed = downloaded / seconds / 1_000_000;
+    console.log(`⬇️ [Movie ID: ${item.id}] Downloading ${item.quality}: ${percent}% (${formatBytes(downloaded)} / ${formatBytes(totalBytes)}) - Speed: ${speed.toFixed(1)} MB/s`);
+    lastLoggedAt = now;
+    while (nextPercent <= percent) nextPercent += 10;
+  };
+  report(true);
+  stream.on('data', chunk => {
+    downloaded += chunk.byteLength ?? chunk.length ?? 0;
+    report();
+  });
+  stream.on('end', () => report(true));
+  return stream;
+}
 export function sourcesOf(value) {
   const parsed = JSON.parse(value || '{}');
   return Array.isArray(parsed) ? parsed : (parsed.sources || []);
@@ -102,7 +148,7 @@ async function acquire(ctx, item, attempt) {
     if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new Error('Insufficient runner disk for this video');
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
-    await pipeline(uploadStream(file.createReadStream()), createWriteStream(filePath), { signal: controller.signal });
+    await pipeline(uploadStream(progressStream(file.createReadStream(), item, file.length)), createWriteStream(filePath), { signal: controller.signal });
     const handle = await open(filePath, 'r');
     const header = Buffer.alloc(12);
     try { await handle.read(header, 0, 12, 0); } finally { await handle.close(); }
@@ -154,14 +200,14 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
     }
     throw lastError;
   };
-  for (const id of [...new Set(ids)]) {
+  for (const id of new Set(ids)) {
     const state = failureState(plan, id);
-    const primarySql = `UPDATE movies SET status = '${state.status}', sync_error = '${state.error}', ingest_status = '${state.ingestStatus}', transfer_error = '${state.error}', updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+    const primarySql = 'UPDATE movies SET status = ?, sync_error = ?, ingest_status = ?, transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
     const compatibilitySql = state.status === 'FAILED'
       ? "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
       : "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?";
     try {
-      await queryWithRetry(primarySql, [id]);
+      await queryWithRetry(primarySql, [state.status, state.error, state.ingestStatus, state.error, id]);
       marked += 1;
       if (state.status === 'HALF') half += 1;
     } catch {
@@ -173,7 +219,7 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
         marked += 1;
         if (state.status === 'HALF') half += 1;
       } catch (error) {
-        console.error(`⚠️ Could not mark Movie ${id} as FAILED in D1: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`⚠️ Could not mark Movie ${id} as FAILED in D1: ${safeLogError(error)}`);
       }
     }
   }
@@ -190,9 +236,12 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
       await acquireItem(ctx, item, attempt);
       await persist(plan);
       return true;
-    } catch {
-      console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt }));
-      if (attempt < maxAttempts) await wait(5000 * 2 ** (attempt - 1));
+    } catch (error) {
+      console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: safeLogError(error) }));
+      if (attempt < maxAttempts) {
+        console.warn(`🔁 [Movie ID: ${item.id}] Retrying acquisition (Attempt ${attempt + 1}/${maxAttempts})...`);
+        await wait(5000 * 2 ** (attempt - 1));
+      }
     }
   }
   return false;
@@ -271,22 +320,23 @@ export async function drainCloudPlan(plan, sync) {
   const ctx = await context();
   try {
     const reconciled = new Set();
+    let consecutiveFailures = 0;
     while (true) {
       try {
-      for (const item of plan.files) {
-        if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item); reconciled.add(item.key); }
-      }
-      let pending = plan.files.filter(f => !f.verified && !f.skipped);
-      if (!pending.length) {
-        const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
-        if (skippedIds.length) {
-          const marked = await markPermanentlyFailed(ctx, skippedIds, plan);
-          if (marked !== skippedIds.length) throw new Error('Could not persist all permanent media failure states');
+        for (const item of plan.files) {
+          if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item); reconciled.add(item.key); }
         }
-        console.log('[complete] cloud snapshot verified in R2 and D1');
-        return;
-      }
-      const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
+        const pending = plan.files.filter(f => !f.verified && !f.skipped);
+        if (!pending.length) {
+          const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
+          if (skippedIds.length) {
+            const marked = await markPermanentlyFailed(ctx, skippedIds, plan);
+            if (marked !== skippedIds.length) throw new Error('Could not persist all permanent media failure states');
+          }
+          console.log('[complete] cloud snapshot verified in R2 and D1');
+          return;
+        }
+        const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
         if (!item) continue;
         await sync(item);
         await commitItem(ctx, item);
@@ -296,7 +346,23 @@ export async function drainCloudPlan(plan, sync) {
         item.file = null;
         await saveManifest(plan);
         console.log(JSON.stringify({ event: 'verified', id: item.id, quality: item.quality, remaining: plan.files.filter(f => !f.verified).length }));
-      } catch { console.warn('Auto-re-attempting remaining batch...'); await pause(10000); }
+        consecutiveFailures = 0;
+      } catch (error) {
+        consecutiveFailures += 1;
+        const pending = plan.files.filter(f => !f.verified && !f.skipped);
+        const pendingIds = [...new Set(pending.map(f => f.id))];
+        console.warn(`⚠️ Remaining batch failed (${consecutiveFailures}/${MAX_RETRIES}): ${safeLogError(error)}`);
+        if (consecutiveFailures >= MAX_RETRIES) {
+          for (const item of pending) await markSkipped(plan, item, saveManifest);
+          const marked = await markPermanentlyFailed(ctx, pendingIds, plan);
+          await saveManifest(plan);
+          console.error(`❌ MAX_RETRIES=${MAX_RETRIES} reached. Marked Movie IDs as failed: ${pendingIds.join(', ') || 'none'} (D1 marked: ${marked}).`);
+          process.exitCode = 1;
+          return;
+        }
+        console.log(`🔁 Retrying remaining batch (Attempt ${consecutiveFailures + 1}/${MAX_RETRIES})...`);
+        await pause(10_000);
+      }
     }
   } finally { ctx.s3.destroy(); }
 }

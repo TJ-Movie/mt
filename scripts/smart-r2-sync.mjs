@@ -4,11 +4,26 @@ import { readdir, stat } from 'node:fs/promises';
 import { extname, relative, resolve, sep } from 'node:path';
 import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 const MAX_ATTEMPTS = 4; // initial attempt + 3 retries
+const MAX_RETRIES = 5; // consecutive remaining-batch retries
 const RETRY_BASE_MS = 5_000;
 const CONTENT_TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.mp4': 'video/mp4', '.bin': 'application/octet-stream' };
+
+// Make CI output visible as soon as each line is emitted.
+process.stdout._handle?.setBlocking?.(true);
+process.stderr._handle?.setBlocking?.(true);
+
+const SECRET_ENV_NAMES = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN'];
+function safeLogError(error) {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const name of SECRET_ENV_NAMES) {
+    const secret = process.env[name];
+    if (secret) message = message.replaceAll(secret, '[redacted]');
+  }
+  return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]');
+}
 
 function option(name, fallback) {
   const value = process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -94,6 +109,7 @@ async function syncOne(client, bucket, item, dryRun) {
   const existing = await head(client, bucket, item.key);
   if (existing && Number(existing.ContentLength) === local.size) return { state: 'skipped', bytes: local.size };
   if (dryRun) return { state: 'planned', bytes: local.size };
+  console.log(`☁️ [Movie ID: ${item.id ?? 'unknown'}] Uploading ${item.quality || 'media'} to R2...`);
   const body = createReadStream(item.file);
   const upload = new Upload({ client, queueSize: 2, partSize: 8 * 1024 * 1024, leavePartsOnError: false,
     params: { Bucket: bucket, Key: item.key, Body: body, ContentLength: local.size, ContentType: contentType(item.file), CacheControl: item.key.endsWith('.mp4') ? 'private, max-age=0' : 'public, max-age=31536000, immutable' } });
@@ -101,6 +117,7 @@ async function syncOne(client, bucket, item, dryRun) {
   try { await upload.done(); } finally { clearTimeout(timer); body.destroy(); }
   const verified = await head(client, bucket, item.key);
   if (!verified || Number(verified.ContentLength) !== local.size) throw new Error(`post-upload HEAD size mismatch (local ${local.size}, R2 ${verified?.ContentLength ?? 'missing'})`);
+  console.log(`✅ [Movie ID: ${item.id ?? 'unknown'}] R2 Upload complete & verified.`);
   return { state: 'uploaded', bytes: local.size };
 }
 
@@ -123,7 +140,7 @@ const client = new S3Client({ region: 'auto', endpoint: `https://${account}.r2.c
 function selectedItems(allItems) {
   return qualityFilter.length ? allItems.filter(({ key }) => qualityFilter.some((quality) => new RegExp(`(?:^|[-_/])${quality}(?:[._/-]|$)`, 'i').test(key))) : allItems;
 }
-async function findPending(items) {
+async function findPending(items, failedKeys = new Set()) {
   const pending = [];
   let cursor = 0;
   async function scanner() {
@@ -131,6 +148,7 @@ async function findPending(items) {
       const index = cursor++;
       if (index >= items.length) return;
       const item = items[index];
+      if (failedKeys.has(item.key)) continue;
       const local = await stat(item.file);
       if (!local.isFile() || local.size <= 0) { pending.push(item); continue; }
       const existing = await head(client, bucket, item.key);
@@ -142,6 +160,7 @@ async function findPending(items) {
 }
 async function uploadBatch(items) {
   const counts = { planned: 0, uploaded: 0, skipped: 0, failed: 0 };
+  const failedItems = [];
   let cursor = 0;
   async function worker() {
   while (true) {
@@ -152,19 +171,46 @@ async function uploadBatch(items) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       try { result = await syncOne(client, bucket, item, dryRun); break; }
       catch (error) {
-        if (attempt === MAX_ATTEMPTS) { result = { state: 'failed', error: error instanceof Error ? error.message : String(error) }; break; }
+        if (attempt === MAX_ATTEMPTS) { result = { state: 'failed', error: safeLogError(error) }; break; }
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
         console.log(`[retry] ${index + 1}/${items.length} ${item.key} attempt ${attempt}/${MAX_ATTEMPTS}; waiting ${delay / 1000}s`);
         await sleep(delay);
       }
     }
     counts[result.state] += 1;
-    if (result.state === 'failed') console.error(`[FAIL] ${index + 1}/${items.length} ${item.key}: ${result.error}`);
+    if (result.state === 'failed') {
+      failedItems.push({ id: item.id ?? item.movieId ?? item.key, key: item.key, error: result.error });
+      console.error(`[FAIL] ${index + 1}/${items.length} ${item.key}: ${result.error}`);
+    }
     else console.log(`[${result.state.toUpperCase()}] ${index + 1}/${items.length} ${item.key} (${result.bytes} bytes)`);
   }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return counts;
+  return { ...counts, failedItems };
+}
+
+async function markBatchFailed(manifestFile, items, failures, cause) {
+  const records = failures.length ? failures : items.map((item) => ({
+    id: item.id ?? item.movieId ?? item.key,
+    key: item.key,
+    error: cause,
+  }));
+  const unique = [...new Map(records.map((record) => [record.key, record])).values()];
+  for (const item of items) {
+    if (unique.some((record) => record.key === item.key)) item.failed = true;
+  }
+  console.error(`[retry-loop] MAX_RETRIES=${MAX_RETRIES} reached. Marking ${unique.length} object(s) failed; no further automatic retries.`);
+  console.error(JSON.stringify({ event: 'r2-sync-batch-failed', failedObjects: unique }, null, 2));
+  try {
+    await writeFile(`${manifestFile}.failures.json`, JSON.stringify({
+      status: 'failed',
+      maxRetries: MAX_RETRIES,
+      generatedAt: new Date().toISOString(),
+      failedObjects: unique,
+    }, null, 2));
+  } catch (error) {
+    console.error(`[retry-loop] Could not write failure manifest: ${safeLogError(error)}`);
+  }
 }
 
 let cloudPlan;
@@ -180,12 +226,16 @@ if (cloudPlan?.schema === 'flixlyra-cloud-v1') {
   }
 } else {
 let iteration = 0;
+let consecutiveRetries = 0;
+let failedKeys = new Set();
+let lastPending = [];
 while (true) {
   iteration += 1;
   try {
     const allItems = selectedItems(await loadManifest(manifestPath, mediaDirectory));
     if (!allItems.length) fail('No local media files found. Check --manifest or --media-dir.');
-    const pending = await findPending(allItems);
+    const pending = await findPending(allItems, failedKeys);
+    lastPending = pending;
     console.log(`[scan] iteration ${iteration}: ${pending.length}/${allItems.length} files require upload`);
     if (!pending.length) {
       console.log(JSON.stringify({ bucket, manifest: manifestPath, mediaDirectory, qualityFilter: qualityFilter.length ? qualityFilter : 'all', total: allItems.length, remaining: 0, status: 'complete' }, null, 2));
@@ -196,19 +246,35 @@ while (true) {
       process.exitCode = 2;
       break;
     }
-    const counts = await uploadBatch(pending);
+    const batch = await uploadBatch(pending);
+    const { failedItems, ...counts } = batch;
     console.log(JSON.stringify({ iteration, attempted: pending.length, ...counts }, null, 2));
-    const remaining = await findPending(allItems);
+    const remaining = await findPending(allItems, failedKeys);
     if (!remaining.length) {
       console.log(`[complete] all ${allItems.length} files are verified in R2`);
       break;
     }
+    if (failedItems.length || remaining.length >= pending.length) consecutiveRetries += 1;
+    else consecutiveRetries = 0;
+    if (consecutiveRetries >= MAX_RETRIES) {
+      await markBatchFailed(manifestPath, remaining, failedItems, 'remaining batch did not make progress');
+      failedKeys = new Set(remaining.map((item) => item.key));
+      process.exitCode = 1;
+      break;
+    }
     console.log(`[retry-loop] Auto-re-attempting remaining batch... ${remaining.length} files still pending`);
+    console.log(`[retry-loop] Consecutive batch retry ${consecutiveRetries}/${MAX_RETRIES}`);
     await sleep(10_000);
   } catch (error) {
-    console.error(`[retry-loop] ${error instanceof Error ? error.message : String(error)}`);
-    console.log('Auto-re-attempting remaining batch...');
+    console.error(`[retry-loop] ${safeLogError(error)}`);
     if (dryRun) { process.exitCode = 2; break; }
+    consecutiveRetries += 1;
+    if (consecutiveRetries >= MAX_RETRIES) {
+      await markBatchFailed(manifestPath, lastPending, [], safeLogError(error));
+      process.exitCode = 1;
+      break;
+    }
+    console.log(`🔁 Retrying remaining batch (Attempt ${consecutiveRetries + 1}/${MAX_RETRIES})...`);
     await sleep(10_000);
   }
 }
