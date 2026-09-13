@@ -1,4 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { env } from 'cloudflare:workers';
+
+type RouteBindings = { DB?: D1Database };
 
 const SITE_ORIGIN = 'https://flixlyra.com';
 
@@ -28,6 +31,41 @@ function workersDevRedirect(request: NextRequest): NextResponse | undefined {
   return NextResponse.redirect(target, 301);
 }
 
+async function missingPublicMovieRoute(request: NextRequest): Promise<NextResponse | undefined> {
+  const match = request.nextUrl.pathname.match(/^\/(movie|movies|series)\/([^/]+)\/?$/i);
+  if (!match) return undefined;
+
+  let slug: string;
+  try {
+    slug = decodeURIComponent(match[2]);
+  } catch {
+    return new NextResponse('Not Found', { status: 404 });
+  }
+  if (!slug || slug.includes('/') || slug.includes('\\') || /[\u0000-\u001f\u007f]/.test(slug)) {
+    return new NextResponse('Not Found', { status: 404 });
+  }
+
+  let routeType: 'movie' | 'series' | undefined | null;
+  try {
+    const database = (env as unknown as RouteBindings).DB;
+    if (!database) return undefined;
+    const row = await database
+      .prepare("SELECT content_type FROM movies WHERE slug = ? AND publication_status = 'published' LIMIT 1")
+      .bind(slug)
+      .first<{ content_type?: string }>();
+    routeType = row
+      ? row.content_type === 'series' ? 'series' : 'movie'
+      : undefined;
+  } catch {
+    // Let the page pipeline handle database outages; do not create false 404s.
+    return undefined;
+  }
+  if (routeType === null) return undefined;
+  const requestedType = match[1].toLowerCase() === 'series' ? 'series' : 'movie';
+  if (!routeType || routeType !== requestedType) return new NextResponse('Not Found', { status: 404 });
+  return undefined;
+}
+
 function buildContentSecurityPolicy(nonce: string): string {
   return [
     "default-src 'self'",
@@ -50,9 +88,11 @@ function buildContentSecurityPolicy(nonce: string): string {
   ].join('; ');
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const redirect = workersDevRedirect(request);
   if (redirect) return redirect;
+  const missingRoute = await missingPublicMovieRoute(request);
+  if (missingRoute) return missingRoute;
   const nonce = crypto.randomUUID().replaceAll('-', '');
   const policy = buildContentSecurityPolicy(nonce);
   const requestHeaders = new Headers(request.headers);
