@@ -158,7 +158,7 @@ export function MovieBrowser({
     return (
       <main className="min-h-screen overflow-hidden bg-neutral-950 text-white">
         <header className="flixlyra-glass relative z-50 text-white">
-          <div className="mx-auto flex h-16 max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
+          <div className="mx-auto flex h-[50px] max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
             <a href="#top" className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl">
               Flixlyra<span className="text-[#ef796d]">.</span>
             </a>
@@ -178,7 +178,7 @@ export function MovieBrowser({
           <h1 className="text-3xl md:text-5xl font-bold text-white tracking-tight">Curated Cinema Arriving Soon</h1>
           <p className="text-neutral-400 text-sm md:text-base mt-4 max-w-xl mx-auto">Our catalog is being curated for a premium multi-device cinematic experience. Check back shortly.</p>
         </section>
-        <section id="collection" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mt-12 max-w-6xl mx-auto px-4" aria-label="Upcoming catalogue">
+        <section id="movie-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mt-12 max-w-6xl mx-auto px-4" aria-label="Upcoming catalogue">
           {Array.from({ length: 6 }, (_, index) => (
             <div key={index} className="aspect-[2/3] overflow-hidden rounded-xl border border-white/10 bg-neutral-900/95 shadow-lg animate-pulse relative">
               <div className="bg-gradient-to-tr from-cyan-500/10 via-transparent to-blue-500/10 w-full h-full" />
@@ -199,7 +199,7 @@ export function MovieBrowser({
   return (
     <main className="min-h-screen overflow-hidden bg-[#f2efe9] text-[#181916]">
       <header className="flixlyra-glass fixed inset-x-0 top-0 z-50 text-white">
-        <div className="mx-auto flex h-16 max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
+        <div className="mx-auto flex h-[50px] max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
           <a
             href="#top"
             className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl"
@@ -210,7 +210,7 @@ export function MovieBrowser({
             <a className="text-white" href="#discover">
               Discover
             </a>
-            <a href="#collection">Movies</a>
+            <a href="#movie-grid">Movies</a>
             <a href="#languages">Languages</a>
             <a href="/content-policy">Content policy</a>
           </nav>
@@ -222,7 +222,7 @@ export function MovieBrowser({
           </a>
           <button
             onClick={() => setMenu(!menu)}
-            className="ml-auto grid size-10 place-items-center text-white lg:hidden"
+            className="ml-auto grid size-11 place-items-center text-white lg:size-10 lg:hidden"
             aria-label="Toggle navigation"
           >
             {menu ? <X /> : <Menu />}
@@ -233,7 +233,7 @@ export function MovieBrowser({
             <a className="rounded-lg px-2 py-3" href="#discover">
               Discover
             </a>
-            <a className="rounded-lg px-2 py-3" href="#collection">
+            <a className="rounded-lg px-2 py-3" href="#movie-grid">
               Movies
             </a>
             <a className="rounded-lg px-2 py-3" href="#languages">
@@ -250,7 +250,7 @@ export function MovieBrowser({
         id="top"
         aria-roledescription="carousel"
         aria-label="Featured content"
-        className="relative min-h-[560px] overflow-hidden pt-12 sm:min-h-[760px] sm:pt-20"
+        className="relative h-[42vh] min-h-[280px] max-h-[42vh] overflow-hidden pt-[50px] sm:h-auto sm:min-h-[760px] sm:max-h-none sm:pt-20"
       >
         {heroMovies.map((movie, index) => {
           const active = index === heroIndex;
@@ -260,7 +260,7 @@ export function MovieBrowser({
               key={movie.slug}
               aria-hidden={!active}
               aria-label={`${index + 1} of ${heroMovies.length}: ${movie.title}`}
-              className={`absolute inset-0 pt-12 transition-[opacity,transform] duration-1000 ease-out motion-reduce:transition-none sm:pt-20 ${active ? 'z-10 translate-x-0 opacity-100' : 'pointer-events-none z-0 translate-x-4 opacity-0'}`}
+              className={`absolute inset-0 pt-[50px] transition-[opacity,transform] duration-1000 ease-out motion-reduce:transition-none sm:pt-20 ${active ? 'z-10 translate-x-0 opacity-100' : 'pointer-events-none z-0 translate-x-4 opacity-0'}`}
             >
               <img
                 src={movie.backdrop}
@@ -269,7 +269,7 @@ export function MovieBrowser({
               />
               <div className="absolute inset-0 bg-gradient-to-r from-neutral-950 via-neutral-950/75 via-40% to-transparent" />
               <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-transparent to-black/30" />
-              <div className="relative mx-auto flex min-h-[520px] max-w-[1480px] items-center px-4 py-6 text-white sm:min-h-[680px] sm:items-end sm:px-8 sm:py-0 lg:items-center lg:px-12">
+              <div className="relative mx-auto flex h-full min-h-0 max-w-[1480px] items-end px-4 py-6 pb-10 text-white sm:h-auto sm:min-h-[680px] sm:items-end sm:px-8 sm:py-0 sm:pb-0 lg:items-center lg:px-12">
                 <div className="relative z-10 w-full max-w-3xl sm:pt-24">
                   <div className="mb-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-[.2em] text-white/65 drop-shadow-md sm:mb-7 sm:tracking-[.25em]">
                     <span className="h-px w-8 bg-[#de5d4f] sm:w-10" />{' '}
@@ -282,14 +282,14 @@ export function MovieBrowser({
                     tabIndex={active ? 0 : -1}
                     className="group inline-block max-w-full"
                   >
-                    <h1 className="break-words font-serif text-[clamp(3rem,15vw,6rem)] leading-[.9] tracking-[-.055em] drop-shadow-md transition-colors group-hover:text-[#f3aaa2] lg:text-[7.5rem]">
+                    <h1 className="break-words font-serif text-xl leading-tight tracking-[-.055em] drop-shadow-md transition-colors group-hover:text-[#f3aaa2] sm:text-4xl lg:text-[7.5rem]">
                       {movie.title}
                     </h1>
                   </a>
                   <p className="mt-4 font-serif text-lg italic text-white/65 drop-shadow-md sm:mt-5 sm:text-2xl">
                     {movie.tagline}
                   </p>
-                  <div className="mt-5 flex flex-wrap gap-x-4 gap-y-2 text-sm text-white/70 drop-shadow-md sm:mt-7 sm:gap-x-5">
+                  <div className="mt-2 flex flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-xs text-white/70 drop-shadow-md sm:mt-7 sm:flex-wrap sm:gap-x-5 sm:gap-y-2 sm:text-sm">
                     <span className="flex items-center gap-1.5">
                       <Star
                         size={14}
@@ -299,17 +299,17 @@ export function MovieBrowser({
                     </span>
                     <span>{movie.year}</span>
                     <span>{movie.runtime}</span>
-                    <span>{movie.genre}</span>
-                    <span>{movie.languages.length} subtitle languages</span>
+                    <span className="hidden sm:inline">{movie.genre}</span>
+                    <span>{movie.languages.length} subs<span className="hidden sm:inline">title languages</span></span>
                   </div>
                   <p className="mt-5 hidden max-w-xl text-base leading-7 text-white/65 drop-shadow-md sm:mt-6 sm:block">
                     {movie.description}
                   </p>
-                  <div className="mt-6 grid gap-3 min-[430px]:flex min-[430px]:flex-wrap sm:mt-8">
+                  <div className="mt-4 flex w-full flex-row gap-2 sm:mt-8 sm:flex-wrap">
                     <a
                       href={href}
                       tabIndex={active ? 0 : -1}
-                      className="inline-flex min-h-12 items-center justify-center gap-3 rounded-full bg-[#de5d4f] px-5 py-3.5 text-sm font-semibold text-white transition hover:bg-[#c64d40] sm:px-6"
+                      className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full bg-[#de5d4f] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#c64d40] sm:min-h-12 sm:flex-none sm:gap-3 sm:px-6 sm:py-3.5 sm:text-sm"
                     >
                       Explore this{' '}
                       {movie.contentType === 'series' ? 'series' : 'film'}{' '}
@@ -323,7 +323,7 @@ export function MovieBrowser({
                           ?.scrollIntoView({ behavior: 'smooth' })
                       }
                       tabIndex={active ? 0 : -1}
-                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/25 bg-black/45 px-5 py-3.5 text-sm font-semibold sm:px-6"
+                      className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full border border-white/25 bg-black/45 px-3 py-2 text-xs font-semibold sm:min-h-12 sm:flex-none sm:px-6 sm:py-3.5 sm:text-sm"
                     >
                       <Search size={16} /> Search all films
                     </button>
@@ -334,7 +334,7 @@ export function MovieBrowser({
           );
         })}
         {heroMovies.length > 1 ? (
-          <div className="absolute inset-x-0 bottom-7 z-30 mx-auto flex max-w-[1480px] items-center gap-3 px-5 text-white sm:px-8 lg:px-12">
+          <div className="absolute inset-x-0 bottom-2 z-30 mx-auto flex max-w-[1480px] items-center justify-between px-3 text-white sm:bottom-7 sm:justify-start sm:gap-3 sm:px-8 lg:px-12">
             <button
               type="button"
               onClick={() =>
@@ -343,13 +343,13 @@ export function MovieBrowser({
                     (index - 1 + heroMovies.length) % heroMovies.length,
                 )
               }
-              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/55 transition hover:bg-black/75"
+              className="grid size-11 place-items-center rounded-full border border-white/20 bg-black/45 transition hover:bg-black/75 sm:border-white/25 sm:bg-black/55"
               aria-label="Previous featured title"
             >
               <ChevronLeft size={20} />
             </button>
             <div
-              className="flex items-center gap-2"
+              className="flex items-center gap-1 sm:gap-2"
               role="tablist"
               aria-label="Choose featured title"
             >
@@ -361,7 +361,7 @@ export function MovieBrowser({
                   aria-selected={index === heroIndex}
                   aria-label={`Show ${movie.title}`}
                   onClick={() => setHeroIndex(index)}
-                  className={`h-1.5 rounded-full transition-all ${index === heroIndex ? 'w-10 bg-[#ef796d]' : 'w-5 bg-white/40 hover:bg-white/70'}`}
+                  className={`h-1 rounded-full transition-all sm:h-1.5 ${index === heroIndex ? 'w-6 bg-[#ef796d] sm:w-10' : 'w-3 bg-white/40 hover:bg-white/70 sm:w-5'}`}
                 />
               ))}
             </div>
@@ -370,13 +370,13 @@ export function MovieBrowser({
               onClick={() =>
                 setHeroIndex((index) => (index + 1) % heroMovies.length)
               }
-              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/55 transition hover:bg-black/75"
+              className="grid size-11 place-items-center rounded-full border border-white/20 bg-black/45 transition hover:bg-black/75 sm:border-white/25 sm:bg-black/55"
               aria-label="Next featured title"
             >
               <ChevronRight size={20} />
             </button>
             <span
-              className="ml-1 text-xs font-semibold tracking-[.18em] text-white/60"
+              className="ml-1 hidden text-xs font-semibold tracking-[.18em] text-white/60 sm:inline"
               aria-live="polite"
             >
               {String(heroIndex + 1).padStart(2, '0')} /{' '}
@@ -399,26 +399,31 @@ export function MovieBrowser({
 
       <section
         id="discover"
-        className="mx-auto my-4 max-w-[1480px] px-4 py-6 sm:my-10 sm:px-8 sm:py-20 lg:px-12"
+        className="mx-auto my-2 max-w-[1480px] px-4 py-1 sm:my-10 sm:px-8 sm:py-20 lg:px-12"
       >
-        <div className="grid gap-4 lg:grid-cols-[.65fr_1.35fr] lg:items-end lg:gap-8">
-          <div>
+        <div className="grid gap-2 lg:grid-cols-[.65fr_1.35fr] lg:items-end lg:gap-8">
+          <div className="hidden md:block">
             <p className="section-kicker">Curated cinema</p>
             <h2 className="mt-3 max-w-lg font-serif text-4xl leading-[.98] tracking-[-.04em] sm:text-6xl">
               Find your next story.
             </h2>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[1fr_180px_210px] sm:gap-3">
-            <label className="flex min-h-12 items-center gap-3 rounded-xl border border-stone-300/80 bg-white/70 px-4 py-3 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1 sm:grid-cols-[1fr_180px_210px] sm:gap-3">
+            <div className="flex min-w-0 items-center gap-1 sm:contents">
+              <label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-stone-300/80 bg-white/70 px-2 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white sm:h-auto sm:min-h-12 sm:gap-3 sm:rounded-xl sm:px-4 sm:py-3">
               <Search size={18} className="shrink-0 text-stone-500" />
               <input
                 value={query}
                 maxLength={80}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search title, director or cast"
-                className="min-w-0 w-full bg-transparent text-base outline-none placeholder:text-stone-500 sm:text-sm"
+                className="h-9 min-w-0 w-full bg-transparent text-xs outline-none placeholder:text-stone-500 sm:h-auto sm:text-sm"
               />
-            </label>
+              </label>
+              <span className="shrink-0 rounded-full bg-stone-200 px-2 py-1 text-[11px] font-semibold text-stone-700 sm:hidden">
+                {filtered.length} films
+              </span>
+            </div>
             <FilterSelect
               label="Genre"
               value={genre}
@@ -435,7 +440,7 @@ export function MovieBrowser({
         </div>
       </section>
 
-      <div className="mx-auto mb-4 max-w-[1480px] px-4 sm:mb-0 sm:px-8 lg:px-12">
+      <div className="mx-auto mb-2 max-w-[1480px] px-4 sm:mb-0 sm:px-8 lg:px-12">
         <div className="max-w-[180px]">
           <FilterSelect
             label="Type"
@@ -450,11 +455,11 @@ export function MovieBrowser({
         id="movie-grid"
         className="mx-auto max-w-[1480px] px-4 pb-16 sm:px-8 sm:pb-20 lg:px-12"
       >
-        <div className="mb-4 flex items-end justify-between border-b border-black/15 pb-3 sm:mb-8 sm:pb-4">
+        <div className="mb-4 hidden items-end justify-between border-b border-black/15 pb-3 sm:flex sm:mb-8 sm:pb-4">
           <p className="text-sm text-black/50">
             {filtered.length} {filtered.length === 1 ? 'film' : 'films'} found
           </p>
-          <span className="text-xs uppercase tracking-[.2em] text-black/40">
+          <span className="hidden text-xs uppercase tracking-[.2em] text-black/40 md:block">
             Updated weekly
           </span>
         </div>
@@ -616,13 +621,13 @@ function FilterSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative flex min-h-12 items-center rounded-xl border border-stone-300/80 bg-stone-200/50 px-4 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white/70">
+    <label className="relative flex h-11 min-h-11 min-w-0 items-center rounded-lg border border-stone-300/80 bg-stone-200/50 px-2 text-stone-900 transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white/70 sm:h-auto sm:min-h-12 sm:rounded-xl sm:px-4">
       <span className="sr-only">{label}</span>
       <select
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full appearance-none bg-transparent pr-7 text-base text-stone-900 outline-none sm:text-sm"
+        className="h-9 min-w-0 w-full appearance-none truncate bg-transparent pr-4 text-xs text-stone-900 outline-none sm:h-12 sm:pr-7 sm:text-sm"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -632,7 +637,7 @@ function FilterSelect({
       </select>
       <ChevronDown
         size={15}
-        className="pointer-events-none absolute right-4 top-4 text-stone-500"
+        className="pointer-events-none absolute right-2 top-3.5 text-stone-500 sm:right-4 sm:top-4"
       />
     </label>
   );
