@@ -17,6 +17,34 @@ const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 2;
 const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
+const activeTimers = new Set();
+const activeTorrentClients = new Set();
+
+async function destroyTorrentClient(client) {
+  if (!activeTorrentClients.delete(client)) return;
+  await new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(finish, 5000);
+    timeout.unref?.();
+    try {
+      client.destroy(finish);
+    } catch {
+      finish();
+    }
+  });
+}
+
+async function cleanupRuntime() {
+  for (const timer of activeTimers) clearTimeout(timer);
+  activeTimers.clear();
+  await Promise.all([...activeTorrentClients].map(client => destroyTorrentClient(client)));
+}
 
 // Keep GitHub Actions output flowing line-by-line while media is acquired.
 process.stdout._handle?.setBlocking?.(true);
@@ -224,8 +252,10 @@ async function acquire(ctx, item, attempt) {
   const filePath = resolve(work, `${item.quality}.mp4`);
   const WebTorrent = await loadGuardedWebTorrent();
   const client = new WebTorrent({ webSeeds: false, maxConns: 30, uploadLimit: 131072 });
+  activeTorrentClients.add(client);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('Acquisition timed out')), 20 * 60000);
+  activeTimers.add(timer);
   try {
     const torrent = await new Promise((done, reject) => {
       const onError = e => { controller.abort(e); reject(e); };
@@ -251,7 +281,8 @@ async function acquire(ctx, item, attempt) {
     item.file = filePath; item.bytes = validated.bytes;
   } finally {
     clearTimeout(timer);
-    await new Promise(done => client.destroy(done));
+    activeTimers.delete(timer);
+    await destroyTorrentClient(client);
     await rm(resolve(work, 'pieces'), { recursive: true, force: true });
     if (!item.file) await rm(work, { recursive: true, force: true });
   }
@@ -478,13 +509,27 @@ export async function drainCloudPlan(plan, sync) {
   } finally { ctx.s3.destroy(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const ctx = await context();
+  let ctx;
+  let summary;
+  let fatalError;
   try {
+    ctx = await context();
     await mkdir(mediaRoot, { recursive: true });
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
     const result = await prepareAll(ctx, plan);
-    console.log(JSON.stringify({ event: 'prepared', maxMovies, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result }));
-  } finally { ctx.s3.destroy(); }
+    summary = { event: 'prepared', maxMovies, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
+  } catch (error) {
+    fatalError = error;
+  } finally {
+    await cleanupRuntime();
+    ctx?.s3.destroy();
+  }
+  if (fatalError) {
+    console.error(JSON.stringify({ event: 'prepare-fatal-error', error: safeLogError(fatalError) }));
+    process.exit(1);
+  }
+  console.log(JSON.stringify(summary));
+  process.exit(0);
 }
