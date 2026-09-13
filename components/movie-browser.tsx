@@ -267,10 +267,11 @@ export function MovieBrowser({
                 alt=""
                 className="absolute inset-0 h-full w-full scale-[1.02] object-cover"
               />
-              <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(12,13,11,.92)_0%,rgba(12,13,11,.68)_48%,rgba(12,13,11,.08)_78%),linear-gradient(0deg,rgba(12,13,11,.8)_0%,transparent_45%)]" />
+              <div className="absolute inset-0 bg-gradient-to-r from-neutral-950 via-neutral-950/75 via-40% to-transparent" />
+              <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-transparent to-black/30" />
               <div className="relative mx-auto flex min-h-[616px] max-w-[1480px] items-end px-4 pb-24 text-white sm:min-h-[680px] sm:px-8 lg:items-center lg:px-12 lg:pb-0">
-                <div className="flixlyra-glass flixlyra-glass-copy max-w-3xl rounded-2xl p-5 pt-6 sm:p-7 sm:pt-8 lg:p-9">
-                  <div className="mb-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-[.2em] text-white/65 sm:mb-7 sm:tracking-[.25em]">
+                <div className="relative z-10 w-full max-w-3xl pt-16 sm:pt-24">
+                  <div className="mb-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-[.2em] text-white/65 drop-shadow-md sm:mb-7 sm:tracking-[.25em]">
                     <span className="h-px w-8 bg-[#de5d4f] sm:w-10" />{' '}
                     {featuredMovies.length
                       ? 'Featured content'
@@ -281,14 +282,14 @@ export function MovieBrowser({
                     tabIndex={active ? 0 : -1}
                     className="group inline-block max-w-full"
                   >
-                    <h1 className="break-words font-serif text-[clamp(3rem,15vw,6rem)] leading-[.9] tracking-[-.055em] transition-colors group-hover:text-[#f3aaa2] lg:text-[7.5rem]">
+                    <h1 className="break-words font-serif text-[clamp(3rem,15vw,6rem)] leading-[.9] tracking-[-.055em] drop-shadow-md transition-colors group-hover:text-[#f3aaa2] lg:text-[7.5rem]">
                       {movie.title}
                     </h1>
                   </a>
-                  <p className="mt-4 font-serif text-lg italic text-white/65 sm:mt-5 sm:text-2xl">
+                  <p className="mt-4 font-serif text-lg italic text-white/65 drop-shadow-md sm:mt-5 sm:text-2xl">
                     {movie.tagline}
                   </p>
-                  <div className="mt-5 flex flex-wrap gap-x-4 gap-y-2 text-sm text-white/70 sm:mt-7 sm:gap-x-5">
+                  <div className="mt-5 flex flex-wrap gap-x-4 gap-y-2 text-sm text-white/70 drop-shadow-md sm:mt-7 sm:gap-x-5">
                     <span className="flex items-center gap-1.5">
                       <Star
                         size={14}
@@ -301,7 +302,7 @@ export function MovieBrowser({
                     <span>{movie.genre}</span>
                     <span>{movie.languages.length} subtitle languages</span>
                   </div>
-                  <p className="mt-5 line-clamp-3 max-w-xl text-base leading-7 text-white/65 sm:mt-6 sm:line-clamp-none">
+                  <p className="mt-5 line-clamp-3 max-w-xl text-base leading-7 text-white/65 drop-shadow-md sm:mt-6 sm:line-clamp-none">
                     {movie.description}
                   </p>
                   <div className="mt-6 grid gap-3 min-[430px]:flex min-[430px]:flex-wrap sm:mt-8">
