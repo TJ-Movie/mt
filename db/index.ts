@@ -51,6 +51,8 @@ type MovieRow = {
   imdb_id: string | null;
   storage_key: string | null;
   ingest_status: string;
+  r2_720p_key: string | null;
+  r2_1080p_key: string | null;
 };
 
 export type AdminMovie = Movie & {
@@ -61,6 +63,9 @@ export type AdminMovie = Movie & {
   imdbId?: string;
   storageKey?: string;
   ingestStatus?: string;
+  ingest_status?: string | null;
+  r2_720p_key?: string | null;
+  r2_1080p_key?: string | null;
 };
 
 export type AuditEvent = {
@@ -192,6 +197,21 @@ function safeEpisodes(json: string): StoredEpisode[] {
   } catch { return []; }
 }
 
+function availableQualities(row: MovieRow): ('720p' | '1080p')[] {
+  const sources = safeSources(row.download_sources_json);
+  const qualities = (['720p', '1080p'] as const).filter((quality) => sources.some((source) =>
+    String(source.quality ?? source.resolution).toLowerCase() === quality &&
+    typeof source.r2StorageKey === 'string' &&
+    typeof source.r2Bytes === 'number' &&
+    Number.isSafeInteger(source.r2Bytes) &&
+    source.r2Bytes > 0));
+  // A transfer in progress can retain a stale/placeholder 720p descriptor.
+  // Only expose qualities that have a persisted R2 object reference while it
+  // is processing, so the public API cannot advertise a broken option.
+  if (row.ingest_status === 'processing' || row.ingest_status === 'transferring') return qualities.filter((quality) => quality === '1080p');
+  return qualities;
+}
+
 function rowToMovie(row: MovieRow): AdminMovie {
   return {
     id: row.id,
@@ -230,6 +250,13 @@ function rowToMovie(row: MovieRow): AdminMovie {
     imdbId: row.imdb_id ?? undefined,
     storageKey: row.storage_key ?? undefined,
     ingestStatus: row.ingest_status,
+    ingest_status: row.ingest_status,
+    // Keep the snake_case fields present in JSON even when a quality is absent.
+    // `undefined` would be omitted by JSON serialization, making the UI unable
+    // to distinguish an absent quality from an incomplete API payload.
+    r2_720p_key: row.r2_720p_key ?? null,
+    r2_1080p_key: row.r2_1080p_key ?? null,
+    availableQualities: availableQualities(row),
   };
 }
 
@@ -237,7 +264,13 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status`;
+  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status,
+  (SELECT COALESCE(json_extract(source.value, '$.r2StorageKey'), json_extract(source.value, '$.r2_storage_key'))
+   FROM json_each(CASE WHEN json_type(download_sources_json) = 'array' THEN download_sources_json ELSE COALESCE(json_extract(download_sources_json, '$.sources'), '[]') END) AS source
+   WHERE lower(COALESCE(json_extract(source.value, '$.quality'), json_extract(source.value, '$.resolution'), '')) = '720p' LIMIT 1) AS r2_720p_key,
+  (SELECT COALESCE(json_extract(source.value, '$.r2StorageKey'), json_extract(source.value, '$.r2_storage_key'))
+   FROM json_each(CASE WHEN json_type(download_sources_json) = 'array' THEN download_sources_json ELSE COALESCE(json_extract(download_sources_json, '$.sources'), '[]') END) AS source
+   WHERE lower(COALESCE(json_extract(source.value, '$.quality'), json_extract(source.value, '$.resolution'), '')) = '1080p' LIMIT 1) AS r2_1080p_key`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {
@@ -285,7 +318,7 @@ export async function initializeStarterCatalogue(user: ChatGPTUser): Promise<voi
 }
 
 export async function listAdminMovies(): Promise<AdminMovie[]> {
-  const result = await getDatabase().prepare(`SELECT ${MOVIE_COLUMNS} FROM movies ORDER BY updated_at DESC LIMIT 500`).all<MovieRow>();
+  const result = await getDatabase().prepare(`SELECT ${MOVIE_COLUMNS} FROM movies ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 500`).all<MovieRow>();
   return result.results.map(rowToMovie);
 }
 

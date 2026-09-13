@@ -35,12 +35,24 @@ import {
 } from '../ui/table';
 
 function hasDualQualityAssets(movie: Pick<AdminMovie, 'downloadSources'>): boolean {
+  return qualityAssetCount(movie) === 2;
+}
+
+function qualityAssetCount(movie: Pick<AdminMovie, 'downloadSources'>): number {
   const qualities = new Set((movie.downloadSources ?? []).filter((source) =>
     /^(720p|1080p)$/i.test(source.quality || source.resolution || '') &&
     typeof source.r2StorageKey === 'string' && source.r2StorageKey.length > 0 &&
     typeof source.r2Bytes === 'number' && Number.isSafeInteger(source.r2Bytes) && source.r2Bytes > 0,
   ).map((source) => (source.quality || source.resolution).toLowerCase()));
-  return qualities.has('720p') && qualities.has('1080p');
+  return qualities.size;
+}
+
+function isHalfMovie(movie: Pick<AdminMovie, 'downloadSources' | 'ingestStatus' | 'ingest_status' | 'r2_720p_key' | 'r2_1080p_key'>): boolean {
+  const { ingestStatus, ingest_status, r2_720p_key, r2_1080p_key } = movie;
+  const isHalf = ingestStatus === 'HALF' || ingest_status === 'half' ||
+    ingestStatus?.toLowerCase() === 'half' ||
+    (Boolean(r2_720p_key) !== Boolean(r2_1080p_key));
+  return isHalf || qualityAssetCount(movie) === 1;
 }
 import {
   AlertDialog,
@@ -522,6 +534,7 @@ export function MovieStudio({
                 <div className="mt-4 flex gap-2" role="tablist" aria-label="Catalogue status">
                   {(['active', 'archived'] as const).map((view) => <Button key={view} type="button" variant={catalogueView === view ? 'secondary' : 'ghost'} className="flex-1 capitalize" onClick={() => setCatalogueView(view)}>{view}</Button>)}
                 </div>
+                {/* oxlint-disable-next-line jsx-a11y/label-has-associated-control -- wraps the search control. */}
                 <label className="relative mt-3 block">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/35" />
                   <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title or slug" aria-label="Search movies" className="pl-9" />
@@ -540,11 +553,23 @@ export function MovieStudio({
                             {movie.slug}
                           </p>
                         </div>
-                        <span
-                          className={`rounded-full px-2 py-1 text-[11px] ${movie.publicationStatus === 'published' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/8 text-white/45'}`}
-                        >
-                           {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) ? 'Ready for Review' : movie.publicationStatus}
-                        </span>
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] ${movie.publicationStatus === 'published' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/8 text-white/45'}`}
+                          >
+                            {movie.publicationStatus}
+                          </span>
+                          {isHalfMovie(movie) && (
+                            <span className="rounded-full border border-amber-300/20 bg-amber-400/15 px-2 py-1 text-[11px] font-medium text-amber-200">
+                              half
+                            </span>
+                          )}
+                          {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) && (
+                            <span className="rounded-full bg-sky-400/10 px-2 py-1 text-[11px] text-sky-200">
+                              Ready for Review
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <p className="mt-3 text-xs text-white/35">
                          {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) ? 'Ready for Review · ' : ''}Rights: {movie.rightsStatus} · rev {movie.revision}
