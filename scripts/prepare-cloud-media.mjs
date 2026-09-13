@@ -17,7 +17,7 @@ const pause = ms => new Promise(done => setTimeout(done, ms));
 process.stdout._handle?.setBlocking?.(true);
 process.stderr._handle?.setBlocking?.(true);
 
-const SECRET_ENV_NAMES = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN'];
+const SECRET_ENV_NAMES = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_D1_TOKEN'];
 function safeLogError(error) {
   let message = error instanceof Error ? error.message : String(error);
   for (const name of SECRET_ENV_NAMES) {
@@ -67,19 +67,22 @@ export function stableKey(id, quality) {
   return `assets/${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}/${quality}.mp4`;
 }
 export async function context() {
-  for (const name of ['R2_ACCOUNT_ID','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY','R2_BUCKET_NAME','CLOUDFLARE_API_TOKEN']) {
-    if (!process.env[name]?.trim()) throw new Error(`Missing repository secret: ${name}`);
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.R2_ACCOUNT_ID;
+  const d1Token = process.env.CLOUDFLARE_D1_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  for (const [name, value] of [['CLOUDFLARE_ACCOUNT_ID', account], ['R2_ACCESS_KEY_ID', process.env.R2_ACCESS_KEY_ID], ['R2_SECRET_ACCESS_KEY', process.env.R2_SECRET_ACCESS_KEY], ['R2_BUCKET_NAME', process.env.R2_BUCKET_NAME], ['CLOUDFLARE_D1_TOKEN', d1Token]]) {
+    if (!value?.trim()) throw new Error(`Missing repository secret: ${name}`);
   }
   const config = JSON.parse(await readFile('wrangler.json', 'utf8'));
-  const account = process.env.R2_ACCOUNT_ID;
   const bucket = process.env.R2_BUCKET_NAME;
   if (account !== config.account_id || !config.r2_buckets.some(b => b.bucket_name === bucket)) throw new Error('Cloud account/bucket does not match deployment');
-  const db = config.d1_databases.find(d => d.binding === 'DB').database_id;
+  const configuredDatabaseId = config.d1_databases.find(d => d.binding === 'DB').database_id;
+  const db = process.env.CLOUDFLARE_DATABASE_ID || configuredDatabaseId;
+  if (db !== configuredDatabaseId) throw new Error('Cloud database does not match deployment');
   const s3 = new S3Client({ region: 'auto', endpoint: `https://${account}.r2.cloudflarestorage.com`, maxAttempts: 3,
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
   async function query(sql, params = []) {
     const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/d1/database/${db}/query`, {
-      method: 'POST', headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json' },
+      method: 'POST', headers: { Authorization: `Bearer ${d1Token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params }), signal: AbortSignal.timeout(60000),
     });
     const data = await response.json();
@@ -99,18 +102,39 @@ export async function saveManifest(plan) {
   await writeFile(`${manifestPath}.next`, JSON.stringify(plan, null, 2));
   await rename(`${manifestPath}.next`, manifestPath);
 }
+async function markMovieRetryPending(ctx, id, error) {
+  const message = safeLogError(error).slice(0, 1000);
+  try {
+    await ctx.query("UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND publication_status IN ('draft','published')", ['retry_pending', message, id]);
+    return true;
+  } catch (updateError) {
+    console.error(JSON.stringify({ event: 'movie-status-update-failed', id, status: 'retry_pending', error: safeLogError(updateError) }));
+    return false;
+  }
+}
 export async function makePlan(ctx) {
   const rows = await ctx.query("SELECT id,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY id");
-  const plan = { schema: 'flixlyra-cloud-v1', files: [], createdAt: new Date().toISOString() };
-  for (const row of rows) for (const quality of ['720p','1080p']) {
-    const source = sourcesOf(row.download_sources_json).find(s => (s.quality || s.resolution)?.toLowerCase() === quality);
-    const mapped = source?.r2StorageKey || source?.r2_storage_key;
-    // A legacy primary is not assigned a quality by guesswork.
-    const key = mapped || stableKey(row.id, quality);
-    const object = await ctx.head(key);
-    const verified = validVideo(object) && (!source?.r2Bytes || Number(source.r2Bytes) === object.ContentLength);
-    plan.files.push({ id: row.id, imdbId: row.imdb_id, quality, key, bytes: verified ? object.ContentLength : null,
-      file: null, verified });
+  const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
+  for (const row of rows) {
+    const movieItems = [];
+    try {
+      for (const quality of ['720p','1080p']) {
+        const source = sourcesOf(row.download_sources_json).find(s => (s.quality || s.resolution)?.toLowerCase() === quality);
+        const mapped = source?.r2StorageKey || source?.r2_storage_key;
+        // A legacy primary is not assigned a quality by guesswork.
+        const key = mapped || stableKey(row.id, quality);
+        const object = await ctx.head(key);
+        const verified = validVideo(object) && (!source?.r2Bytes || Number(source.r2Bytes) === object.ContentLength);
+        movieItems.push({ id: row.id, imdbId: row.imdb_id, quality, key, bytes: verified ? object.ContentLength : null,
+          file: null, verified });
+      }
+      plan.files.push(...movieItems);
+    } catch (error) {
+      const message = safeLogError(error);
+      plan.failures.push({ id: row.id, imdbId: row.imdb_id, status: 'retry_pending', error: message });
+      console.error(JSON.stringify({ event: 'movie-plan-failed', id: row.id, imdbId: row.imdb_id, status: 'retry_pending', error: message }));
+      await markMovieRetryPending(ctx, row.id, error);
+    }
   }
   return plan;
 }
