@@ -11,6 +11,7 @@ import { primaryMp4, uploadStream, sourceMagnet, remoteDescriptor, alternativeDe
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
+const DEFAULT_MAX_MOVIES = 2;
 const pause = ms => new Promise(done => setTimeout(done, ms));
 
 // Keep GitHub Actions output flowing line-by-line while media is acquired.
@@ -32,6 +33,18 @@ function formatBytes(bytes) {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
   return `${bytes} B`;
+}
+
+export function maxMoviesFromArgs(argv = process.argv) {
+  const raw = argv.find(value => value.startsWith('--max-movies='))?.slice('--max-movies='.length);
+  if (raw === undefined || raw === '') return DEFAULT_MAX_MOVIES;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 20) throw new Error('--max-movies must be an integer from 1 to 20');
+  return value;
+}
+
+export function isNonRetryableValidationError(error) {
+  return /(?:MP4 validation failed|No safe playable MP4 in source)/i.test(safeLogError(error));
 }
 
 function progressStream(stream, item, totalBytes) {
@@ -112,8 +125,10 @@ async function markMovieRetryPending(ctx, id, error) {
     return false;
   }
 }
-export async function makePlan(ctx) {
-  const rows = await ctx.query("SELECT id,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY id");
+export async function makePlan(ctx, options = {}) {
+  const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
+  if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 20) throw new Error('Invalid maxMovies');
+  const rows = await ctx.query("SELECT id,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
   const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
   for (const row of rows) {
     const movieItems = [];
@@ -173,10 +188,13 @@ async function acquire(ctx, item, attempt) {
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
     await pipeline(uploadStream(progressStream(file.createReadStream(), item, file.length)), createWriteStream(filePath), { signal: controller.signal });
-    const handle = await open(filePath, 'r');
-    const header = Buffer.alloc(12);
-    try { await handle.read(header, 0, 12, 0); } finally { await handle.close(); }
-    if (header.subarray(4, 8).toString() !== 'ftyp' || (await stat(filePath)).size !== file.length) throw new Error('MP4 validation failed');
+    const info = await stat(filePath);
+    const probe = Buffer.alloc(Math.min(64 * 1024, info.size));
+    const probeHandle = await open(filePath, 'r');
+    let bytesRead = 0;
+    try { ({ bytesRead } = await probeHandle.read(probe, 0, probe.length, 0)); } finally { await probeHandle.close(); }
+    const ftypOffset = probe.subarray(0, bytesRead).indexOf(Buffer.from('ftyp'));
+    if (info.size !== file.length || ftypOffset < 4) throw new Error('MP4 validation failed');
     item.file = filePath; item.bytes = file.length;
   } finally {
     clearTimeout(timer);
@@ -185,11 +203,11 @@ async function acquire(ctx, item, attempt) {
     if (!item.file) await rm(work, { recursive: true, force: true });
   }
 }
-async function markSkipped(plan, item, persist) {
+async function markSkipped(plan, item, persist, reason = 'download-failure') {
   item.file = null;
   item.bytes = null;
   item.skipped = true;
-  item.skipReason = 'download-failure';
+  item.skipReason = reason;
   await persist(plan);
 }
 function failureState(plan, id) {
@@ -226,12 +244,12 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
   };
   for (const id of new Set(ids)) {
     const state = failureState(plan, id);
-    const primarySql = 'UPDATE movies SET status = ?, sync_error = ?, ingest_status = ?, transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+    const primarySql = `UPDATE movies SET status = '${state.status}', sync_error = ?, ingest_status = '${state.ingestStatus}', transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
     const compatibilitySql = state.status === 'FAILED'
       ? "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
       : "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?";
     try {
-      await queryWithRetry(primarySql, [state.status, state.error, state.ingestStatus, state.error, id]);
+      await queryWithRetry(primarySql, [state.error, state.error, id]);
       marked += 1;
       if (state.status === 'HALF') half += 1;
     } catch {
@@ -261,7 +279,14 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
       await persist(plan);
       return true;
     } catch (error) {
-      console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: safeLogError(error) }));
+      const message = safeLogError(error);
+      if (isNonRetryableValidationError(error)) {
+        item.nonRetryableFailure = true;
+        item.failureReason = message;
+        console.warn(JSON.stringify({ event: 'acquisition-validation-failure', id: item.id, quality: item.quality, attempt, retryable: false, error: message }));
+        return false;
+      }
+      console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: message }));
       if (attempt < maxAttempts) {
         console.warn(`🔁 [Movie ID: ${item.id}] Retrying acquisition (Attempt ${attempt + 1}/${maxAttempts})...`);
         await wait(5000 * 2 ** (attempt - 1));
@@ -275,10 +300,12 @@ export async function prepareOne(ctx, plan, options = {}) {
   for (const item of plan.files.filter(f => !f.verified && !f.skipped && !f.file)) {
     try {
       if (await acquireWithRetries(ctx, plan, item, 3, options)) return item;
-      console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
-      await markSkipped(plan, item, persist);
-    } catch {
-      await markSkipped(plan, item, persist);
+      if (!item.nonRetryableFailure) console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
+      if (item.nonRetryableFailure) await markMovieRetryPending(ctx, item.id, item.failureReason);
+      await markSkipped(plan, item, persist, item.nonRetryableFailure ? 'validation-failure' : 'download-failure');
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
+      await markSkipped(plan, item, persist, 'download-failure');
     }
   }
   return null;
@@ -292,11 +319,17 @@ export async function prepareAll(ctx, plan, options = {}) {
   for (const item of pending) {
     try {
       if (await acquireWithRetries(ctx, plan, item, 3, options)) prepared += 1;
-      else {
+      else if (item.nonRetryableFailure) {
+        console.warn(`⚠️ Skipping Movie ${item.id} ${item.quality} after non-retryable MP4 validation failure.`);
+        await markMovieRetryPending(ctx, item.id, item.failureReason);
+        await markSkipped(plan, item, persist, 'validation-failure');
+        if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
+      } else {
         console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
         failedQueue.push(item);
       }
-    } catch {
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
       console.warn(`⚠️ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
       failedQueue.push(item);
     }
@@ -311,7 +344,8 @@ export async function prepareAll(ctx, plan, options = {}) {
         await acquireItem(ctx, item, 4);
         await persist(plan);
         prepared += 1;
-      } catch {
+      } catch (error) {
+        console.error(JSON.stringify({ event: 'movie-preparation-permanently-skipped', id: item.id, quality: item.quality, error: safeLogError(error) }));
         console.error(`❌ Permanently skipping Movie ${item.id} (Unresolvable dead stream).`);
         if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
         await markSkipped(plan, item, persist);
@@ -394,9 +428,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const ctx = await context();
   try {
     await mkdir(mediaRoot, { recursive: true });
-    const plan = await makePlan(ctx);
+    const maxMovies = maxMoviesFromArgs();
+    const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
     const result = await prepareAll(ctx, plan);
-    console.log(JSON.stringify({ event: 'prepared', total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result }));
+    console.log(JSON.stringify({ event: 'prepared', maxMovies, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result }));
   } finally { ctx.s3.destroy(); }
 }
