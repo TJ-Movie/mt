@@ -157,18 +157,18 @@ export function MovieBrowser({
   if (!heroMovies.length)
     return (
       <main className="min-h-screen overflow-hidden bg-neutral-950 text-white">
-        <header className="border-b border-white/10 bg-neutral-950/90 backdrop-blur-xl">
+        <header className="flixlyra-glass relative z-50 text-white">
           <div className="mx-auto flex h-16 max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
             <a href="#top" className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl">
               Flixlyra<span className="text-[#ef796d]">.</span>
             </a>
-            <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-white/60 lg:flex">
+            <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-white/70 lg:flex">
               <a className="text-white" href="#top">Discover</a>
               <a href="#collection">Movies</a>
               <a href="#languages">Languages</a>
               <a href="/content-policy">Content policy</a>
             </nav>
-            <a href="#top" className="ml-auto hidden items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-white/80 sm:flex">
+            <a href="#top" className="ml-auto hidden items-center gap-2 rounded-full border border-white/20 px-4 py-2 text-sm font-medium text-white/85 sm:flex">
               <Search size={15} /> Search
             </a>
           </div>
@@ -180,7 +180,7 @@ export function MovieBrowser({
         </section>
         <section id="collection" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mt-12 max-w-6xl mx-auto px-4" aria-label="Upcoming catalogue">
           {Array.from({ length: 6 }, (_, index) => (
-            <div key={index} className="aspect-[2/3] bg-white/[0.03] backdrop-blur-md border border-white/10 rounded-xl shadow-lg animate-pulse overflow-hidden relative">
+            <div key={index} className="aspect-[2/3] overflow-hidden rounded-xl border border-white/10 bg-neutral-900/95 shadow-lg animate-pulse relative">
               <div className="bg-gradient-to-tr from-cyan-500/10 via-transparent to-blue-500/10 w-full h-full" />
             </div>
           ))}
@@ -198,16 +198,16 @@ export function MovieBrowser({
 
   return (
     <main className="min-h-screen overflow-hidden bg-[#f2efe9] text-[#181916]">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-black/10 bg-[#f2efe9]/90 backdrop-blur-xl">
+      <header className="flixlyra-glass fixed inset-x-0 top-0 z-50 text-white">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
           <a
             href="#top"
             className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl"
           >
-            Flixlyra<span className="text-[#b43a2e]">.</span>
+            Flixlyra<span className="text-[#ef796d]">.</span>
           </a>
-          <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-black/60 lg:flex">
-            <a className="text-black" href="#discover">
+          <nav className="mx-auto hidden items-center gap-8 text-sm font-medium text-white/70 lg:flex">
+            <a className="text-white" href="#discover">
               Discover
             </a>
             <a href="#collection">Movies</a>
@@ -216,20 +216,20 @@ export function MovieBrowser({
           </nav>
           <a
             href="#discover"
-            className="ml-auto hidden items-center gap-2 rounded-full border border-black/15 px-4 py-2 text-sm font-medium sm:flex"
+            className="ml-auto hidden items-center gap-2 rounded-full border border-white/20 px-4 py-2 text-sm font-medium text-white/85 sm:flex"
           >
             <Search size={15} /> Search
           </a>
           <button
             onClick={() => setMenu(!menu)}
-            className="ml-auto grid size-10 place-items-center lg:hidden"
+            className="ml-auto grid size-10 place-items-center text-white lg:hidden"
             aria-label="Toggle navigation"
           >
             {menu ? <X /> : <Menu />}
           </button>
         </div>
         {menu && (
-          <nav className="grid gap-1 border-t border-black/10 px-4 py-3 text-sm sm:px-8 lg:hidden">
+          <nav className="grid gap-1 border-t border-white/10 px-4 py-3 text-sm text-white/80 sm:px-8 lg:hidden">
             <a className="rounded-lg px-2 py-3" href="#discover">
               Discover
             </a>
@@ -269,7 +269,7 @@ export function MovieBrowser({
               />
               <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(12,13,11,.92)_0%,rgba(12,13,11,.68)_48%,rgba(12,13,11,.08)_78%),linear-gradient(0deg,rgba(12,13,11,.8)_0%,transparent_45%)]" />
               <div className="relative mx-auto flex min-h-[616px] max-w-[1480px] items-end px-4 pb-24 text-white sm:min-h-[680px] sm:px-8 lg:items-center lg:px-12 lg:pb-0">
-                <div className="max-w-3xl pt-16 sm:pt-24">
+                <div className="flixlyra-glass flixlyra-glass-copy max-w-3xl rounded-2xl p-5 pt-6 sm:p-7 sm:pt-8 lg:p-9">
                   <div className="mb-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-[.2em] text-white/65 sm:mb-7 sm:tracking-[.25em]">
                     <span className="h-px w-8 bg-[#de5d4f] sm:w-10" />{' '}
                     {featuredMovies.length
@@ -317,7 +317,7 @@ export function MovieBrowser({
                     <a
                       href="#discover"
                       tabIndex={active ? 0 : -1}
-                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/20 bg-black/15 px-5 py-3.5 text-sm font-semibold backdrop-blur sm:px-6"
+                      className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/25 bg-black/45 px-5 py-3.5 text-sm font-semibold sm:px-6"
                     >
                       <Search size={16} /> Search all films
                     </a>
@@ -337,7 +337,7 @@ export function MovieBrowser({
                     (index - 1 + heroMovies.length) % heroMovies.length,
                 )
               }
-              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/25 backdrop-blur transition hover:bg-black/45"
+              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/55 transition hover:bg-black/75"
               aria-label="Previous featured title"
             >
               <ChevronLeft size={20} />
@@ -364,7 +364,7 @@ export function MovieBrowser({
               onClick={() =>
                 setHeroIndex((index) => (index + 1) % heroMovies.length)
               }
-              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/25 backdrop-blur transition hover:bg-black/45"
+              className="grid size-11 place-items-center rounded-full border border-white/25 bg-black/55 transition hover:bg-black/75"
               aria-label="Next featured title"
             >
               <ChevronRight size={20} />
@@ -378,7 +378,7 @@ export function MovieBrowser({
             </span>
           </div>
         ) : null}
-        <div className="absolute bottom-0 right-0 hidden w-[330px] border-l border-t border-white/15 bg-black/35 p-6 text-white backdrop-blur-md xl:block">
+        <div className="absolute bottom-0 right-0 hidden w-[330px] border-l border-t border-white/15 bg-black/75 p-6 text-white xl:block">
           <div className="flex items-center gap-3">
             <Globe2 className="text-[#ef796d]" />
             <div>
@@ -454,21 +454,18 @@ export function MovieBrowser({
         </div>
         {filtered.length ? (
           <>
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-10 lg:grid-cols-5">
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-3 sm:gap-x-4 sm:gap-y-10 lg:grid-cols-5">
               {filtered.map((movie, index) => (
-                <a key={movie.slug} href={contentHref(movie)} className="group">
-                  <div className="relative aspect-[2/3] overflow-hidden bg-[#d9d5ce]">
+                <a key={movie.slug} href={contentHref(movie)} className="group overflow-hidden rounded-2xl bg-neutral-900 text-white">
+                  <div className="relative aspect-[2/3] overflow-hidden bg-neutral-900">
                     <img
                       src={movie.poster}
                       alt={`${movie.title} poster`}
                       className="h-full w-full object-cover transition duration-700 group-hover:scale-[1.035]"
                     />
                     <div className="absolute inset-0 bg-black/0 transition group-hover:bg-black/15" />
-                    <span className="absolute left-1.5 top-1.5 rounded-sm bg-black/65 px-1.5 py-1 text-[10px] font-bold text-white backdrop-blur sm:left-3 sm:top-3 sm:px-2 sm:text-xs">
+                    <span className="absolute right-1.5 top-1.5 rounded-sm bg-black/85 px-1.5 py-1 text-[10px] font-bold text-amber-300 sm:right-3 sm:top-3 sm:px-2 sm:text-xs">
                       ★ {movie.rating.toFixed(1)}
-                    </span>
-                    <span className="absolute right-1.5 top-1.5 rounded-sm bg-black/65 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white backdrop-blur sm:left-3 sm:right-auto sm:top-3 sm:px-2 sm:text-xs">
-                      {movie.languages.length} subtitles
                     </span>
                     <span className="absolute bottom-3 right-3 grid size-11 place-items-center rounded-full bg-[#de5d4f] text-white opacity-100 transition sm:translate-y-2 sm:opacity-0 sm:group-hover:translate-y-0 sm:group-hover:opacity-100">
                       <Play size={16} fill="currentColor" />
@@ -476,14 +473,14 @@ export function MovieBrowser({
                   </div>
                   <div className="mt-2 flex items-start justify-between gap-2 sm:mt-4 sm:gap-3">
                     <div className="min-w-0">
-                      <h3 className="block min-h-5 w-full truncate text-sm font-semibold leading-tight text-black sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:font-serif sm:text-xl">
+                      <h3 className="block min-h-5 w-full line-clamp-2 font-serif text-sm font-semibold leading-tight text-white sm:min-h-0 sm:break-words sm:whitespace-normal sm:overflow-visible sm:text-xl">
                         {movie.title}
                       </h3>
-                      <p className="mt-1.5 hidden text-sm text-black/45 sm:block">
+                      <p className="mt-1.5 text-xs text-white/55 sm:text-sm">
                         {movie.year} · {movie.runtime}
                       </p>
                     </div>
-                    <span className="hidden shrink-0 pt-1 text-xs font-semibold sm:block">
+                    <span className="hidden shrink-0 pt-1 text-xs font-semibold text-white/60 sm:block">
                       {String(index + 1).padStart(2, '0')}
                     </span>
                   </div>
@@ -616,13 +613,13 @@ function FilterSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative flex min-h-12 items-center border-b border-black/25">
+    <label className="relative flex min-h-12 items-center rounded-xl border border-black/10 bg-neutral-900 px-4 text-white">
       <span className="sr-only">{label}</span>
       <select
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full appearance-none bg-transparent pr-7 text-base outline-none sm:text-sm"
+        className="h-12 w-full appearance-none bg-transparent pr-7 text-base outline-none placeholder:text-white/45 sm:text-sm"
       >
         {options.map((option) => (
           <option key={option} value={option}>
@@ -632,7 +629,7 @@ function FilterSelect({
       </select>
       <ChevronDown
         size={15}
-        className="pointer-events-none absolute right-0 top-4 text-black/45"
+        className="pointer-events-none absolute right-4 top-4 text-white/55"
       />
     </label>
   );
