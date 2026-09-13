@@ -39,3 +39,25 @@ next-env.d.ts
 /.npm-cache-security-audit/
 /.npm-audit-cache*/
 *.tsbuildinfo
+
+# secrets and credentials
+*.key
+*.p12
+*.pfx
+*.crt
+*.secret
+*.credentials
+
+# nested dependencies and generated output
+**/node_modules/
+**/dist/
+**/build/
+**/tmp/
+
+# local exports and workspace artifacts
+site/
+sites-cli-cache/
+test image/
+*.zip
+*.tar.gz
+*.pdf
