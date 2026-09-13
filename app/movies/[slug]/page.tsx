@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import { MediaSourcesGateway } from '../../../components/media-sources-gateway';
 import { notFound } from 'next/navigation';
 import {
@@ -21,6 +22,49 @@ import { MovieComments } from '../../../components/movie-comments';
 import { CastList } from '../../../components/cast-list';
 import { TrailerModal } from '../../../components/trailer-modal';
 import { ShareButtons } from '../../../components/share-buttons';
+import { toPublicMovie, type PublicMovie } from '../../../lib/public-movie';
+import { serializeJsonLd } from '../../../lib/security/json-ld';
+
+const SITE_ORIGIN = 'https://flixlyra.com';
+
+function canonicalFor(movie: PublicMovie): string {
+  const routeBase = movie.contentType === 'series' ? 'series' : 'movie';
+  return `${SITE_ORIGIN}/${routeBase}/${encodeURIComponent(movie.slug)}`;
+}
+
+function sameOriginAsset(value: string): string | undefined {
+  try {
+    const asset = new URL(value, SITE_ORIGIN);
+    return asset.origin === SITE_ORIGIN && asset.pathname.startsWith('/media/')
+      ? asset.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function movieStructuredData(movie: PublicMovie, canonical: string) {
+  const image = [sameOriginAsset(movie.poster), sameOriginAsset(movie.backdrop)]
+    .filter((value): value is string => Boolean(value));
+  const actors = movie.cast.map((member) =>
+    typeof member === 'string' ? member : member.actor,
+  ).filter(Boolean).map((name) => ({ '@type': 'Person', name }));
+  const schema: Record<string, unknown> = {
+    '@context': 'https://schema.org',
+    '@type': movie.contentType === 'series' ? 'TVSeries' : 'Movie',
+    '@id': `${canonical}#title`,
+    url: canonical,
+    name: movie.title,
+    description: movie.description,
+    dateCreated: String(movie.year),
+    genre: movie.genre.split(',').map((value) => value.trim()).filter(Boolean),
+    director: movie.director ? { '@type': 'Person', name: movie.director } : undefined,
+    actor: actors.length ? actors : undefined,
+    image: image.length ? image : undefined,
+    publisher: { '@id': `${SITE_ORIGIN}/#organization` },
+  };
+  return schema;
+}
 
 export function generateStaticParams() {
   return movies.map((movie) => ({ slug: movie.slug }));
@@ -33,22 +77,27 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const movie = await getPublishedMovie((await params).slug);
   if (!movie) return { title: 'Film not found — Flixlyra' };
-  const description = `${movie.tagline} Explore ${movie.title}, cast, rating, and ${movie.languages.length} subtitle languages on Flixlyra.`;
+  const publicMovie = toPublicMovie(movie);
+  const canonical = canonicalFor(publicMovie);
+  const description = `${publicMovie.tagline} Explore ${publicMovie.title}, cast, rating, and ${publicMovie.languages.length} subtitle languages on Flixlyra.`;
+  const backdrop = sameOriginAsset(publicMovie.backdrop);
   return {
-    title: `${movie.title} — Flixlyra`,
+    title: `${publicMovie.title} — Flixlyra`,
     description,
+    alternates: { canonical },
     openGraph: {
-      title: `${movie.title} — Flixlyra`,
+      url: canonical,
+      siteName: 'Flixlyra',
+      type: publicMovie.contentType === 'series' ? 'video.tv_show' : 'video.movie',
+      title: `${publicMovie.title} — Flixlyra`,
       description,
-      images: [
-        { url: movie.backdrop, alt: `${movie.title} cinematic artwork` },
-      ],
+      images: backdrop ? [{ url: backdrop, alt: `${publicMovie.title} cinematic artwork` }] : [],
     },
     twitter: {
       card: 'summary_large_image',
-      title: `${movie.title} — Flixlyra`,
+      title: `${publicMovie.title} — Flixlyra`,
       description,
-      images: [movie.backdrop],
+      images: backdrop ? [backdrop] : [],
     },
   };
 }
@@ -60,6 +109,9 @@ export default async function MoviePage({
 }) {
   const movie = await getPublishedMovie((await params).slug);
   if (!movie) notFound();
+  const publicMovie = toPublicMovie(movie);
+  const canonical = canonicalFor(publicMovie);
+  const nonce = (await headers()).get('x-csp-nonce') ?? undefined;
   const controls = getRuntimeControls();
   const watchAvailable = resolveOutboundDestination(
     movie,
@@ -74,7 +126,14 @@ export default async function MoviePage({
   const sourcesAvailable =
     controls.externalLinksEnabled && movie.rightsStatus === 'verified';
   return (
-    <main className="min-h-screen bg-[#171815] text-white">
+    <>
+      <script
+        suppressHydrationWarning
+        nonce={nonce}
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(movieStructuredData(publicMovie, canonical)) }}
+      />
+      <main className="min-h-screen bg-[#171815] text-white">
       <section className="relative min-h-[680px] overflow-hidden sm:min-h-[720px]">
         <img
           src={movie.backdrop}
@@ -342,7 +401,8 @@ export default async function MoviePage({
       </div>
       <CastList cast={movie.cast} />
       <MovieComments slug={movie.slug} />
-    </main>
+      </main>
+    </>
   );
 }
 

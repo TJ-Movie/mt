@@ -34,24 +34,18 @@ import {
   TableRow,
 } from '../ui/table';
 
-function hasDualQualityAssets(movie: Pick<AdminMovie, 'downloadSources'>): boolean {
+function hasDualQualityAssets(movie: Pick<AdminMovie, 'availableQualities'>): boolean {
   return qualityAssetCount(movie) === 2;
 }
 
-function qualityAssetCount(movie: Pick<AdminMovie, 'downloadSources'>): number {
-  const qualities = new Set((movie.downloadSources ?? []).filter((source) =>
-    /^(720p|1080p)$/i.test(source.quality || source.resolution || '') &&
-    typeof source.r2StorageKey === 'string' && source.r2StorageKey.length > 0 &&
-    typeof source.r2Bytes === 'number' && Number.isSafeInteger(source.r2Bytes) && source.r2Bytes > 0,
-  ).map((source) => (source.quality || source.resolution).toLowerCase()));
-  return qualities.size;
+function qualityAssetCount(movie: Pick<AdminMovie, 'availableQualities'>): number {
+  return new Set(movie.availableQualities ?? []).size;
 }
 
-function isHalfMovie(movie: Pick<AdminMovie, 'downloadSources' | 'ingestStatus' | 'ingest_status' | 'r2_720p_key' | 'r2_1080p_key'>): boolean {
-  const { ingestStatus, ingest_status, r2_720p_key, r2_1080p_key } = movie;
+function isHalfMovie(movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status'>): boolean {
+  const { ingestStatus, ingest_status } = movie;
   const isHalf = ingestStatus === 'HALF' || ingest_status === 'half' ||
-    ingestStatus?.toLowerCase() === 'half' ||
-    (Boolean(r2_720p_key) !== Boolean(r2_1080p_key));
+    ingestStatus?.toLowerCase() === 'half';
   return isHalf || qualityAssetCount(movie) === 1;
 }
 import {
