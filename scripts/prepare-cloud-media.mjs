@@ -756,7 +756,7 @@ export async function commitItem(ctx, item, options = {}) {
     ? "WHERE id=? AND publication_status IN ('draft','published') RETURNING id"
     : "WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND (transfer_token IS NULL OR transfer_lease_until < unixepoch()) RETURNING id";
   const guardParams = forceCommit ? [item.id] : [item.id, row.revision];
-  const result = await ctx.query(`UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_error=NULL,revision=revision+1,updated_at=?${metadataAssignments} ${guard}`, [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), ...guardParams]);
+  const result = await ctx.query(`UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_token=NULL,transfer_lease_until=NULL,transfer_error=NULL,revision=revision+1,updated_at=?${metadataAssignments} ${guard}`, [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), ...guardParams]);
   if (!result.length) throw new Error('D1 changed or another transfer owns the record; retry required');
 }
 export async function drainCloudPlan(plan, sync, options = {}) {
