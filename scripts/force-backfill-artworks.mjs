@@ -289,7 +289,7 @@ async function fetchYts(row) {
 
 async function fetchOmdb(row) {
   if (!omdbApiKey) return null;
-  if (!validImdbId(row.imdb_id)) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "missing_imdb_id", source: "omdb" })); return null; }
+  if (!validImdbId(row.imdb_id)) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "missing_imdb_id_title_fallback", source: "omdb" }));
   const params = new URLSearchParams({ apikey: omdbApiKey, plot: "short" });
   if (validImdbId(row.imdb_id)) params.set("i", row.imdb_id);
   else {
@@ -304,7 +304,7 @@ async function fetchOmdb(row) {
       signal: AbortSignal.timeout(20000),
     });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.Response !== "True") { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: response.status === 429 ? "omdb_429_rate_limit" : "omdb_response_unresolved", source: "omdb" })); return null; }
+    if (!response.ok || payload?.Response !== "True") { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: response.status === 429 ? "omdb_429_rate_limit" : "omdb_response_unresolved", detail: text(payload?.Error, 180), source: "omdb" })); return null; }
     if (validImdbId(row.imdb_id) && payload.imdbID && payload.imdbID !== row.imdb_id) return null;
     const cast = text(payload.Actors, 1000).split(",").map((name) => text(name, 120)).filter(Boolean).slice(0, 6);
     return {
@@ -337,16 +337,34 @@ async function tmdbRequest(path, params = {}) {
 async function fetchTmdb(row) {
   if (!tmdbApiToken && !tmdbApiKey) return null;
   try {
-    if (!validImdbId(row.imdb_id)) return null;
-    const found = await tmdbRequest("/find/" + encodeURIComponent(row.imdb_id), { external_source: "imdb_id", language: "en-US" });
-    const result = found?.movie_results?.[0] || null;
+    let result = null;
+    if (validImdbId(row.imdb_id)) {
+      const found = await tmdbRequest("/find/" + encodeURIComponent(row.imdb_id), { external_source: "imdb_id", language: "en-US" });
+      result = found?.movie_results?.[0] || null;
+    } else {
+      const title = lookupTitle(row);
+      if (title) {
+        console.warn(JSON.stringify({ event: "provider-fallback", id: row.id, reason: "tmdb_title_search", title }));
+        const searched = await tmdbRequest("/search/movie", { query: title, ...(Number(row.release_year) > 0 ? { year: String(row.release_year) } : {}), language: "en-US" });
+        result = searched?.results?.[0] || null;
+      }
+    }
     if (!result?.id) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_movie_results_empty", source: "tmdb" })); return null; }
     if (!result.backdrop_path) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_backdrop_path_null", source: "tmdb" }));
     const videosPayload = await tmdbRequest("/movie/" + result.id + "/videos", { language: "en-US" });
     const videos = (videosPayload?.results || []).filter((video) => video.site === "YouTube" && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 32)));
     const trailer = videos.find((video) => video.type === "Trailer" && video.official === true) || videos.find((video) => video.type === "Trailer");
     if (!trailer) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_no_youtube_trailer", source: "tmdb" }));
-    return { provider: "tmdb", poster: tmdbImage(result.poster_path), backdrop: tmdbImage(result.backdrop_path), director: "", cast: [], trailer: trailer ? "https://www.youtube.com/watch?v=" + text(trailer.key, 32) : null };
+    let director = "";
+    let cast = [];
+    try {
+      const credits = await tmdbRequest("/movie/" + result.id + "/credits", { language: "en-US" });
+      director = (credits?.crew || []).filter((person) => person.job === "Director").map((person) => text(person.name, 160)).filter(Boolean).join(", ");
+      cast = (credits?.cast || []).map((person) => ({ actor: text(person.name, 120), character: text(person.character, 120) })).filter((person) => person.actor).slice(0, 6);
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "tmdb-credits-warning", id: row.id, error: safeError(error) }));
+    }
+    return { provider: "tmdb", poster: tmdbImage(result.poster_path), backdrop: tmdbImage(result.backdrop_path), director, cast, trailer: trailer ? "https://www.youtube.com/watch?v=" + text(trailer.key, 32) : null };
   } catch (error) {
     console.warn(JSON.stringify({ event: "tmdb-warning", id: row.id, error: safeError(error) }));
     return null;
