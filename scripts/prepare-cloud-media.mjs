@@ -67,6 +67,21 @@ async function sendWithRetry(client, command, options = {}) {
 }
 const activeTimers = new Set();
 const activeTorrentClients = new Set();
+let activeAcquisitionReject = null;
+function handleAsyncTorrentFailure(reason) {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  if (activeAcquisitionReject && /UTP|ECONNRESET|ECONN|ETIMEDOUT|timeout|network/i.test(error.message)) {
+    const reject = activeAcquisitionReject;
+    activeAcquisitionReject = null;
+    console.warn(JSON.stringify({ event: 'torrent-network-error', error: safeLogError(error) }));
+    reject(error);
+    return;
+  }
+  console.error(JSON.stringify({ event: 'uncaught-media-error', error: safeLogError(error) }));
+  process.exitCode = 1;
+}
+process.on('uncaughtException', handleAsyncTorrentFailure);
+process.on('unhandledRejection', handleAsyncTorrentFailure);
 
 async function destroyTorrentClient(client) {
   if (!activeTorrentClients.delete(client)) return;
@@ -622,8 +637,10 @@ async function acquire(ctx, item, attempt) {
   activeTimers.add(timer);
   try {
     const torrent = await new Promise((done, reject) => {
+      activeAcquisitionReject = reject;
       const onError = e => { controller.abort(e); reject(e); };
       client.on('error', onError);
+      client.on('warning', onError);
       const pending = client.add(descriptor, { path: resolve(work, 'pieces'), deselect: true, strategy: 'sequential', storeCacheSlots: 2 }, done);
       pending.on('error', onError);
       controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
@@ -644,6 +661,7 @@ async function acquire(ctx, item, attempt) {
     const validated = await validateMp4(filePath, file.length);
     item.file = filePath; item.bytes = validated.bytes;
   } finally {
+    if (activeAcquisitionReject) activeAcquisitionReject = null;
     clearTimeout(timer);
     activeTimers.delete(timer);
     await destroyTorrentClient(client);
