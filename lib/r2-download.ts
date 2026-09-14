@@ -134,16 +134,17 @@ export async function availableQualitiesForSlug(slug: string): Promise<('720p' |
   return movie ? availableQualitiesForMovie(movie) : [];
 }
 
-export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeof readyVideo>>>) {
+export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeof readyVideo>>>): Promise<string | null> {
   const accessKeyId = process.env.R2_ACCESS_KEY_ID;
   const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
   const account = process.env.R2_ACCOUNT_ID;
   const bucket = process.env.R2_BUCKET_NAME;
-  if (!accessKeyId || !secretAccessKey || !account || !/^[a-f0-9]{32}$/.test(account) || !bucket || !/^[a-z0-9-]+$/.test(bucket)) throw new Error('R2 signing is not configured');
+  if (!accessKeyId || !secretAccessKey || !account || !/^[a-f0-9]{32}$/.test(account) || !bucket || !/^[a-z0-9-]+$/.test(bucket)) return null;
+  try {
   const object = await getMediaBucket().head(video.key);
   const contentType = object?.httpMetadata?.contentType;
   const legacyContainer = /^assets\/[0-9a-f-]+\/data\.bin$/.test(video.key);
-  if (!object || object.size !== video.bytes || (contentType !== 'video/mp4' && !(legacyContainer && contentType === 'application/octet-stream'))) throw new Error('Video object unavailable');
+  if (!object || object.size !== video.bytes || (contentType !== 'video/mp4' && !(legacyContainer && contentType === 'application/octet-stream'))) return null;
   // oxlint-disable-next-line no-control-regex -- strip control characters from download filenames.
   const title = video.movie.title.replace(/[\u0000-\u001f\u007f"\\/<>:|?*]/g, '_').slice(0, 120) || 'Movie';
   const ascii = title.replace(/[^\x20-\x7e]/g, '_');
@@ -153,4 +154,7 @@ export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeo
   url.searchParams.set('response-content-disposition', `attachment; filename="${ascii}.mp4"; filename*=UTF-8''${encodeURIComponent(title + '.mp4').replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16))}`);
   const client = new AwsClient({ accessKeyId, secretAccessKey, service: 's3', region: 'auto' });
   return (await client.sign(url, { method: 'GET', aws: { signQuery: true } })).url;
+  } catch {
+    return null;
+  }
 }

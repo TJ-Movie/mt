@@ -1,4 +1,4 @@
-import { readyVideo, signedVideoUrl } from '../../../../lib/r2-download';
+import { availableQualitiesForSlug, readyVideo, signedVideoUrl } from '../../../../lib/r2-download';
 import { enforcePublicRateLimit } from '../../../../lib/security/public-rate-limit';
 
 export async function GET(request: Request) {
@@ -11,8 +11,18 @@ export async function GET(request: Request) {
   if (!rate.allowed) return new Response('Try again later', { status: 429, headers: { ...headers, ...rate.headers } });
   try {
     const video = await readyVideo(slug, quality);
-    if (!video) return new Response('Download unavailable', { status: 404, headers });
-    return new Response(null, { status: 302, headers: { ...headers, Location: await signedVideoUrl(video) } });
+    if (!video) {
+      if (quality && /^(720p|1080p)$/.test(quality)) {
+        return Response.json({
+          error: `Requested quality (${quality}) is currently unavailable`,
+          available_qualities: await availableQualitiesForSlug(slug),
+        }, { status: 404, headers: { ...headers, 'Content-Type': 'application/json' } });
+      }
+      return new Response('Download unavailable', { status: 404, headers });
+    }
+    const signedUrl = await signedVideoUrl(video);
+    if (!signedUrl) return new Response('Download temporarily unavailable', { status: 503, headers });
+    return new Response(null, { status: 302, headers: { ...headers, Location: signedUrl } });
   } catch {
     return new Response('Download temporarily unavailable', { status: 503, headers });
   }

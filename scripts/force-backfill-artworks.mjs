@@ -19,6 +19,29 @@ const maxImageBytes = 10 * 1024 * 1024;
 const imageTimeoutMs = 10000;
 const runExecute = process.argv.includes("--execute");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const requestTimeoutMs = 10000;
+const maxRequestAttempts = 3;
+async function fetchWithRetry(url, init = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('request timeout')), requestTimeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const retryable = response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === maxRequestAttempts) return response;
+      await response.body?.cancel().catch(() => {});
+      await sleep(response.status === 429 ? 2000 : 500 * 2 ** (attempt - 1));
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxRequestAttempts) throw error;
+      await sleep(500 * 2 ** (attempt - 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('request failed');
+}
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -177,7 +200,7 @@ async function verifyStoredArtwork(value) {
   const url = storedArtworkUrl(value);
   if (!url) return false;
   try {
-    const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
+    const response = await fetchWithRetry(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
     return await verifyImageResponse(response);
   } catch {
     return false;
@@ -187,7 +210,7 @@ async function verifyStoredArtwork(value) {
 async function verifyPublicArtwork(url) {
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     try {
-      const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
+      const response = await fetchWithRetry(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
       if (await verifyImageResponse(response)) return true;
     } catch {
       // Allow brief R2/CDN propagation delay.
@@ -201,7 +224,7 @@ async function downloadImage(value) {
   let current = sourceImage(value);
   if (!current) throw new Error("IMAGE_SOURCE_NOT_ALLOWED");
   for (let redirects = 0; redirects <= 3; redirects += 1) {
-    const response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(imageTimeoutMs) });
+    const response = await fetchWithRetry(current, { redirect: "manual", signal: AbortSignal.timeout(imageTimeoutMs) });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       if (redirects === 3) throw new Error("IMAGE_TOO_MANY_REDIRECTS");
       const location = response.headers.get("location");
@@ -237,7 +260,7 @@ async function verifyYoutubeOembed(value) {
     const endpoint = new URL("https://www.youtube.com/oembed");
     endpoint.searchParams.set("url", text(value, 1000));
     endpoint.searchParams.set("format", "json");
-    const response = await fetch(endpoint, { signal: AbortSignal.timeout(imageTimeoutMs) });
+    const response = await fetchWithRetry(endpoint, { signal: AbortSignal.timeout(imageTimeoutMs) });
     if (response.status !== 200) return false;
     const payload = await response.json().catch(() => null);
     return isRecord(payload) && Boolean(text(payload.title, 300));
@@ -247,7 +270,7 @@ async function verifyYoutubeOembed(value) {
 }
 
 async function queryD1(sql, params = []) {
-  const response = await fetch("https://api.cloudflare.com/client/v4/accounts/" + accountId + "/d1/database/" + databaseId + "/query", {
+  const response = await fetchWithRetry("https://api.cloudflare.com/client/v4/accounts/" + accountId + "/d1/database/" + databaseId + "/query", {
     method: "POST",
     headers: { Authorization: "Bearer " + d1Token, "Content-Type": "application/json" },
     body: JSON.stringify({ sql, params }),
@@ -280,7 +303,7 @@ async function resolveImdbId(row) {
   if (omdbApiKey) {
     try {
       const params = new URLSearchParams({ t: title, apikey: omdbApiKey, plot: "short" });
-      const response = await fetch("https://www.omdbapi.com/?" + params, {
+      const response = await fetchWithRetry("https://www.omdbapi.com/?" + params, {
         headers: { accept: "application/json" },
         signal: AbortSignal.timeout(20000),
       });
@@ -323,7 +346,7 @@ async function fetchYts(row) {
   let lastError;
   for (const endpoint of ytsEndpoints) {
     try {
-      const response = await fetch(endpoint + "?" + query, {
+      const response = await fetchWithRetry(endpoint + "?" + query, {
         headers: { accept: "application/json" },
         signal: AbortSignal.timeout(30000),
       });
@@ -352,7 +375,7 @@ async function fetchOmdb(row) {
     if (Number.isInteger(Number(row.release_year)) && Number(row.release_year) > 0) params.set("y", String(row.release_year));
   }
   try {
-    const response = await fetch("https://www.omdbapi.com/?" + params, {
+    const response = await fetchWithRetry("https://www.omdbapi.com/?" + params, {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(20000),
     });
@@ -379,7 +402,7 @@ async function tmdbRequest(path, params = {}) {
   const headers = { accept: "application/json" };
   if (tmdbApiToken) headers.Authorization = "Bearer " + tmdbApiToken;
   else query.set("api_key", tmdbApiKey);
-  const response = await fetch("https://api.themoviedb.org/3" + path + "?" + query, {
+  const response = await fetchWithRetry("https://api.themoviedb.org/3" + path + "?" + query, {
     headers,
     signal: AbortSignal.timeout(20000),
   });
@@ -552,6 +575,22 @@ async function resetTransferLocks() {
   }));
 }
 
+async function releaseLocksBestEffort() {
+  if (!accountId || !d1Token) return;
+  try { await resetTransferLocks(); }
+  catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeError(error) })); }
+}
+let shutdownStarted = false;
+async function handleShutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.warn(JSON.stringify({ event: 'shutdown-requested', signal }));
+  await releaseLocksBestEffort();
+  process.exitCode = 1;
+  process.exit();
+}
+process.once('SIGINT', () => { void handleShutdown('SIGINT'); });
+process.once('SIGTERM', () => { void handleShutdown('SIGTERM'); });
 async function providerMetadata(row, yts, needsProvider) {
   if (!needsProvider) return [];
   const providers = [];
@@ -570,6 +609,14 @@ async function providerMetadata(row, yts, needsProvider) {
   return providers;
 }
 
+async function markMovieFlagged(id, reason) {
+  const message = text(reason, 1000) || 'movie item requires manual review';
+  try {
+    await queryD1("UPDATE movies SET ingest_status = 'flagged_for_review', transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (ingest_status IS NOT 'flagged_for_review' OR transfer_error IS NOT ?)", [message, id, message]);
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'movie-flag-update-failed', id, error: safeError(error) }));
+  }
+}
 async function processRow(s3, row) {
   const posterOk = !invalidArtworkValue(row.poster) && canonicalArtworkValue(row.poster, row.id, "poster") && await verifyPublicArtwork(publicArtworkUrl(row.id, "poster"));
   const backdropOk = !invalidArtworkValue(row.backdrop) && canonicalArtworkValue(row.backdrop, row.id, "backdrop") && await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop"));
@@ -611,10 +658,11 @@ async function processRow(s3, row) {
 
   if (runExecute && unresolved.length === 0) {
     await queryD1(
-      "UPDATE movies SET director = ?, cast_json = ?, official_watch_url = ?, poster = ?, backdrop = ? WHERE id = ?",
-      [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id],
+      "UPDATE movies SET director = ?, cast_json = ?, official_watch_url = ?, poster = ?, backdrop = ? WHERE id = ? AND (director IS NOT ? OR cast_json IS NOT ? OR official_watch_url IS NOT ? OR poster IS NOT ? OR backdrop IS NOT ?)",
+      [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id, updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop],
     );
   } else if (runExecute && unresolved.length) {
+    await markMovieFlagged(row.id, unresolved.join(', '));
     console.warn(JSON.stringify({ event: "d1-update-skipped", id: row.id, unresolved, reason: "required-fields-unresolved" }));
   }
   console.log(JSON.stringify({
@@ -645,6 +693,8 @@ async function auditAllMovies(rows) {
 }
 
 async function main() {
+  let s3 = null;
+  try {
   if (!accountId || !d1Token) throw new Error("Cloudflare account ID and D1 API token are required");
   await resetTransferLocks();
   if (!omdbApiKey || (!tmdbApiKey && !tmdbApiToken)) {
@@ -653,7 +703,7 @@ async function main() {
   }
   if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
   const rows = await queryD1("SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
-  const s3 = runExecute ? new S3Client({
+  s3 = runExecute ? new S3Client({
     region: "auto",
     endpoint: "https://" + accountId + ".r2.cloudflarestorage.com",
     maxAttempts: 3,
@@ -667,10 +717,10 @@ async function main() {
     } catch (error) {
       const failure = { id: row.id, updates: {}, unresolved: ["row-error"], reasons: [safeError(error)] };
       results.push(failure);
+      await markMovieFlagged(row.id, failure.reasons.join('; '));
       console.warn(JSON.stringify({ event: "movie-backfill-failed", id: row.id, reasons: failure.reasons }));
     }
   }
-  s3?.destroy();
   const refreshedRows = await queryD1("SELECT id, title, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
   const audit = await auditAllMovies(refreshedRows);
   const unresolved = results.filter((result) => result.unresolved.length);
@@ -684,7 +734,11 @@ async function main() {
     postAuditFailures: auditFailures.length,
     unresolved: unresolved.map((result) => ({ id: result.id, fields: result.unresolved, reasons: result.reasons })),
   }));
-  if (unresolved.length || auditFailures.length) process.exitCode = 1;
+  console.log(JSON.stringify({ event: 'item-failures-nonfatal', unresolvedMovies: unresolved.length, postAuditFailures: auditFailures.length }));
+  } finally {
+    s3?.destroy();
+    await releaseLocksBestEffort();
+  }
 }
 
 main().catch((error) => {

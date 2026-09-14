@@ -12,6 +12,48 @@ import { Upload } from '@aws-sdk/lib-storage';
 import { runChild } from './transfer-process.mjs';
 
 const exec = promisify(execFile);
+const requestTimeoutMs = 10000;
+const maxRequestAttempts = 3;
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function fetchWithRetry(url, init = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('request timeout')), requestTimeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const retryable = response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === maxRequestAttempts) return response;
+      await response.body?.cancel().catch(() => {});
+      await pause(response.status === 429 ? 2000 : 500 * 2 ** (attempt - 1));
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxRequestAttempts) throw error;
+      await pause(500 * 2 ** (attempt - 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('request failed');
+}
+async function sendWithRetry(client, command) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('R2 request timeout')), requestTimeoutMs);
+    try {
+      return await client.send(command, { abortSignal: controller.signal });
+    } catch (error) {
+      lastError = error;
+      const status = error?.$metadata?.httpStatusCode;
+      if (attempt === maxRequestAttempts || (status && status < 500 && status !== 429)) throw error;
+      await pause(status === 429 ? 2000 : 500 * 2 ** (attempt - 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('R2 request failed');
+}
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 // WebTorrent returns a streamx stream, which AWS Upload does not recognize as
 // a native Node Readable. Adapt its async iterator without buffering the film.
@@ -82,7 +124,7 @@ export async function remoteDescriptor(json, quality) {
     } catch { return false; }
   })());
   if (!candidate) throw new Error('No magnet, stored descriptor, or allowlisted HTTPS torrent source');
-  const response = await fetch(candidate.url, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+  const response = await fetchWithRetry(candidate.url, { redirect: 'error' });
   if (!response.ok || !response.body) throw new Error('Torrent descriptor fetch failed');
   const chunks = [];
   let length = 0;
@@ -96,7 +138,7 @@ export async function remoteDescriptor(json, quality) {
 
 export async function alternativeDescriptor(imdbId, quality, currentUrl) {
   if (!imdbId || !quality) return null;
-  const response = await fetch(`https://movies-api.accel.li/api/v2/movie_details.json?imdb_id=${encodeURIComponent(imdbId)}`, { signal: AbortSignal.timeout(15000) });
+  const response = await fetchWithRetry(`https://movies-api.accel.li/api/v2/movie_details.json?imdb_id=${encodeURIComponent(imdbId)}`);
   if (!response.ok) return null;
   const payload = await response.json();
   const torrents = Array.isArray(payload?.data?.movie?.torrents) ? payload.data.movie.torrents : [];
@@ -106,7 +148,7 @@ export async function alternativeDescriptor(imdbId, quality, currentUrl) {
     try {
       const url = new URL(candidate.url);
       if (url.protocol !== 'https:' || !allowed.has(url.hostname)) continue;
-      const descriptor = await fetch(candidate.url, { redirect: 'error', signal: AbortSignal.timeout(30000) });
+      const descriptor = await fetchWithRetry(candidate.url, { redirect: 'error' });
       if (!descriptor.ok || !descriptor.body) continue;
       const chunks = []; let length = 0;
       for await (const chunk of descriptor.body) { length += chunk.byteLength; if (length > 2 * 1024 * 1024) break; chunks.push(Buffer.from(chunk)); }
@@ -144,7 +186,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
     let source = sourceMagnet(row.download_sources_json, effectiveQuality);
     const descriptorKey = selected?.descriptorKey || (!effectiveQuality ? row.storage_key : null);
     if (!source && descriptorKey && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(descriptorKey)) {
-      const descriptor = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: descriptorKey }), { abortSignal: AbortSignal.timeout(30000) });
+      const descriptor = await sendWithRetry(s3, new GetObjectCommand({ Bucket: bucket, Key: descriptorKey }));
       if (!descriptor.ContentLength || descriptor.ContentLength > 2 * 1024 * 1024) {
         descriptor.Body?.destroy();
         throw new Error('Invalid torrent descriptor size');
@@ -185,14 +227,19 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
           ContentType: 'video/mp4', CacheControl: 'private, no-store' } });
       await upload.done();
       controller.signal.throwIfAborted();
-      const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      const head = await sendWithRetry(s3, new HeadObjectCommand({ Bucket: bucket, Key: key }));
       controller.signal.throwIfAborted();
       if (head.ContentLength !== file.length || head.ContentType !== 'video/mp4') throw new Error('Uploaded video verification failed');
       const nextSources = sources.map(s => (effectiveQuality && String(s.quality ?? s.resolution).toLowerCase() === effectiveQuality) ? { ...s, quality: effectiveQuality, r2StorageKey: key, r2Bytes: file.length } : s);
       const qualitySources = nextSources.filter(s => /^(720p|1080p)$/.test(String(s.quality ?? s.resolution).toLowerCase()));
       const allReady = ['720p', '1080p'].every(required => qualitySources.some(s => String(s.quality ?? s.resolution).toLowerCase() === required && typeof s.r2StorageKey === 'string' && Number.isSafeInteger(s.r2Bytes) && s.r2Bytes > 0));
-      const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'processing'"}, r2_storage_key=${quote(key)},
-        r2_video_bytes=${file.length}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
+      const priorPrimary = /^(?:assets\/[a-f0-9-]{36}\/(?:data\.bin|1080p\.mp4))$/.test(row.r2_storage_key || '') && Number.isSafeInteger(row.r2_video_bytes) && row.r2_video_bytes > 0
+        ? { r2StorageKey: row.r2_storage_key, r2Bytes: row.r2_video_bytes }
+        : null;
+      const primary = nextSources.find(s => String(s.quality ?? s.resolution).toLowerCase() === '1080p' && typeof s.r2StorageKey === 'string') ||
+        (effectiveQuality !== '1080p' && priorPrimary) || { r2StorageKey: key, r2Bytes: file.length };
+      const updated = await sql(`UPDATE movies SET ingest_status=${allReady ? "'ready'" : "'processing'"}, r2_storage_key=${quote(primary.r2StorageKey)},
+        r2_video_bytes=${primary.r2Bytes}, download_sources_json=${quote(JSON.stringify({ status: allReady ? 'available' : 'pending', sources: nextSources }))}, transfer_token=NULL, transfer_lease_until=NULL, transfer_error=NULL
         WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);
       if (!updated.length) throw new Error('Transfer lease lost');
       committed = true;
@@ -205,12 +252,12 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
   } catch (error) {
     await upload?.abort().catch(() => {});
     const message = String(error.message || 'Transfer failed').slice(0, 250);
-    const failed = await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_token=NULL,
+    const failed = await sql(`UPDATE movies SET ingest_status='flagged_for_review', transfer_error=${quote(message)}, transfer_token=NULL,
       transfer_lease_until=NULL WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring' RETURNING id`);
     // Never delete a possibly committed object after an ambiguous D1 response.
-    if (!committed && failed.length) await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })).catch(() => {});
+    if (!committed && failed.length) await sendWithRetry(s3, new DeleteObjectCommand({ Bucket: bucket, Key: key })).catch(() => {});
     console.error(`Failed: ${row.id}: ${message}`);
-    process.exitCode = 1;
+    // Individual transfer failures are already persisted as flagged_for_review.
   } finally {
     clearTimeout(timer);
     stream?.destroy();
@@ -230,6 +277,10 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
 export async function main() {
   const limits = transferLimits();
   const requestedQuality = /^(720p|1080p)$/.test(process.env.TRANSFER_QUALITY || '') ? process.env.TRANSFER_QUALITY : null;
+  const requestedMovieIds = new Set((process.env.TRANSFER_MOVIE_IDS || '').split(',')
+    .map((value) => value.trim())
+    .filter((value) => /^[1-9]\d{0,9}$/.test(value))
+    .map(Number));
   const deadline = Date.now() + limits.run * 1000;
   let interrupted = false;
   const markInterrupted = () => { interrupted = true; process.exitCode = 1; };
@@ -253,13 +304,14 @@ export async function main() {
     const childQuality = process.argv.find(arg => arg.startsWith('--quality='))?.slice(10);
     if (childId !== undefined) {
       if (!/^[1-9]\d{0,9}$/.test(childId) || !/^[a-f0-9-]{36}$/.test(process.env.TRANSFER_CHILD_TOKEN || '')) throw new Error('Invalid child transfer identity');
-      const rows = await sql(`SELECT id, imdb_id, storage_key, download_sources_json FROM movies WHERE id=${Number(childId)}`);
+      const rows = await sql(`SELECT id, imdb_id, storage_key, r2_storage_key, r2_video_bytes, download_sources_json FROM movies WHERE id=${Number(childId)}`);
       if (rows.length) await transfer(rows[0], s3, process.env.R2_BUCKET_NAME, limits, childQuality);
       return;
     }
     do {
-      const rows = await sql(`SELECT id, imdb_id, storage_key, ingest_status, download_sources_json FROM movies WHERE
-        (ingest_status IN ('queued','processing','ready') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))
+      const movieFilter = requestedMovieIds.size ? ` AND id IN (${[...requestedMovieIds].join(',')})` : '';
+      const rows = await sql(`SELECT id, imdb_id, storage_key, r2_storage_key, r2_video_bytes, ingest_status, download_sources_json FROM movies WHERE
+        (ingest_status IN ('queued','processing','ready') OR (ingest_status='transferring' AND transfer_lease_until < unixepoch()))${movieFilter}
         ORDER BY id LIMIT ${limits.batch}`);
       for (const row of rows) {
         if (interrupted || Date.now() + (limits.timeout + 300) * 1000 > deadline) {
@@ -286,10 +338,10 @@ export async function main() {
           }
           if (interrupted) return;
           const state = await sql(`SELECT ingest_status FROM movies WHERE id=${Number(row.id)}`);
-          if (state[0]?.ingest_status === 'ready' || (quality && ['queued', 'processing'].includes(state[0]?.ingest_status))) break;
+          if (state[0]?.ingest_status === 'ready' || state[0]?.ingest_status === 'flagged_for_review' || (quality && ['queued', 'processing'].includes(state[0]?.ingest_status))) break;
           const message = result.timedOut ? 'Isolated transfer timed out' : `Isolated transfer exited ${result.code ?? result.signal}`;
           // Recover only our own dead worker's lease; never overwrite another worker.
-          await sql(`UPDATE movies SET ingest_status='failed', transfer_error=${quote(message)}, transfer_lease_until=NULL
+          await sql(`UPDATE movies SET ingest_status='flagged_for_review', transfer_error=${quote(message)}, transfer_lease_until=NULL
             WHERE id=${Number(row.id)} AND transfer_token=${quote(token)} AND ingest_status='transferring'`);
           if (attempt < 3 && Date.now() + (limits.timeout + 300) * 1000 <= deadline) {
             const retry = await sql(`UPDATE movies SET ingest_status='processing', transfer_token=NULL WHERE id=${Number(row.id)}
@@ -299,7 +351,7 @@ export async function main() {
               continue;
             }
           }
-          process.exitCode = 1;
+          // Individual transfer failures are persisted for review and do not fail the batch.
           console.error(`Unfinished: ${row.id}: ${message}; continuing batch`);
           break;
         }

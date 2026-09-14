@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: r2-sync-production
+  group: r2-sync
   cancel-in-progress: true
 
 jobs:
@@ -23,23 +23,67 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Check out repository
+        timeout-minutes: 15
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
+      - name: Preflight required secrets
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME OMDB_API_KEY; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] && [ -z "${CLOUDFLARE_D1_TOKEN:-}" ]; then
+            missing+=("CLOUDFLARE_API_TOKEN or CLOUDFLARE_D1_TOKEN")
+          fi
+          if [ -z "${TMDB_API_KEY:-}" ] && [ -z "${TMDB_API_TOKEN:-}" ]; then
+            missing+=("TMDB_API_KEY or TMDB_API_TOKEN")
+          fi
+          if [ -z "${R2_ACCOUNT_ID:-}" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            missing+=("R2_ACCOUNT_ID or CLOUDFLARE_ACCOUNT_ID")
+          fi
+          if [ -z "${CLOUDFLARE_D1_DATABASE_ID:-}" ]; then
+            echo "::warning::CLOUDFLARE_D1_DATABASE_ID is empty; scripts may use their configured production database ID."
+          fi
+          if ((${#missing[@]})); then
+            echo "::error::Missing required repository secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "Required Cloudflare, R2, OMDb, and TMDB credentials are present."
+
       - name: Set up Node.js
+        timeout-minutes: 15
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
 
       - name: Install locked dependencies
+        timeout-minutes: 15
         run: npm ci --no-audit --no-fund
 
       - name: Free runner disk space before media preparation
+        timeout-minutes: 15
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 
       - name: Force Backfill Placeholder Artworks & Metadata to D1
+        timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.R2_ACCOUNT_ID || secrets.CF_ACCOUNT_ID }}
           CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN || secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN }}
@@ -54,6 +98,7 @@ jobs:
         run: node scripts/force-backfill-artworks.mjs --execute
 
       - name: Prepare Media & Manifest
+        timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -69,9 +114,11 @@ jobs:
         run: node scripts/prepare-cloud-media.mjs --max-movies=20
 
       - name: Verify Prepared Media Inputs
+        timeout-minutes: 15
         run: node scripts/verify-cloud-media.mjs
 
       - name: Run Continuous Smart R2 Sync
+        timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -87,5 +134,6 @@ jobs:
         run: node scripts/smart-r2-sync.mjs --manifest=tmp/r2-video-manifest.json --media-dir=tmp/media --quality=720p,1080p --concurrency=5 --force-commit
 
       - name: Purge Orphaned R2 Objects
+        timeout-minutes: 15
         if: github.event_name == 'workflow_dispatch' && inputs.purge_orphans == true
         run: node scripts/purge-orphaned-r2.mjs

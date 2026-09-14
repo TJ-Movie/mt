@@ -21,6 +21,46 @@ const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
 const ARTWORK_CONCURRENCY = 4;
 const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
+const requestTimeoutMs = 10000;
+const maxRequestAttempts = 3;
+async function fetchWithRetry(url, init = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('request timeout')), requestTimeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      if ((response.status !== 429 && response.status < 500) || attempt === maxRequestAttempts) return response;
+      await response.body?.cancel().catch(() => {});
+      await pause(response.status === 429 ? 2000 : 500 * 2 ** (attempt - 1));
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxRequestAttempts) throw error;
+      await pause(500 * 2 ** (attempt - 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('request failed');
+}
+async function sendWithRetry(client, command, options = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('R2 request timeout')), requestTimeoutMs);
+    try {
+      return await client.send(command, { ...options, abortSignal: controller.signal });
+    } catch (error) {
+      lastError = error;
+      const status = error?.$metadata?.httpStatusCode;
+      if (attempt === maxRequestAttempts || (status && status < 500 && status !== 429)) throw error;
+      await pause(status === 429 ? 2000 : 500 * 2 ** (attempt - 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('R2 request failed');
+}
 const activeTimers = new Set();
 const activeTorrentClients = new Set();
 
@@ -112,7 +152,7 @@ function isManagedArtworkUrl(value, movieId, kind) {
 async function downloadArtwork(url) {
   const source = artworkUrl(url);
   if (!source) return null;
-  const response = await fetch(source, { redirect: 'error', signal: AbortSignal.timeout(30_000) });
+  const response = await fetchWithRetry(source, { redirect: 'error', signal: AbortSignal.timeout(30_000) });
   if (!response.ok || !response.body) throw new Error(`ARTWORK_${response.status}`);
   const contentType = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
   if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(contentType)) throw new Error('ARTWORK_UNSUPPORTED_CONTENT_TYPE');
@@ -129,7 +169,7 @@ async function fetchArtworkMetadata(imdbId) {
   let lastError;
   for (const endpoint of [YTS_ENDPOINT, YTS_FALLBACK_ENDPOINT]) {
     try {
-      const response = await fetch(`${endpoint}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+      const response = await fetchWithRetry(`${endpoint}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error(`YTS_ARTWORK_${response.status}`);
       const payload = await response.json();
       const movie = isRecord(payload?.data?.movie) ? payload.data.movie : null;
@@ -289,7 +329,7 @@ async function syncArtworkForMovie(ctx, row) {
         try {
           const downloaded = await downloadArtwork(source);
           if (!downloaded) continue;
-          await ctx.s3.send(new PutObjectCommand({
+          await sendWithRetry(ctx.s3, new PutObjectCommand({
             Bucket: ctx.bucket,
             Key: key,
             Body: downloaded.bytes,
@@ -306,8 +346,12 @@ async function syncArtworkForMovie(ctx, row) {
           console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) }));
         }
       }
-      if (!uploaded) console.warn(JSON.stringify({ event: 'artwork-unavailable', id: row.id, imdbId: row.imdb_id, kind }));
+      if (!uploaded) {
+        await markMovieFlagged(ctx, row.id, 'artwork_' + kind + '_unavailable');
+        console.warn(JSON.stringify({ event: 'artwork-unavailable', id: row.id, imdbId: row.imdb_id, kind }));
+      }
     } catch (error) {
+      await markMovieFlagged(ctx, row.id, error);
       console.warn(JSON.stringify({ event: 'artwork-sync-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) }));
     }
   }
@@ -332,7 +376,7 @@ async function syncAllArtwork(ctx, eligibleIds = []) {
       if (index >= rows.length) return;
       const row = rows[index];
       try { results.push(await syncArtworkForMovie(ctx, row)); }
-      catch (error) { console.warn(JSON.stringify({ event: 'artwork-movie-warning', id: row.id, error: safeLogError(error) })); }
+      catch (error) { await markMovieFlagged(ctx, row.id, error); console.warn(JSON.stringify({ event: 'artwork-movie-warning', id: row.id, error: safeLogError(error) })); }
     }
   }
   await Promise.all(Array.from({ length: Math.min(ARTWORK_CONCURRENCY, rows.length) }, worker));
@@ -450,7 +494,7 @@ export async function context() {
   const s3 = new S3Client({ region: 'auto', endpoint: `https://${account}.r2.cloudflarestorage.com`, maxAttempts: 3,
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
   async function query(sql, params = []) {
-    const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/d1/database/${db}/query`, {
+    const response = await fetchWithRetry(`https://api.cloudflare.com/client/v4/accounts/${account}/d1/database/${db}/query`, {
       method: 'POST', headers: { Authorization: `Bearer ${d1Token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql, params }), signal: AbortSignal.timeout(60000),
     });
@@ -460,12 +504,12 @@ export async function context() {
   }
   async function head(key) {
     if (!/^assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)$/.test(key || '')) return null;
-    try { return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) }); }
+    try { return await sendWithRetry(s3, new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) }); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
   async function headArtwork(key) {
     if (!/^artworks\/\d+\/(?:poster|backdrop)\.jpg$/.test(key || '')) return null;
-    try { return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(30000) }); }
+    try { return await sendWithRetry(s3, new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) }); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
   return { s3, bucket, query, head, headArtwork };
@@ -475,6 +519,14 @@ export async function saveManifest(plan) {
   await mkdir('tmp', { recursive: true });
   await writeFile(`${manifestPath}.next`, JSON.stringify(plan, null, 2));
   await rename(`${manifestPath}.next`, manifestPath);
+}
+async function markMovieFlagged(ctx, id, error) {
+  const message = safeLogError(error).slice(0, 1000) || 'media item requires manual review';
+  try {
+    await ctx.query("UPDATE movies SET ingest_status = 'flagged_for_review', transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (ingest_status IS NOT 'flagged_for_review' OR transfer_error IS NOT ?)", [message, id, message]);
+  } catch (updateError) {
+    console.error(JSON.stringify({ event: 'movie-review-flag-failed', id, error: safeLogError(updateError) }));
+  }
 }
 async function markMovieRetryPending(ctx, id, error) {
   const message = safeLogError(error).slice(0, 1000);
@@ -486,6 +538,21 @@ async function markMovieRetryPending(ctx, id, error) {
     return false;
   }
 }
+let activeContext = null;
+let shutdownStarted = false;
+async function handleShutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.warn(JSON.stringify({ event: 'shutdown-requested', signal }));
+  if (activeContext) {
+    try { await resetTransferLocks(activeContext); }
+    catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeLogError(error) })); }
+  }
+
+  process.exit();
+}
+process.once('SIGINT', () => { void handleShutdown('SIGINT'); });
+process.once('SIGTERM', () => { void handleShutdown('SIGTERM'); });
 export async function resetTransferLocks(ctx) {
   // `transfer_owner` is not a column in the current D1 schema. The transfer
   // ownership state is represented by transfer_token + transfer_lease_until.
@@ -535,7 +602,7 @@ async function acquire(ctx, item, attempt) {
   if (attempt > 1 || !source) descriptor = await alternativeDescriptor(item.imdbId, item.quality, source?.url);
   if (!descriptor) descriptor = sourceMagnet(row.download_sources_json, item.quality);
   if (!descriptor && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(source?.descriptorKey || '')) {
-    const object = await ctx.s3.send(new GetObjectCommand({ Bucket: ctx.bucket, Key: source.descriptorKey }), { abortSignal: AbortSignal.timeout(30000) });
+    const object = await sendWithRetry(ctx.s3, new GetObjectCommand({ Bucket: ctx.bucket, Key: source.descriptorKey }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) });
     if (!object.ContentLength || object.ContentLength > 2097152) { object.Body?.destroy(); throw new Error('Invalid descriptor size'); }
     descriptor = Buffer.from(await object.Body.transformToByteArray());
   }
@@ -595,11 +662,11 @@ function failureState(plan, id) {
   if (present.size === 1 && missing.length === 1) {
     return {
       status: 'HALF',
-      ingestStatus: 'half',
+      ingestStatus: 'flagged_for_review',
       error: `Missing ${missing[0]}: Dead stream / 404`,
     };
   }
-  return { status: 'FAILED', ingestStatus: 'failed', error: 'Dead stream / 404' };
+  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: 'flagged_for_review', error: 'Dead stream / 404' };
 }
 export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
@@ -622,8 +689,8 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
   for (const id of new Set(ids)) {
     const state = failureState(plan, id);
     const primarySql = `UPDATE movies SET status = '${state.status}', sync_error = ?, ingest_status = '${state.ingestStatus}', transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
-    const compatibilitySql = state.status === 'FAILED'
-      ? "UPDATE movies SET ingest_status = 'failed', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
+    const compatibilitySql = state.status === 'FLAGGED_FOR_REVIEW'
+      ? "UPDATE movies SET ingest_status = 'flagged_for_review', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
       : "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?";
     try {
       await queryWithRetry(primarySql, [state.error, state.error, id]);
@@ -631,7 +698,7 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
       if (state.status === 'HALF') half += 1;
     } catch {
       try {
-        const compatibilityParams = state.status === 'FAILED'
+        const compatibilityParams = state.status === 'FLAGGED_FOR_REVIEW'
           ? [new Date().toISOString(), id]
           : [state.ingestStatus, state.error, new Date().toISOString(), id];
         await queryWithRetry(compatibilitySql, compatibilityParams);
@@ -642,8 +709,8 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
       }
     }
   }
-  console.log(`❌ Marked ${marked} movies as FAILED in D1 Database.`);
-  if (half) console.log(`⚠️ Marked ${half} movies as HALF (one quality missing) in D1 Database.`);
+  console.log(`❌ Flagged ${marked} movies for review in D1 Database.`);
+  if (half) console.log(`⚠️ Flagged ${half} movies for review with one quality missing in D1 Database.`);
   return marked;
 }
 async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
@@ -801,14 +868,17 @@ export async function drainCloudPlan(plan, sync, options = {}) {
           const marked = await markPermanentlyFailed(ctx, pendingIds, plan);
           await saveManifest(plan);
           console.error(`❌ MAX_RETRIES=${MAX_RETRIES} reached. Marked Movie IDs as failed: ${pendingIds.join(', ') || 'none'} (D1 marked: ${marked}).`);
-          process.exitCode = 1;
+
           return;
         }
         console.log(`🔁 Retrying remaining batch (Attempt ${consecutiveFailures + 1}/${MAX_RETRIES})...`);
         await pause(10_000);
       }
     }
-  } finally { ctx.s3.destroy(); }
+  } finally {
+    try { await resetTransferLocks(ctx); } catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeLogError(error) })); }
+    ctx.s3.destroy();
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let ctx;
@@ -838,6 +908,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     fatalError = error;
   } finally {
     await cleanupRuntime();
+    if (ctx) { try { await resetTransferLocks(ctx); } catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeLogError(error) })); } }
+    activeContext = null;
     ctx?.s3.destroy();
   }
   if (fatalError) {
