@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: r2-sync-${{ github.ref }}
-  cancel-in-progress: false
+  group: r2-sync-production
+  cancel-in-progress: true
 
 jobs:
   sync-media:

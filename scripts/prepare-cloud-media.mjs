@@ -486,6 +486,15 @@ async function markMovieRetryPending(ctx, id, error) {
     return false;
   }
 }
+async function clearStaleTransferLocks(ctx) {
+  const [row] = await ctx.query("SELECT COUNT(*) AS count FROM movies WHERE transfer_token IS NOT NULL AND (transfer_lease_until IS NULL OR transfer_lease_until < unixepoch())");
+  const count = Number(row?.count || 0);
+  if (count > 0) {
+    await ctx.query("UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE transfer_token IS NOT NULL AND (transfer_lease_until IS NULL OR transfer_lease_until < unixepoch())");
+  }
+  console.log(JSON.stringify({ event: 'stale-transfer-locks-cleared', count }));
+  return count;
+}
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
   if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 20) throw new Error('Invalid maxMovies');
@@ -798,6 +807,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     ctx = await context();
     await mkdir(mediaRoot, { recursive: true });
+    await clearStaleTransferLocks(ctx);
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
