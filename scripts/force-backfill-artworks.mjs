@@ -1,8 +1,9 @@
 import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 
-const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.R2_ACCOUNT_ID;
-const DATABASE_ID = process.env.CLOUDFLARE_DATABASE_ID || 'a8e45cf6-effe-430f-9f7d-3ff85aea0acc';
-const D1_TOKEN = process.env.CLOUDFLARE_D1_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+const DEFAULT_DATABASE_ID = 'a8e45cf6-effe-430f-9f7d-3ff85aea0acc';
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.R2_ACCOUNT_ID || process.env.CF_ACCOUNT_ID;
+const d1Token = process.env.CLOUDFLARE_D1_TOKEN || process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
+const databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID || process.env.D1_DATABASE_ID || process.env.CLOUDFLARE_DATABASE_ID || DEFAULT_DATABASE_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const BUCKET = process.env.R2_BUCKET_NAME || 'flixlyra-media';
@@ -86,9 +87,9 @@ function trailerUrl(value) {
 }
 
 async function queryD1(sql, params = []) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`, {
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${D1_TOKEN}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${d1Token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql, params }),
     signal: AbortSignal.timeout(60_000),
   });
@@ -176,12 +177,12 @@ function updatesFor(movie) {
 }
 
 async function main() {
-  if (!ACCOUNT_ID || !D1_TOKEN) throw new Error('CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_D1_TOKEN are required');
+  if (!accountId || !d1Token) throw new Error('Cloudflare account ID and D1 API token are required (supported fallbacks: CLOUDFLARE_ACCOUNT_ID/R2_ACCOUNT_ID/CF_ACCOUNT_ID and CLOUDFLARE_D1_TOKEN/CLOUDFLARE_API_TOKEN/CF_API_TOKEN)');
   if (RUN_EXECUTE && (!R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY)) throw new Error('R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute');
   const rows = await queryD1('SELECT id, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id');
   const s3 = RUN_EXECUTE ? new S3Client({
     region: 'auto',
-    endpoint: `https://${ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     maxAttempts: 3,
     credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY },
   }) : null;
