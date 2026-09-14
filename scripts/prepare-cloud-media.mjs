@@ -486,13 +486,17 @@ async function markMovieRetryPending(ctx, id, error) {
     return false;
   }
 }
-async function clearStaleTransferLocks(ctx) {
-  const [row] = await ctx.query("SELECT COUNT(*) AS count FROM movies WHERE transfer_token IS NOT NULL AND (transfer_lease_until IS NULL OR transfer_lease_until < unixepoch())");
+export async function resetTransferLocks(ctx) {
+  // `transfer_owner` is not a column in the current D1 schema. The transfer
+  // ownership state is represented by transfer_token + transfer_lease_until.
+  // The workflow is serialized by its production concurrency group, so a
+  // fresh runner can safely release ownership left by a cancelled runner.
+  const [row] = await ctx.query("SELECT COUNT(*) AS count FROM movies WHERE transfer_token IS NOT NULL");
   const count = Number(row?.count || 0);
   if (count > 0) {
-    await ctx.query("UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE transfer_token IS NOT NULL AND (transfer_lease_until IS NULL OR transfer_lease_until < unixepoch())");
+    await ctx.query("UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE transfer_token IS NOT NULL");
   }
-  console.log(JSON.stringify({ event: 'stale-transfer-locks-cleared', count }));
+  console.log(JSON.stringify({ event: 'transfer-locks-reset', count, scope: 'all-active-transfer-tokens' }));
   return count;
 }
 export async function makePlan(ctx, options = {}) {
@@ -729,7 +733,8 @@ export async function prepareAll(ctx, plan, options = {}) {
   await persist(plan);
   return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed };
 }
-export async function commitItem(ctx, item) {
+export async function commitItem(ctx, item, options = {}) {
+  const forceCommit = options.forceCommit === true;
   const object = await ctx.head(item.key);
   if (!validVideo(object) || object.ContentLength !== item.bytes) throw new Error('R2 verification failed before D1 commit');
   const [row] = await ctx.query('SELECT download_sources_json, revision FROM movies WHERE id = ?', [item.id]);
@@ -747,18 +752,23 @@ export async function commitItem(ctx, item) {
   const metadataFields = METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(metadata, field));
   const metadataAssignments = metadataFields.length ? `,${metadataFields.map((field) => `${field}=?`).join(',')}` : '';
   const primary = next.find(s => s.quality === '1080p' && s.r2StorageKey) || updated;
-  const result = await ctx.query(`UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_error=NULL,revision=revision+1,updated_at=?${metadataAssignments} WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND (transfer_token IS NULL OR transfer_lease_until < unixepoch()) RETURNING id`, [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), item.id, row.revision]);
+  const guard = forceCommit
+    ? "WHERE id=? AND publication_status IN ('draft','published') RETURNING id"
+    : "WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND (transfer_token IS NULL OR transfer_lease_until < unixepoch()) RETURNING id";
+  const guardParams = forceCommit ? [item.id] : [item.id, row.revision];
+  const result = await ctx.query(`UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_error=NULL,revision=revision+1,updated_at=?${metadataAssignments} ${guard}`, [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), ...guardParams]);
   if (!result.length) throw new Error('D1 changed or another transfer owns the record; retry required');
 }
-export async function drainCloudPlan(plan, sync) {
+export async function drainCloudPlan(plan, sync, options = {}) {
   const ctx = await context();
   try {
+    if (options.forceCommit) await resetTransferLocks(ctx);
     const reconciled = new Set();
     let consecutiveFailures = 0;
     while (true) {
       try {
         for (const item of plan.files) {
-          if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item); reconciled.add(item.key); }
+          if (item.verified && !reconciled.has(item.key)) { await commitItem(ctx, item, options); reconciled.add(item.key); }
         }
         const pending = plan.files.filter(f => !f.verified && !f.skipped);
         if (!pending.length) {
@@ -773,7 +783,7 @@ export async function drainCloudPlan(plan, sync) {
         const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
         if (!item) continue;
         await sync(item);
-        await commitItem(ctx, item);
+        await commitItem(ctx, item, options);
         item.verified = true;
         reconciled.add(item.key);
         if (item.file && resolve(item.file).startsWith(mediaRoot + sep)) await rm(dirname(item.file), { recursive: true, force: true });
@@ -807,7 +817,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     ctx = await context();
     await mkdir(mediaRoot, { recursive: true });
-    await clearStaleTransferLocks(ctx);
+    await resetTransferLocks(ctx);
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);

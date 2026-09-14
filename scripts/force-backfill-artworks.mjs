@@ -38,6 +38,7 @@ function sourceImage(value) {
     const url = new URL(candidate);
     const hostname = url.hostname.toLowerCase();
     const allowed = hostname === 'image.tmdb.org' ||
+      hostname === 'images.metahub.space' ||
       hostname === 'yts.mx' || hostname.endsWith('.yts.mx') ||
       hostname === 'yts.lt' || hostname.endsWith('.yts.lt') ||
       hostname === 'yts.am' || hostname.endsWith('.yts.am') ||
@@ -49,6 +50,25 @@ function sourceImage(value) {
   }
 }
 
+function sourceImageCandidate(value) {
+  const direct = sourceImage(value);
+  if (direct) return direct;
+  const path = text(value, 1000);
+  if (/^\/[A-Za-z0-9_./-]+\.(?:jpe?g|png|webp)(?:\?.*)?$/i.test(path)) {
+    return sourceImage(`https://image.tmdb.org/t/p/original${path}`);
+  }
+  return null;
+}
+
+function fallbackImageSources(movie, imdbId, kind) {
+  const id = text(imdbId, 16);
+  if (!/^tt\d{7,10}$/.test(id)) return [];
+
+  // MetaHub resolves the IMDb ID to an image without requiring a TMDB API key.
+  // Keep these after the YTS fields so a working YTS asset always wins.
+  const sizes = kind === 'poster' ? ['original', 'large', 'medium'] : ['large', 'medium', 'original'];
+  return sizes.map((size) => sourceImage(`https://images.metahub.space/poster/${size}/${id}.jpg`)).filter(Boolean);
+}
 function artworkKey(id, kind) {
   if (!Number.isSafeInteger(Number(id)) || Number(id) < 1 || !['poster', 'backdrop'].includes(kind)) return null;
   return `artworks/${Number(id)}/${kind}.jpg`;
@@ -133,18 +153,29 @@ async function downloadImage(url) {
   return { bytes, contentType };
 }
 
-function imageSources(movie, kind) {
-  const fields = kind === 'poster'
-    ? ['large_cover_image', 'medium_cover_image']
-    : ['background_image_original', 'background_image'];
-  return [...new Set(fields.map((field) => sourceImage(movie?.[field])).filter(Boolean))];
+function imageSources(movie, kind, imdbId) {
+  // YTS deployments have returned these fields inconsistently. Keep the
+  // canonical payload order stable, then try compatible legacy/path fields.
+  const fields = [
+    'large_cover_image', 'medium_cover_image',
+    'background_image', 'background_image_original',
+    ...(kind === 'poster'
+      ? ['poster_url', 'poster', 'tmdb_poster_url', 'tmdb_poster_path', 'imdb_poster_url']
+      : ['backdrop_url', 'backdrop', 'tmdb_backdrop_url', 'tmdb_backdrop_path', 'imdb_backdrop_url']),
+  ];
+  return [...new Set([
+    ...fields.map((field) => sourceImageCandidate(movie?.[field])).filter(Boolean),
+    ...fallbackImageSources(movie, imdbId, kind),
+  ])];
 }
-
 async function uploadArtwork(s3, row, movie, kind) {
   const key = artworkKey(row.id, kind);
   if (!key) throw new Error('INVALID_ARTWORK_KEY');
-  const sources = imageSources(movie, kind);
-  if (!sources.length) throw new Error('YTS_ARTWORK_SOURCE_MISSING');
+  const sources = imageSources(movie, kind, row.imdb_id);
+  if (!sources.length) {
+    console.warn(JSON.stringify({ event: 'artwork-source-missing', id: row.id, imdbId: row.imdb_id, kind, action: 'metadata-only-update' }));
+    return null;
+  }
   let lastError;
   for (const source of sources) {
     try {
@@ -165,7 +196,8 @@ async function uploadArtwork(s3, row, movie, kind) {
       lastError = error;
     }
   }
-  throw lastError || new Error('R2_ARTWORK_UPLOAD_FAILED');
+  console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeError(lastError || new Error('R2_ARTWORK_UPLOAD_FAILED')), action: 'metadata-only-update' }));
+  return null;
 }
 
 function updatesFor(movie) {
@@ -196,8 +228,14 @@ async function main() {
     try {
       const movie = await fetchMetadata(row.imdb_id);
       const updates = updatesFor(movie);
-      if (isPlaceholderArtwork(row.poster)) updates.poster = await uploadArtwork(s3, row, movie, 'poster');
-      if (isPlaceholderArtwork(row.backdrop)) updates.backdrop = await uploadArtwork(s3, row, movie, 'backdrop');
+      if (isPlaceholderArtwork(row.poster)) {
+        const poster = await uploadArtwork(s3, row, movie, 'poster');
+        if (poster) updates.poster = poster;
+      }
+      if (isPlaceholderArtwork(row.backdrop)) {
+        const backdrop = await uploadArtwork(s3, row, movie, 'backdrop');
+        if (backdrop) updates.backdrop = backdrop;
+      }
       const fields = Object.entries(updates).filter(([, value]) => value !== null && value !== '');
       if (!fields.length) throw new Error('YTS_METADATA_EMPTY');
       console.log(JSON.stringify({ event: RUN_EXECUTE ? 'force-backfill-update' : 'force-backfill-plan', id: row.id, imdbId: row.imdb_id, fields: fields.map(([field]) => field) }));

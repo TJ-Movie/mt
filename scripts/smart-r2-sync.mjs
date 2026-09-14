@@ -9,6 +9,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 const MAX_ATTEMPTS = 4; // initial attempt + 3 retries
 const MAX_RETRIES = 5; // consecutive remaining-batch retries
 const RETRY_BASE_MS = 5_000;
+const FORCE_COMMIT = process.argv.includes('--force-commit');
 const CONTENT_TYPES = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.mp4': 'video/mp4', '.bin': 'application/octet-stream' };
 
 // Make CI output visible as soon as each line is emitted.
@@ -222,7 +223,7 @@ if (cloudPlan?.schema === 'flixlyra-cloud-v1') {
     await drainCloudPlan(cloudPlan, async item => {
       const counts = await uploadBatch([item]);
       if (counts.failed) throw new Error('Upload batch failed');
-    });
+    }, { forceCommit: FORCE_COMMIT });
   }
 } else {
 let iteration = 0;
