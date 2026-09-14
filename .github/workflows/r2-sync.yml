@@ -42,7 +42,7 @@ jobs:
       - name: Free runner disk space before media preparation
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 
-      - name: Force backfill placeholder artwork and metadata
+      - name: Force Backfill Placeholder Artworks & Metadata to D1
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
