@@ -265,7 +265,7 @@ function lookupTitle(row) {
 }
 
 async function resolveImdbId(row) {
-  const knownFallbacks = { 7: "tt2025526", 10: "tt0499549" };
+  const knownFallbacks = { 7: "tt2025526" };
   const knownFallback = validImdbId(knownFallbacks[Number(row.id)]) ? knownFallbacks[Number(row.id)] : null;
   if (knownFallback && text(row.imdb_id, 16) !== knownFallback) {
     console.warn(JSON.stringify({ event: "imdb-resolution-fallback", id: row.id, title: lookupTitle(row), imdbId: knownFallback, reason: "curated-title-identity-fallback" }));
