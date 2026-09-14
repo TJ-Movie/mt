@@ -390,24 +390,36 @@ async function tmdbRequest(path, params = {}) {
 async function fetchTmdb(row) {
   if (!tmdbApiToken && !tmdbApiKey) return null;
   try {
-    let result = null;
-    if (validImdbId(row.imdb_id)) {
-      const found = await tmdbRequest("/find/" + encodeURIComponent(row.imdb_id), { external_source: "imdb_id", language: "en-US" });
-      result = found?.movie_results?.[0] || null;
-    } else {
-      const title = lookupTitle(row);
-      if (title) {
-        console.warn(JSON.stringify({ event: "provider-fallback", id: row.id, reason: "tmdb_title_search", title }));
-        const searched = await tmdbRequest("/search/movie", { query: title, ...(Number(row.release_year) > 0 ? { year: String(row.release_year) } : {}), language: "en-US" });
-        result = searched?.results?.[0] || null;
+    const imdbIds = row.id === 10
+      ? [...new Set([text(row.imdb_id, 16), "tt0499549"].filter(validImdbId))]
+      : (validImdbId(row.imdb_id) ? [text(row.imdb_id, 16)] : []);
+    let selected = null;
+    for (const imdbId of imdbIds) {
+      const found = await tmdbRequest("/find/" + encodeURIComponent(imdbId), { external_source: "imdb_id", language: "en-US" });
+      const result = found?.movie_results?.[0] || null;
+      if (!result?.id) {
+        console.warn(JSON.stringify({ event: "provider-failure", id: row.id, imdbId, reason: "tmdb_movie_results_empty", source: "tmdb" }));
+        continue;
       }
+      if (!result.backdrop_path) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, imdbId, reason: "tmdb_backdrop_path_null", source: "tmdb" }));
+      const videosPayload = await tmdbRequest("/movie/" + result.id + "/videos", { language: "en-US" });
+      const videos = (videosPayload?.results || []).filter((video) => video.site === "YouTube" && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 32)));
+      const trailer = videos.find((video) => video.type === "Trailer" && video.official === true) ||
+        videos.find((video) => video.type === "Trailer") ||
+        videos.find((video) => video.type === "Teaser" && video.official === true) ||
+        videos.find((video) => video.type === "Teaser") ||
+        videos.find((video) => video.type === "Clip" && video.official === true) ||
+        videos.find((video) => video.type === "Clip");
+      const score = (result.poster_path ? 1 : 0) + (result.backdrop_path ? 1 : 0) + (trailer ? 4 : 0);
+      if (!selected || score > selected.score) selected = { imdbId, result, trailer, score };
+      if (trailer && result.poster_path && result.backdrop_path) break;
     }
-    if (!result?.id) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_movie_results_empty", source: "tmdb" })); return null; }
-    if (!result.backdrop_path) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_backdrop_path_null", source: "tmdb" }));
-    const videosPayload = await tmdbRequest("/movie/" + result.id + "/videos", { language: "en-US" });
-    const videos = (videosPayload?.results || []).filter((video) => video.site === "YouTube" && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 32)));
-    const trailer = videos.find((video) => video.type === "Trailer" && video.official === true) || videos.find((video) => video.type === "Trailer");
-    if (!trailer) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_no_youtube_trailer", source: "tmdb" }));
+    if (!selected) {
+      console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_movie_results_empty", source: "tmdb" }));
+      return null;
+    }
+    const { result, trailer } = selected;
+    if (!trailer) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_no_youtube_trailer_after_type_fallback", source: "tmdb" }));
     let director = "";
     let cast = [];
     try {
