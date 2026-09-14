@@ -161,13 +161,15 @@ function safeCast(json: string): (string | { actor: string; character?: string; 
         if (actor) result.push(actor);
         continue;
       }
-      if (!member || typeof member !== 'object' || typeof (member as { actor?: unknown }).actor !== 'string') continue;
-      const source = member as { actor: string; character?: unknown; image?: unknown };
-      const actor = source.actor.normalize('NFKC').trim().slice(0, 120);
+      if (!member || typeof member !== 'object') continue;
+      const source = member as { actor?: unknown; name?: unknown; character?: unknown; image?: unknown; profile_url?: unknown };
+      const rawActor = typeof source.actor === 'string' ? source.actor : typeof source.name === 'string' ? source.name : '';
+      const actor = rawActor.normalize('NFKC').trim().slice(0, 120);
       if (!actor) continue;
       const character = typeof source.character === 'string' ? source.character.normalize('NFKC').trim().slice(0, 120) : undefined;
-      const image = typeof source.image === 'string' ? source.image.trim().slice(0, 500) : undefined;
-      result.push({ actor, character: character || undefined, image: image || undefined });
+      const rawImage = typeof source.image === 'string' ? source.image : typeof source.profile_url === 'string' ? source.profile_url : '';
+      const image = rawImage.trim().slice(0, 500) || undefined;
+      result.push({ actor, character: character || undefined, image });
     }
     return result;
   } catch { return []; }

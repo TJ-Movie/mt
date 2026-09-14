@@ -14,13 +14,16 @@ import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } fro
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
-const DEFAULT_MAX_MOVIES = 2;
+const DEFAULT_MAX_MOVIES = 30;
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 const YTS_FALLBACK_ENDPOINT = 'https://yts.mx/api/v2/movie_details.json';
 const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
 const ARTWORK_CONCURRENCY = 4;
 const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
+const siteOrigin = (process.env.PUBLIC_SITE_ORIGIN || 'https://flixlyra.com').replace(/\/+$/, '');
+let nextRequestAt = 0;
+async function throttleRequests() { const slot = Math.max(Date.now(), nextRequestAt); nextRequestAt = slot + 300; const delay = slot - Date.now(); if (delay > 0) await pause(delay); }
 const requestTimeoutMs = 10000;
 const maxRequestAttempts = 3;
 async function fetchWithRetry(url, init = {}) {
@@ -29,6 +32,7 @@ async function fetchWithRetry(url, init = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('request timeout')), requestTimeoutMs);
     try {
+      await throttleRequests();
       const response = await fetch(url, { ...init, signal: controller.signal });
       if ((response.status !== 429 && response.status < 500) || attempt === maxRequestAttempts) return response;
       await response.body?.cancel().catch(() => {});
@@ -390,7 +394,7 @@ export function maxMoviesFromArgs(argv = process.argv) {
   const raw = argv.find(value => value.startsWith('--max-movies='))?.slice('--max-movies='.length);
   if (raw === undefined || raw === '') return DEFAULT_MAX_MOVIES;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1 || value > 20) throw new Error('--max-movies must be an integer from 1 to 20');
+  if (!Number.isSafeInteger(value) || value < 1 || value > 30) throw new Error('--max-movies must be an integer from 1 to 30');
   return value;
 }
 
@@ -568,8 +572,8 @@ export async function resetTransferLocks(ctx) {
 }
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
-  if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 20) throw new Error('Invalid maxMovies');
-  const rows = await ctx.query("SELECT id,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
+  if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 30) throw new Error('Invalid maxMovies');
+  const rows = await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
   const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
   for (const row of rows) {
     const movieItems = [];
@@ -581,7 +585,7 @@ export async function makePlan(ctx, options = {}) {
         const key = mapped || stableKey(row.id, quality);
         const object = await ctx.head(key);
         const verified = validVideo(object) && (!source?.r2Bytes || Number(source.r2Bytes) === object.ContentLength);
-        movieItems.push({ id: row.id, imdbId: row.imdb_id, quality, key, bytes: verified ? object.ContentLength : null,
+        movieItems.push({ id: row.id, slug: row.slug, imdbId: row.imdb_id, quality, key, bytes: verified ? object.ContentLength : null,
           file: null, verified });
       }
       plan.files.push(...movieItems);
@@ -662,11 +666,12 @@ function failureState(plan, id) {
   if (present.size === 1 && missing.length === 1) {
     return {
       status: 'HALF',
-      ingestStatus: 'flagged_for_review',
+      ingestStatus: 'skipped_unplayable',
       error: `Missing ${missing[0]}: Dead stream / 404`,
     };
   }
-  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: 'flagged_for_review', error: 'Dead stream / 404' };
+  const unplayable = (plan?.files || []).some(item => item.id === id && item.skipped && /MP4|unplayable|corrupt|container/i.test(String(item.skipReason || '')));
+  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404' };
 }
 export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
@@ -688,9 +693,10 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
   };
   for (const id of new Set(ids)) {
     const state = failureState(plan, id);
+    console.warn(JSON.stringify({ event: 'media_flagged', id, status: state.ingestStatus, reason: state.error }));
     const primarySql = `UPDATE movies SET status = '${state.status}', sync_error = ?, ingest_status = '${state.ingestStatus}', transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
     const compatibilitySql = state.status === 'FLAGGED_FOR_REVIEW'
-      ? "UPDATE movies SET ingest_status = 'flagged_for_review', transfer_error = 'Dead stream / 404', updated_at = ? WHERE id = ?"
+      ? "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?"
       : "UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = ? WHERE id = ?";
     try {
       await queryWithRetry(primarySql, [state.error, state.error, id]);
@@ -699,7 +705,7 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
     } catch {
       try {
         const compatibilityParams = state.status === 'FLAGGED_FOR_REVIEW'
-          ? [new Date().toISOString(), id]
+          ? [state.ingestStatus, state.error, new Date().toISOString(), id]
           : [state.ingestStatus, state.error, new Date().toISOString(), id];
         await queryWithRetry(compatibilitySql, compatibilityParams);
         marked += 1;
@@ -807,7 +813,8 @@ export async function commitItem(ctx, item, options = {}) {
   const [row] = await ctx.query('SELECT download_sources_json, revision FROM movies WHERE id = ?', [item.id]);
   const sources = sourcesOf(row.download_sources_json);
   const existing = sources.find(s => (s.quality || s.resolution)?.toLowerCase() === item.quality);
-  const updated = { ...existing, quality: item.quality, resolution: item.quality, r2StorageKey: item.key, r2Bytes: item.bytes, size: `${(item.bytes / 1024 ** 3).toFixed(2)} GB` };
+  const downloadUrl = item.slug ? (siteOrigin + '/api/download/resolve?slug=' + encodeURIComponent(item.slug) + '&quality=' + item.quality) : existing?.download_url || null;
+  const updated = { ...existing, quality: item.quality, resolution: item.quality, r2StorageKey: item.key, r2Bytes: item.bytes, size: String((item.bytes / 1024 ** 3).toFixed(2)) + ' GB', download_url: downloadUrl };
   const next = [...sources.filter(s => (s.quality || s.resolution)?.toLowerCase() !== item.quality), updated];
   let ready = true;
   for (const q of ['720p','1080p']) {

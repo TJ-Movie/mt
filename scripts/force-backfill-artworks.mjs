@@ -448,7 +448,7 @@ async function fetchTmdb(row) {
     try {
       const credits = await tmdbRequest("/movie/" + result.id + "/credits", { language: "en-US" });
       director = (credits?.crew || []).filter((person) => person.job === "Director").map((person) => text(person.name, 160)).filter(Boolean).join(", ");
-      cast = (credits?.cast || []).map((person) => ({ actor: text(person.name, 120), character: text(person.character, 120) })).filter((person) => person.actor).slice(0, 6);
+      cast = (credits?.cast || []).map((person) => ({ name: text(person.name, 120), character: text(person.character, 120), profile_url: person.profile_path ? "https://image.tmdb.org/t/p/w185" + text(person.profile_path, 160) : null })).filter((person) => person.name).slice(0, 6);
     } catch (error) {
       console.warn(JSON.stringify({ event: "tmdb-credits-warning", id: row.id, error: safeError(error) }));
     }
@@ -531,11 +531,12 @@ function metadataCast(value) {
         return actor ? [actor] : [];
       }
       if (!isRecord(entry)) return [];
-      const actor = text(entry.actor || entry.name, 120);
-      if (!actor) return [];
+      const name = text(entry.name || entry.actor, 120);
+      if (!name) return [];
       const character = text(entry.character || entry.character_name, 120);
+      const profile = sourceImageCandidate(entry.profile_url || entry.profileUrl);
       const image = sourceImageCandidate(entry.image);
-      return [{ actor, ...(character ? { character } : {}), ...(image ? { image } : {}) }];
+      return [{ name, ...(character ? { character } : {}), ...(profile ? { profile_url: profile } : {}), ...(image ? { image } : {}) }];
     });
   }
   if (typeof value === "string") {
@@ -550,6 +551,11 @@ function ytsDirector(movie) {
 
 function ytsCast(movie) {
   return isRecord(movie) ? metadataCast(movie.cast) : [];
+}
+
+function castNeedsProfile(value) {
+  const cast = metadataCast(value);
+  return !cast.length || cast.some((member) => !member.profile_url);
 }
 
 function ytsTrailer(movie) {
@@ -621,7 +627,7 @@ async function processRow(s3, row) {
   const posterOk = !invalidArtworkValue(row.poster) && canonicalArtworkValue(row.poster, row.id, "poster") && await verifyPublicArtwork(publicArtworkUrl(row.id, "poster"));
   const backdropOk = !invalidArtworkValue(row.backdrop) && canonicalArtworkValue(row.backdrop, row.id, "backdrop") && await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop"));
   const trailerOk = await verifyYoutubeOembed(row.official_watch_url);
-  if (posterOk && backdropOk && !invalidDirector(row.director) && trailerOk) return { id: row.id, updates: {}, unresolved: [], reasons: [] };
+  if (posterOk && backdropOk && !invalidDirector(row.director) && trailerOk && !castNeedsProfile(row.cast_json)) return { id: row.id, updates: {}, unresolved: [], reasons: [] };
 
   const reasons = [];
   const yts = await fetchYts(row);
@@ -638,7 +644,9 @@ async function processRow(s3, row) {
     }
   }
   const currentCast = metadataCast(row.cast_json);
-  const cast = currentCast.length ? currentCast : [ytsCast(yts), ...providers.map((provider) => metadataCast(provider.cast))].flat().filter(Boolean).slice(0, 6);
+  const providerCast = [ytsCast(yts), ...providers.map((provider) => metadataCast(provider.cast))].flat().filter(Boolean);
+  const profiledProviderCast = providerCast.filter((member) => isRecord(member) && member.profile_url);
+  const cast = (profiledProviderCast.length ? profiledProviderCast : (currentCast.length ? currentCast : providerCast)).slice(0, 6);
   const updates = {
     director: director || null,
     cast_json: cast.length ? JSON.stringify(cast) : text(row.cast_json) || null,
