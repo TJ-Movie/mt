@@ -264,6 +264,53 @@ function lookupTitle(row) {
   return text(row.title, 200).replace(/\s*[-_]\s*[0-9]{4}\s*$/, "").replace(/[-_]+/g, " ").trim();
 }
 
+async function resolveImdbId(row) {
+  if (validImdbId(row.imdb_id)) return text(row.imdb_id, 16);
+  const title = lookupTitle(row);
+  if (!title) {
+    console.warn(JSON.stringify({ event: "imdb-resolution-failed", id: row.id, reason: "missing_title" }));
+    return null;
+  }
+  if (omdbApiKey) {
+    try {
+      const params = new URLSearchParams({ t: title, apikey: omdbApiKey, plot: "short" });
+      const response = await fetch("https://www.omdbapi.com/?" + params, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(20000),
+      });
+      const payload = await response.json().catch(() => null);
+      const candidate = text(payload?.imdbID, 16);
+      if (response.ok && payload?.Response === "True" && validImdbId(candidate)) return candidate;
+      console.warn(JSON.stringify({ event: "imdb-resolution-warning", id: row.id, source: "omdb", reason: text(payload?.Error, 180) || "title_not_found" }));
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "imdb-resolution-warning", id: row.id, source: "omdb", error: safeError(error) }));
+    }
+  }
+  if (tmdbApiKey || tmdbApiToken) {
+    try {
+      const searched = await tmdbRequest("/search/movie", { query: title, ...(Number(row.release_year) > 0 ? { year: String(row.release_year) } : {}), language: "en-US" });
+      const tmdbId = searched?.results?.[0]?.id;
+      if (tmdbId) {
+        const external = await tmdbRequest("/movie/" + tmdbId + "/external_ids", {});
+        const candidate = text(external?.imdb_id, 16);
+        if (validImdbId(candidate)) return candidate;
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "imdb-resolution-warning", id: row.id, source: "tmdb", error: safeError(error) }));
+    }
+  }
+  console.warn(JSON.stringify({ event: "imdb-resolution-failed", id: row.id, title, reason: "no_valid_imdb_id_from_omdb_or_tmdb" }));
+  return null;
+}
+
+async function ensureImdbId(row) {
+  const resolved = await resolveImdbId(row);
+  if (!resolved || resolved === text(row.imdb_id, 16)) return { ...row, imdb_id: resolved || row.imdb_id };
+  await queryD1("UPDATE movies SET imdb_id = ? WHERE id = ?", [resolved, row.id]);
+  console.log(JSON.stringify({ event: "imdb-id-resolved", id: row.id, imdbId: resolved }));
+  return { ...row, imdb_id: resolved };
+}
+
 async function fetchYts(row) {
   if (!validImdbId(row.imdb_id)) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "missing_imdb_id", source: "yts" })); return null; }
   const query = new URLSearchParams({ imdb_id: row.imdb_id, with_images: "true", with_cast: "true" });
@@ -594,8 +641,10 @@ async function main() {
   }) : null;
   const results = [];
   for (const row of rows) {
-    try { results.push(await processRow(s3, row)); }
-    catch (error) {
+    try {
+      const preparedRow = await ensureImdbId(row);
+      results.push(await processRow(s3, preparedRow));
+    } catch (error) {
       const failure = { id: row.id, updates: {}, unresolved: ["row-error"], reasons: [safeError(error)] };
       results.push(failure);
       console.warn(JSON.stringify({ event: "movie-backfill-failed", id: row.id, reasons: failure.reasons }));
