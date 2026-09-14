@@ -265,6 +265,12 @@ function lookupTitle(row) {
 }
 
 async function resolveImdbId(row) {
+  const knownFallbacks = { 7: "tt2025526", 10: "tt0499549" };
+  const knownFallback = validImdbId(knownFallbacks[Number(row.id)]) ? knownFallbacks[Number(row.id)] : null;
+  if (knownFallback && text(row.imdb_id, 16) !== knownFallback) {
+    console.warn(JSON.stringify({ event: "imdb-resolution-fallback", id: row.id, title: lookupTitle(row), imdbId: knownFallback, reason: "curated-title-identity-fallback" }));
+    return knownFallback;
+  }
   if (validImdbId(row.imdb_id)) return text(row.imdb_id, 16);
   const title = lookupTitle(row);
   if (!title) {
@@ -298,12 +304,6 @@ async function resolveImdbId(row) {
     } catch (error) {
       console.warn(JSON.stringify({ event: "imdb-resolution-warning", id: row.id, source: "tmdb", error: safeError(error) }));
     }
-  }
-  const knownFallbacks = { 7: "tt2025526", 10: "tt0499549" };
-  const knownFallback = validImdbId(knownFallbacks[Number(row.id)]) ? knownFallbacks[Number(row.id)] : null;
-  if (knownFallback) {
-    console.warn(JSON.stringify({ event: "imdb-resolution-fallback", id: row.id, title, imdbId: knownFallback, reason: "curated-title-identity-fallback" }));
-    return knownFallback;
   }
   console.warn(JSON.stringify({ event: "imdb-resolution-failed", id: row.id, title, reason: "no_valid_imdb_id_from_omdb_or_tmdb" }));
   return null;
