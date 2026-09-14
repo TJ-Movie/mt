@@ -116,6 +116,35 @@ function storedArtworkUrl(value) {
   return sourceImage(candidate);
 }
 
+async function readBoundedBody(response) {
+  if (!response.body) throw new Error("IMAGE_EMPTY_BODY");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxImageBytes) {
+        await reader.cancel();
+        throw new Error("IMAGE_TOO_LARGE");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!total) throw new Error("IMAGE_EMPTY_BODY");
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function verifyImageResponse(response) {
   if (response.status !== 200 || !response.body) {
     response.body?.cancel();
@@ -196,8 +225,7 @@ async function downloadImage(value) {
       response.body.cancel();
       throw new Error("IMAGE_TOO_LARGE");
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length || bytes.byteLength > maxImageBytes) throw new Error("IMAGE_EMPTY_OR_TOO_LARGE");
+    const bytes = await readBoundedBody(response);
     return { bytes, contentType, source: current };
   }
   throw new Error("IMAGE_REDIRECT_NOT_ALLOWED");
@@ -533,12 +561,12 @@ async function auditAllMovies(rows) {
 
 async function main() {
   if (!accountId || !d1Token) throw new Error("Cloudflare account ID and D1 API token are required");
-  if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
   await resetTransferLocks();
   if (!omdbApiKey || (!tmdbApiKey && !tmdbApiToken)) {
     console.error(JSON.stringify({ event: "credential-guard-failed", required: ["OMDB_API_KEY", "TMDB_API_KEY or TMDB_API_TOKEN"] }));
     process.exit(1);
   }
+  if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
   const rows = await queryD1("SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
   const s3 = runExecute ? new S3Client({
     region: "auto",
