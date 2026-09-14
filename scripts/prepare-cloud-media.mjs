@@ -306,15 +306,17 @@ async function syncArtworkForMovie(ctx, row) {
   }
 
   const fields = METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(updates, field));
-  if (fields.length) {
-    const assignments = fields.map((field) => `${field} = ?`);
-    await ctx.query(`UPDATE movies SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...fields.map((field) => updates[field]), row.id]);
-  }
-  return { id: row.id, synced: fields };
+  return { id: row.id, synced: fields, updates };
 }
 
-async function syncAllArtwork(ctx) {
-  const rows = await ctx.query("SELECT id, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' ORDER BY id");
+async function syncAllArtwork(ctx, eligibleIds = []) {
+  const ids = [...new Set(eligibleIds.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!ids.length) {
+    console.log(JSON.stringify({ event: 'artwork-sync-complete', scanned: 0, updated: 0, fields: 0, deferred: true }));
+    return { scanned: 0, updated: 0, updatesByMovie: {} };
+  }
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = await ctx.query(`SELECT id, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' AND id IN (${placeholders}) ORDER BY id`, ids);
   let cursor = 0;
   const results = [];
   async function worker() {
@@ -328,8 +330,9 @@ async function syncAllArtwork(ctx) {
   }
   await Promise.all(Array.from({ length: Math.min(ARTWORK_CONCURRENCY, rows.length) }, worker));
   const synced = results.filter((result) => result.synced.length > 0).length;
+  const updatesByMovie = Object.fromEntries(results.filter((result) => result.synced.length > 0).map((result) => [String(result.id), result.updates]));
   console.log(JSON.stringify({ event: 'artwork-sync-complete', scanned: rows.length, updated: synced, fields: results.reduce((total, result) => total + result.synced.length, 0) }));
-  return { scanned: rows.length, updated: synced };
+  return { scanned: rows.length, updated: synced, updatesByMovie };
 }
 
 export function maxMoviesFromArgs(argv = process.argv) {
@@ -724,8 +727,11 @@ export async function commitItem(ctx, item) {
     const h = await ctx.head(s?.r2StorageKey);
     if (!validVideo(h) || h.ContentLength !== s?.r2Bytes) ready = false;
   }
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  const metadataFields = METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(metadata, field));
+  const metadataAssignments = metadataFields.length ? `,${metadataFields.map((field) => `${field}=?`).join(',')}` : '';
   const primary = next.find(s => s.quality === '1080p' && s.r2StorageKey) || updated;
-  const result = await ctx.query("UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_error=NULL,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND (transfer_token IS NULL OR transfer_lease_until < unixepoch()) RETURNING id", [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), item.id, row.revision]);
+  const result = await ctx.query(`UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_error=NULL,revision=revision+1,updated_at=?${metadataAssignments} WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND (transfer_token IS NULL OR transfer_lease_until < unixepoch()) RETURNING id`, [JSON.stringify({ status: ready ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, ready ? 'ready' : 'processing', new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), item.id, row.revision]);
   if (!result.length) throw new Error('D1 changed or another transfer owns the record; retry required');
 }
 export async function drainCloudPlan(plan, sync) {
@@ -785,13 +791,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     ctx = await context();
     await mkdir(mediaRoot, { recursive: true });
-    let artwork = { scanned: 0, updated: 0 };
-    try { artwork = await syncAllArtwork(ctx); }
-    catch (error) { console.warn(JSON.stringify({ event: 'artwork-backfill-warning', error: safeLogError(error) })); }
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
     const result = await prepareAll(ctx, plan);
+    let artwork = { scanned: 0, updated: 0 };
+    const eligibleIds = [...new Set(plan.files.filter((item) => item.verified || item.file).map((item) => Number(item.id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    try {
+      const artworkResult = await syncAllArtwork(ctx, eligibleIds);
+      artwork = { scanned: artworkResult.scanned, updated: artworkResult.updated };
+      for (const item of plan.files) {
+        const updates = artworkResult.updatesByMovie[String(item.id)];
+        if (updates && (item.verified || item.file)) item.metadata = updates;
+      }
+      await saveManifest(plan);
+    } catch (error) { console.warn(JSON.stringify({ event: 'artwork-backfill-warning', error: safeLogError(error) })); }
     summary = { event: 'prepared', maxMovies, artwork, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
   } catch (error) {
     fatalError = error;
