@@ -125,7 +125,8 @@ async function downloadArtwork(url) {
 async function fetchArtworkMetadata(imdbId) {
   if (!/^tt\d{7,10}$/.test(String(imdbId || ''))) return null;
   try {
-    const response = await fetch(`${YTS_ENDPOINT}?imdb_id=${encodeURIComponent(imdbId)}`, { signal: AbortSignal.timeout(30_000) });
+    const query = new URLSearchParams({ imdb_id: String(imdbId), with_images: 'true', with_cast: 'true' });
+    const response = await fetch(`${YTS_ENDPOINT}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`YTS_ARTWORK_${response.status}`);
     const payload = await response.json();
     return isRecord(payload?.data?.movie) ? payload.data.movie : null;
@@ -134,6 +135,106 @@ async function fetchArtworkMetadata(imdbId) {
     return null;
   }
 }
+
+function metadataText(value, maximum) {
+  return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : '';
+}
+
+function metadataRuntime(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) return '';
+  const wholeMinutes = Math.floor(minutes);
+  return `${Math.floor(wholeMinutes / 60)}h ${wholeMinutes % 60}m`;
+}
+
+function metadataTrailer(value) {
+  const code = metadataText(value, 64);
+  return /^[A-Za-z0-9_-]{11}$/.test(code) ? `https://www.youtube.com/watch?v=${code}` : '';
+}
+
+function metadataDirector(value) {
+  if (typeof value === 'string') return metadataText(value, 160);
+  if (!Array.isArray(value)) return '';
+  return value.map((entry) => isRecord(entry) ? entry.name || entry.director : entry)
+    .map((entry) => metadataText(entry, 160)).filter(Boolean).slice(0, 3).join(', ');
+}
+
+function metadataGenres(value) {
+  if (!Array.isArray(value)) return '';
+  const aliases = { 'science fiction': 'Sci-Fi', 'sci-fi': 'Sci-Fi' };
+  return [...new Set(value.map((entry) => metadataText(entry, 40))
+    .filter(Boolean)
+    .map((entry) => aliases[entry.toLowerCase()] || entry))].slice(0, 8).join(', ').slice(0, 200);
+}
+
+function metadataCast(value) {
+  if (!Array.isArray(value)) return [];
+  const cast = [];
+  for (const entry of value.slice(0, 6)) {
+    if (typeof entry === 'string') {
+      const actor = metadataText(entry, 120);
+      if (actor) cast.push(actor);
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const actor = metadataText(entry.name || entry.actor, 120);
+    if (!actor) continue;
+    const character = metadataText(entry.character_name || entry.character, 120);
+    const image = artworkUrl(entry.url_small_image || entry.image);
+    cast.push({ actor, ...(character ? { character } : {}), ...(image ? { image } : {}) });
+  }
+  return cast;
+}
+
+function parsedArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
+}
+
+function isBlankOrPending(value) {
+  return !metadataText(value, 500) || /pending editorial review/i.test(String(value));
+}
+
+function metadataUpdatesForMovie(row, metadata) {
+  if (!metadata) return {};
+  const updates = {};
+  const title = metadataText(metadata.title, 200);
+  const description = metadataText(metadata.description_full || metadata.description_intro, 5000);
+  const year = Number(metadata.year);
+  const runtime = metadataRuntime(metadata.runtime);
+  const rating = Number(metadata.rating);
+  const genre = metadataGenres(metadata.genres);
+  const director = metadataDirector(metadata.director);
+  const cast = metadataCast(metadata.cast);
+  const language = metadataText(metadata.language, 40);
+  const trailer = metadataTrailer(metadata.yt_trailer_code);
+
+  if (isBlankOrPending(row.title) && title) updates.title = title;
+  if (isBlankOrPending(row.description) && description) updates.description = description;
+  if ((!Number.isInteger(Number(row.release_year)) || Number(row.release_year) <= 0) && Number.isInteger(year) && year > 0) updates.release_year = year;
+  if (isBlankOrPending(row.runtime) && runtime) updates.runtime = runtime;
+  if ((!Number.isFinite(Number(row.rating)) || Number(row.rating) <= 0) && Number.isFinite(rating) && rating > 0) updates.rating = Math.max(0, Math.min(10, rating));
+  if (isBlankOrPending(row.genre) && genre) updates.genre = genre;
+  if (isBlankOrPending(row.director) && director) updates.director = director;
+  if ((parsedArray(row.cast_json).length === 0 || isBlankOrPending(row.cast_json)) && cast.length) updates.cast_json = JSON.stringify(cast);
+  if (parsedArray(row.languages_json).length === 0 && language) updates.languages_json = JSON.stringify([language]);
+  if (!metadataText(row.official_watch_url, 1000) && trailer) updates.official_watch_url = trailer;
+  return updates;
+}
+
+function needsMovieMetadata(row) {
+  return isBlankOrPending(row.title) || isBlankOrPending(row.description) || Number(row.release_year) <= 0 ||
+    isBlankOrPending(row.runtime) || Number(row.rating) <= 0 || isBlankOrPending(row.genre) ||
+    isBlankOrPending(row.director) || parsedArray(row.cast_json).length === 0 || isBlankOrPending(row.cast_json) ||
+    parsedArray(row.languages_json).length === 0 || !metadataText(row.official_watch_url, 1000);
+}
+
+const METADATA_COLUMNS = [
+  'title', 'description', 'release_year', 'runtime', 'rating', 'genre', 'director',
+  'cast_json', 'languages_json', 'official_watch_url', 'poster', 'backdrop',
+];
 
 async function syncArtworkForMovie(ctx, row) {
   const updates = {};
@@ -146,6 +247,9 @@ async function syncArtworkForMovie(ctx, row) {
     }
     return metadata;
   };
+
+  const metadataUpdates = metadataUpdatesForMovie(row, needsMovieMetadata(row) ? await getMetadata() : null);
+  Object.assign(updates, metadataUpdates);
 
   for (const kind of ['poster', 'backdrop']) {
     const key = artworkKey(row.id, kind);
@@ -201,7 +305,7 @@ async function syncArtworkForMovie(ctx, row) {
     }
   }
 
-  const fields = Object.keys(updates);
+  const fields = METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(updates, field));
   if (fields.length) {
     const assignments = fields.map((field) => `${field} = ?`);
     await ctx.query(`UPDATE movies SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...fields.map((field) => updates[field]), row.id]);
@@ -210,7 +314,7 @@ async function syncArtworkForMovie(ctx, row) {
 }
 
 async function syncAllArtwork(ctx) {
-  const rows = await ctx.query("SELECT id, imdb_id, poster, backdrop FROM movies WHERE publication_status <> 'archived' ORDER BY id");
+  const rows = await ctx.query("SELECT id, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' ORDER BY id");
   let cursor = 0;
   const results = [];
   async function worker() {

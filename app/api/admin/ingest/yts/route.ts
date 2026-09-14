@@ -12,7 +12,7 @@ const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
 type YtsCast = { name?: unknown; character_name?: unknown; character?: unknown; url_small_image?: unknown; image?: unknown };
-type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown };
+type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown; yt_trailer_code?: unknown };
 type RuntimeEnv = { GITHUB_ACTIONS_TOKEN?: string; GITHUB_TOKEN?: string; GITHUB_REPOSITORY?: string; GITHUB_WORKFLOW_FILE?: string; GITHUB_WORKFLOW_REF?: string };
 const MAX_SUBREQUESTS = 40;
 const DEFAULT_REPOSITORY = 'TJ-Movie/mt';
@@ -50,7 +50,8 @@ function idsFromBody(body: unknown): string[] {
 async function fetchJson(imdbId: string): Promise<YtsMovie> {
   let response: Response;
   try {
-    response = await fetch(`${YTS_ENDPOINT}?imdb_id=${encodeURIComponent(imdbId)}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+    const query = new URLSearchParams({ imdb_id: imdbId, with_images: 'true', with_cast: 'true' });
+    response = await fetch(`${YTS_ENDPOINT}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
   } catch {
     throw new Error('YTS_UNREACHABLE: Metadata service could not be reached.');
   }
@@ -79,6 +80,11 @@ function castFromYts(value: unknown): (string | { actor: string; character?: str
     cast.push({ actor, character, image });
   }
   return cast;
+}
+
+function trailerUrl(value: unknown): string | undefined {
+  const code = text(value, 64);
+  return /^[A-Za-z0-9_-]{11}$/.test(code) ? `https://www.youtube.com/watch?v=${code}` : undefined;
 }
 
 function githubSettings(): Required<Pick<RuntimeEnv, 'GITHUB_ACTIONS_TOKEN' | 'GITHUB_REPOSITORY' | 'GITHUB_WORKFLOW_FILE' | 'GITHUB_WORKFLOW_REF'>> {
@@ -165,6 +171,8 @@ export async function POST(request: Request) {
         tagline: `Watch ${text(movie.title, 200)} in HD`,
         genre: mapGenres(movie.genres),
         director: text(movie.director, 160) || 'Pending editorial review',
+        officialWatchUrl: trailerUrl(movie.yt_trailer_code),
+        languages: (() => { const language = text(movie.language, 40); return language ? [language] : []; })(),
         poster,
         backdrop,
         cast: castFromYts(movie.cast),
