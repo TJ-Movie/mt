@@ -299,6 +299,12 @@ async function resolveImdbId(row) {
       console.warn(JSON.stringify({ event: "imdb-resolution-warning", id: row.id, source: "tmdb", error: safeError(error) }));
     }
   }
+  const knownFallbacks = { 7: "tt2025526", 10: "tt0499549" };
+  const knownFallback = validImdbId(knownFallbacks[Number(row.id)]) ? knownFallbacks[Number(row.id)] : null;
+  if (knownFallback) {
+    console.warn(JSON.stringify({ event: "imdb-resolution-fallback", id: row.id, title, imdbId: knownFallback, reason: "curated-title-identity-fallback" }));
+    return knownFallback;
+  }
   console.warn(JSON.stringify({ event: "imdb-resolution-failed", id: row.id, title, reason: "no_valid_imdb_id_from_omdb_or_tmdb" }));
   return null;
 }
@@ -591,11 +597,13 @@ async function processRow(s3, row) {
   if (!director) reasons.push("director_unresolved");
   if (!trailer) reasons.push("trailer_unresolved");
 
-  if (runExecute) {
+  if (runExecute && unresolved.length === 0) {
     await queryD1(
       "UPDATE movies SET director = ?, cast_json = ?, official_watch_url = ?, poster = ?, backdrop = ? WHERE id = ?",
       [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id],
     );
+  } else if (runExecute && unresolved.length) {
+    console.warn(JSON.stringify({ event: "d1-update-skipped", id: row.id, unresolved, reason: "required-fields-unresolved" }));
   }
   console.log(JSON.stringify({
     event: unresolved.length ? "movie-backfill-failed" : (runExecute ? "backfill-update" : "backfill-plan"),
