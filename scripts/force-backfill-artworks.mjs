@@ -8,15 +8,15 @@ const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const bucket = process.env.R2_BUCKET_NAME || "flixlyra-media";
 const siteOrigin = (process.env.PUBLIC_SITE_ORIGIN || "https://flixlyra.com").replace(/\/+$/, "");
-const publicBase = (process.env.R2_PUBLIC_BASE_URL || siteOrigin + "/media").replace(/\/+$/, "");
-const omdbApiKey = process.env.OMDB_API_KEY || process.env.OMDB_API_TOKEN || "";
-const tmdbApiToken = process.env.TMDB_API_TOKEN || process.env.TMDB_READ_ACCESS_TOKEN || "";
+const omdbApiKey = process.env.OMDB_API_KEY || "";
+const tmdbApiToken = process.env.TMDB_API_TOKEN || "";
 const tmdbApiKey = process.env.TMDB_API_KEY || "";
 const ytsEndpoints = [
   "https://movies-api.accel.li/api/v2/movie_details.json",
   "https://yts.mx/api/v2/movie_details.json",
 ];
 const maxImageBytes = 10 * 1024 * 1024;
+const imageTimeoutMs = 10000;
 const runExecute = process.argv.includes("--execute");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,20 +64,11 @@ function validYoutubeUrl(value) {
 function invalidArtworkValue(value) {
   const candidate = text(value, 1000);
   return !candidate || /(?:^|\/)(?:og|rsg|nss)\.png(?:$|[?#])/i.test(candidate) ||
-    candidate.includes("/media/movie-art/");
+    candidate.toLowerCase().includes("/media/movie-art/");
 }
 
 function allowedImageHost(hostname) {
-  const host = hostname.toLowerCase();
-  return host === "image.tmdb.org" ||
-    host === "m.media-amazon.com" || host.endsWith(".m.media-amazon.com") ||
-    host === "images.metahub.space" ||
-    host === "yts.gg" || host.endsWith(".yts.gg") ||
-    host === "yts.mx" || host.endsWith(".yts.mx") ||
-    host === "yts.lt" || host.endsWith(".yts.lt") ||
-    host === "yts.am" || host.endsWith(".yts.am") ||
-    host === "yts.rs" || host.endsWith(".yts.rs") ||
-    host === "yts.pm" || host.endsWith(".yts.pm");
+  return ["image.tmdb.org", "m.media-amazon.com", "yts.mx", "yts.lt", "img.yts.mx"].includes(hostname.toLowerCase());
 }
 
 function sourceImage(value) {
@@ -103,7 +94,13 @@ function tmdbImage(path, size = "original") {
 }
 
 function publicArtworkUrl(id, kind) {
-  return publicBase + "/artworks/" + Number(id) + "/" + kind + ".jpg";
+  return siteOrigin + "/media/artworks/" + Number(id) + "/" + kind + ".jpg";
+}
+
+function canonicalArtworkValue(value, id, kind) {
+  const candidate = text(value, 2000);
+  const path = "/media/artworks/" + Number(id) + "/" + kind + ".jpg";
+  return candidate === path || candidate === siteOrigin + path;
 }
 
 function storedArtworkUrl(value) {
@@ -120,21 +117,38 @@ function storedArtworkUrl(value) {
 }
 
 async function verifyImageResponse(response) {
-  if (!response.ok || response.status !== 200 || !response.body) {
+  if (response.status !== 200 || !response.body) {
     response.body?.cancel();
     return false;
   }
-  const contentType = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
-  const valid = ["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(contentType);
-  response.body.cancel();
-  return valid;
+  const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    response.body.cancel();
+    return false;
+  }
+  const reader = response.body.getReader();
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxImageBytes) {
+        await reader.cancel();
+        return false;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return total > 0;
 }
 
 async function verifyStoredArtwork(value) {
   const url = storedArtworkUrl(value);
   if (!url) return false;
   try {
-    const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(20000) });
+    const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
     return await verifyImageResponse(response);
   } catch {
     return false;
@@ -144,10 +158,10 @@ async function verifyStoredArtwork(value) {
 async function verifyPublicArtwork(url) {
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     try {
-      const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(20000) });
+      const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(imageTimeoutMs) });
       if (await verifyImageResponse(response)) return true;
     } catch {
-      // R2-backed public routes can need a short propagation retry.
+      // Allow brief R2/CDN propagation delay.
     }
     if (attempt < 4) await sleep(1500);
   }
@@ -155,21 +169,53 @@ async function verifyPublicArtwork(url) {
 }
 
 async function downloadImage(value) {
-  const source = sourceImage(value);
-  if (!source) throw new Error("IMAGE_SOURCE_NOT_ALLOWED");
-  const response = await fetch(source, { redirect: "follow", signal: AbortSignal.timeout(30000) });
-  if (!response.ok || !response.body) throw new Error("IMAGE_" + response.status);
-  const finalSource = sourceImage(response.url);
-  if (!finalSource) throw new Error("IMAGE_REDIRECT_NOT_ALLOWED");
-  const contentType = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
-  if (!["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(contentType)) {
-    throw new Error("IMAGE_CONTENT_TYPE_NOT_ALLOWED");
+  let current = sourceImage(value);
+  if (!current) throw new Error("IMAGE_SOURCE_NOT_ALLOWED");
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    const response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(imageTimeoutMs) });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      if (redirects === 3) throw new Error("IMAGE_TOO_MANY_REDIRECTS");
+      const location = response.headers.get("location");
+      response.body?.cancel();
+      const next = location ? sourceImage(new URL(location, current).toString()) : null;
+      if (!next) throw new Error("IMAGE_REDIRECT_NOT_ALLOWED");
+      current = next;
+      continue;
+    }
+    if (response.status !== 200 || !response.body) {
+      response.body?.cancel();
+      throw new Error("IMAGE_" + response.status);
+    }
+    const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+    if (!contentType.startsWith("image/")) {
+      response.body.cancel();
+      throw new Error("IMAGE_CONTENT_TYPE_NOT_ALLOWED");
+    }
+    const declared = Number(response.headers.get("content-length") || 0);
+    if (declared > maxImageBytes) {
+      response.body.cancel();
+      throw new Error("IMAGE_TOO_LARGE");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.byteLength > maxImageBytes) throw new Error("IMAGE_EMPTY_OR_TOO_LARGE");
+    return { bytes, contentType, source: current };
   }
-  const declared = Number(response.headers.get("content-length") || 0);
-  if (declared > maxImageBytes) throw new Error("IMAGE_TOO_LARGE");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.byteLength > maxImageBytes) throw new Error("IMAGE_EMPTY_OR_TOO_LARGE");
-  return { bytes, contentType, source: finalSource };
+  throw new Error("IMAGE_REDIRECT_NOT_ALLOWED");
+}
+
+async function verifyYoutubeOembed(value) {
+  if (!validYoutubeUrl(value)) return false;
+  try {
+    const endpoint = new URL("https://www.youtube.com/oembed");
+    endpoint.searchParams.set("url", text(value, 1000));
+    endpoint.searchParams.set("format", "json");
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(imageTimeoutMs) });
+    if (response.status !== 200) return false;
+    const payload = await response.json().catch(() => null);
+    return isRecord(payload) && Boolean(text(payload.title, 300));
+  } catch {
+    return false;
+  }
 }
 
 async function queryD1(sql, params = []) {
@@ -191,7 +237,7 @@ function lookupTitle(row) {
 }
 
 async function fetchYts(row) {
-  if (!validImdbId(row.imdb_id)) return null;
+  if (!validImdbId(row.imdb_id)) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "missing_imdb_id", source: "yts" })); return null; }
   const query = new URLSearchParams({ imdb_id: row.imdb_id, with_images: "true", with_cast: "true" });
   let lastError;
   for (const endpoint of ytsEndpoints) {
@@ -215,6 +261,7 @@ async function fetchYts(row) {
 
 async function fetchOmdb(row) {
   if (!omdbApiKey) return null;
+  if (!validImdbId(row.imdb_id)) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "missing_imdb_id", source: "omdb" })); return null; }
   const params = new URLSearchParams({ apikey: omdbApiKey, plot: "short" });
   if (validImdbId(row.imdb_id)) params.set("i", row.imdb_id);
   else {
@@ -229,7 +276,7 @@ async function fetchOmdb(row) {
       signal: AbortSignal.timeout(20000),
     });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || payload?.Response !== "True") return null;
+    if (!response.ok || payload?.Response !== "True") { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: response.status === 429 ? "omdb_429_rate_limit" : "omdb_response_unresolved", source: "omdb" })); return null; }
     if (validImdbId(row.imdb_id) && payload.imdbID && payload.imdbID !== row.imdb_id) return null;
     const cast = text(payload.Actors, 1000).split(",").map((name) => text(name, 120)).filter(Boolean).slice(0, 6);
     return {
@@ -255,72 +302,34 @@ async function tmdbRequest(path, params = {}) {
     headers,
     signal: AbortSignal.timeout(20000),
   });
-  if (!response.ok) throw new Error("TMDB_" + response.status);
+  if (!response.ok) throw new Error(response.status === 429 ? "TMDB_429_RATE_LIMIT" : "TMDB_" + response.status);
   return response.json();
 }
 
 async function fetchTmdb(row) {
   if (!tmdbApiToken && !tmdbApiKey) return null;
   try {
-    let result = null;
-    if (validImdbId(row.imdb_id)) {
-      const found = await tmdbRequest("/find/" + encodeURIComponent(row.imdb_id), {
-        external_source: "imdb_id",
-        language: "en-US",
-      });
-      result = found?.movie_results?.[0] || null;
-    }
-    if (!result) {
-      const title = lookupTitle(row);
-      if (!title) return null;
-      const found = await tmdbRequest("/search/movie", {
-        query: title,
-        include_adult: "false",
-        language: "en-US",
-        ...(Number(row.release_year) > 0 ? { year: String(row.release_year) } : {}),
-      });
-      result = found?.results?.[0] || null;
-    }
-    if (!result?.id) return null;
-    const detail = await tmdbRequest("/movie/" + result.id, {
-      append_to_response: "credits,videos",
-      language: "en-US",
-    });
-    const director = (detail.credits?.crew || []).find((person) => person.job === "Director")?.name || "";
-    const cast = (detail.credits?.cast || []).slice(0, 6).map((person) => {
-      const actor = text(person.name, 120);
-      if (!actor) return null;
-      const character = text(person.character, 120);
-      const image = tmdbImage(person.profile_path, "w185");
-      return { actor, ...(character ? { character } : {}), ...(image ? { image } : {}) };
-    }).filter(Boolean);
-    const videos = (detail.videos?.results || []).filter((video) =>
-      video.site === "YouTube" && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 32)));
-    const trailer = videos.find((video) => video.type === "Trailer" && video.official !== false) ||
-      videos.find((video) => video.type === "Trailer") || videos[0];
-    return {
-      provider: "tmdb",
-      poster: tmdbImage(detail.poster_path),
-      backdrop: tmdbImage(detail.backdrop_path),
-      director: text(director, 160),
-      cast,
-      trailer: trailer ? "https://www.youtube.com/watch?v=" + text(trailer.key, 32) : null,
-    };
+    if (!validImdbId(row.imdb_id)) return null;
+    const found = await tmdbRequest("/find/" + encodeURIComponent(row.imdb_id), { external_source: "imdb_id", language: "en-US" });
+    const result = found?.movie_results?.[0] || null;
+    if (!result?.id) { console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_movie_results_empty", source: "tmdb" })); return null; }
+    if (!result.backdrop_path) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_backdrop_path_null", source: "tmdb" }));
+    const videosPayload = await tmdbRequest("/movie/" + result.id + "/videos", { language: "en-US" });
+    const videos = (videosPayload?.results || []).filter((video) => video.site === "YouTube" && /^[A-Za-z0-9_-]{11}$/.test(text(video.key, 32)));
+    const trailer = videos.find((video) => video.type === "Trailer" && video.official === true) || videos.find((video) => video.type === "Trailer");
+    if (!trailer) console.warn(JSON.stringify({ event: "provider-failure", id: row.id, reason: "tmdb_no_youtube_trailer", source: "tmdb" }));
+    return { provider: "tmdb", poster: tmdbImage(result.poster_path), backdrop: tmdbImage(result.backdrop_path), director: "", cast: [], trailer: trailer ? "https://www.youtube.com/watch?v=" + text(trailer.key, 32) : null };
   } catch (error) {
     console.warn(JSON.stringify({ event: "tmdb-warning", id: row.id, error: safeError(error) }));
     return null;
   }
 }
 
-function ytsImageSources(movie) {
+function ytsImageSources(movie, kind) {
   if (!isRecord(movie)) return [];
-  const fields = [
-    "large_cover_image", "medium_cover_image",
-    "background_image", "background_image_original",
-    "poster_url", "poster", "tmdb_poster_url", "tmdb_poster_path",
-    "backdrop_url", "backdrop", "tmdb_backdrop_url", "tmdb_backdrop_path",
-    "imdb_poster_url", "imdb_backdrop_url",
-  ];
+  const fields = kind === "poster"
+    ? ["large_cover_image", "medium_cover_image", "background_image", "background_image_original"]
+    : ["background_image_original", "background_image", "large_cover_image", "medium_cover_image"];
   return [...new Set(fields.map((field) => sourceImageCandidate(movie[field])).filter(Boolean))];
 }
 
@@ -334,7 +343,7 @@ function providerImageSources(provider, kind) {
 
 async function repairArtwork(s3, row, kind, yts, providers) {
   const sources = [
-    ...ytsImageSources(yts),
+    ...ytsImageSources(yts, kind),
     ...providers.flatMap((provider) => providerImageSources(provider, kind)),
   ];
   const uniqueSources = [...new Set(sources)];
@@ -451,77 +460,86 @@ async function providerMetadata(row, yts, needsProvider) {
 }
 
 async function processRow(s3, row) {
-  const posterOk = await verifyStoredArtwork(row.poster);
-  const backdropOk = await verifyStoredArtwork(row.backdrop);
-  const needsProvider = !posterOk || !backdropOk || invalidDirector(row.director) || !validYoutubeUrl(row.official_watch_url);
+  const posterOk = !invalidArtworkValue(row.poster) && canonicalArtworkValue(row.poster, row.id, "poster") && await verifyPublicArtwork(publicArtworkUrl(row.id, "poster"));
+  const backdropOk = !invalidArtworkValue(row.backdrop) && canonicalArtworkValue(row.backdrop, row.id, "backdrop") && await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop"));
+  const trailerOk = await verifyYoutubeOembed(row.official_watch_url);
+  if (posterOk && backdropOk && !invalidDirector(row.director) && trailerOk) return { id: row.id, updates: {}, unresolved: [], reasons: [] };
+
+  const reasons = [];
   const yts = await fetchYts(row);
-  const providers = await providerMetadata(row, yts, needsProvider);
-  const updates = {};
-  let poster = row.poster;
-  let backdrop = row.backdrop;
-  if (!posterOk) {
-    poster = await repairArtwork(s3, row, "poster", yts, providers);
-    if (poster) updates.poster = poster;
-  }
-  if (!backdropOk) {
-    backdrop = await repairArtwork(s3, row, "backdrop", yts, providers);
-    if (backdrop) updates.backdrop = backdrop;
-  }
-
-  if (invalidDirector(row.director)) {
-    const candidates = [ytsDirector(yts), ...providers.map((provider) => provider.director)];
-    const director = candidates.find((candidate) => !invalidDirector(candidate));
-    if (director) updates.director = director;
-  }
-  if (!validYoutubeUrl(row.official_watch_url)) {
-    const trailer = ytsTrailer(yts) || providers.map((provider) => provider.trailer).find(validYoutubeUrl);
-    if (trailer) updates.official_watch_url = trailer;
-  }
-  if (!metadataCast(row.cast_json).length) {
-    const ytsCastValues = ytsCast(yts);
-    const cast = ytsCastValues.length ? ytsCastValues : providers.flatMap((provider) => metadataCast(provider.cast));
-    if (cast.length) updates.cast_json = JSON.stringify(cast);
-  }
-
-  const fields = Object.entries(updates);
-  if (fields.length) {
-    console.log(JSON.stringify({
-      event: runExecute ? "backfill-update" : "backfill-plan",
-      id: row.id,
-      imdbId: row.imdb_id,
-      fields: fields.map(([field]) => field),
-    }));
-    if (runExecute) {
-      await queryD1(
-        "UPDATE movies SET " + fields.map(([field]) => field + " = ?").join(", ") +
-        ", revision = revision + 1, updated_at = ? WHERE id = ?",
-        [...fields.map(([, value]) => value), new Date().toISOString(), row.id],
-      );
+  const providers = await providerMetadata(row, yts, true);
+  const poster = posterOk ? text(row.poster) : await repairArtwork(s3, row, "poster", yts, providers);
+  const backdrop = backdropOk ? text(row.backdrop) : await repairArtwork(s3, row, "backdrop", yts, providers);
+  const director = invalidDirector(row.director)
+    ? [ytsDirector(yts), ...providers.map((provider) => provider.director)].find((value) => !invalidDirector(value)) || null
+    : text(row.director, 160);
+  let trailer = trailerOk ? text(row.official_watch_url) : null;
+  if (!trailer) {
+    for (const candidate of [ytsTrailer(yts), ...providers.map((provider) => provider.trailer)].filter(Boolean)) {
+      if (await verifyYoutubeOembed(candidate)) { trailer = candidate; break; }
     }
   }
-
-  const finalPoster = updates.poster || row.poster;
-  const finalBackdrop = updates.backdrop || row.backdrop;
-  const finalDirector = updates.director || row.director;
-  const finalTrailer = updates.official_watch_url || row.official_watch_url;
+  const currentCast = metadataCast(row.cast_json);
+  const cast = currentCast.length ? currentCast : [ytsCast(yts), ...providers.map((provider) => metadataCast(provider.cast))].flat().filter(Boolean).slice(0, 6);
+  const updates = {
+    director: director || null,
+    cast_json: cast.length ? JSON.stringify(cast) : text(row.cast_json) || null,
+    official_watch_url: trailer || null,
+    poster: poster || null,
+    backdrop: backdrop || null,
+  };
   const unresolved = [];
-  if (!(updates.poster ? await verifyPublicArtwork(updates.poster) : posterOk)) unresolved.push("poster");
-  if (!(updates.backdrop ? await verifyPublicArtwork(updates.backdrop) : backdropOk)) unresolved.push("backdrop");
-  if (invalidDirector(finalDirector)) unresolved.push("director");
-  if (!validYoutubeUrl(finalTrailer)) unresolved.push("youtube");
-  return { id: row.id, updates, unresolved, finalPoster, finalBackdrop, finalDirector, finalTrailer };
+  if (!updates.poster || !(await verifyPublicArtwork(publicArtworkUrl(row.id, "poster")))) unresolved.push("poster");
+  if (!updates.backdrop || !(await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop")))) unresolved.push("backdrop");
+  if (invalidDirector(updates.director)) unresolved.push("director");
+  if (!trailer) unresolved.push("official_watch_url");
+  if (!poster) reasons.push("poster_unresolved");
+  if (!backdrop) reasons.push("backdrop_unresolved");
+  if (!director) reasons.push("director_unresolved");
+  if (!trailer) reasons.push("trailer_unresolved");
+
+  if (runExecute) {
+    await queryD1(
+      "UPDATE movies SET director = ?, cast_json = ?, official_watch_url = ?, poster = ?, backdrop = ? WHERE id = ?",
+      [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id],
+    );
+  }
+  console.log(JSON.stringify({
+    event: unresolved.length ? "movie-backfill-failed" : (runExecute ? "backfill-update" : "backfill-plan"),
+    id: row.id,
+    imdbId: row.imdb_id,
+    fields: Object.keys(updates),
+    unresolved,
+    reasons,
+  }));
+  return { id: row.id, updates, unresolved, reasons };
+}
+
+async function auditAllMovies(rows) {
+  const audit = [];
+  for (const row of rows) {
+    const failures = [];
+    if (invalidDirector(row.director)) failures.push("director");
+    for (const kind of ["poster", "backdrop"]) {
+      const valid = !invalidArtworkValue(row[kind]) && canonicalArtworkValue(row[kind], row.id, kind) && await verifyPublicArtwork(publicArtworkUrl(row.id, kind));
+      if (!valid) failures.push(kind);
+    }
+    if (!(await verifyYoutubeOembed(row.official_watch_url))) failures.push("official_watch_url");
+    audit.push({ id: row.id, title: text(row.title, 45), director: !invalidDirector(row.director), poster: !failures.includes("poster"), backdrop: !failures.includes("backdrop"), trailer: !failures.includes("official_watch_url"), failures: failures.join(",") });
+  }
+  console.table(audit);
+  return audit;
 }
 
 async function main() {
   if (!accountId || !d1Token) throw new Error("Cloudflare account ID and D1 API token are required");
-  if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) {
-    throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
-  }
-
+  if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
   await resetTransferLocks();
-  const rows = await queryD1(
-    "SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id",
-  );
+  if (!omdbApiKey || (!tmdbApiKey && !tmdbApiToken)) {
+    console.error(JSON.stringify({ event: "credential-guard-failed", required: ["OMDB_API_KEY", "TMDB_API_KEY or TMDB_API_TOKEN"] }));
+    process.exit(1);
+  }
+  const rows = await queryD1("SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
   const s3 = runExecute ? new S3Client({
     region: "auto",
     endpoint: "https://" + accountId + ".r2.cloudflarestorage.com",
@@ -530,27 +548,28 @@ async function main() {
   }) : null;
   const results = [];
   for (const row of rows) {
-    try {
-      results.push(await processRow(s3, row));
-    } catch (error) {
-      results.push({ id: row.id, updates: {}, unresolved: ["row-error"], error: safeError(error) });
-      console.warn(JSON.stringify({ event: "backfill-row-failed", id: row.id, error: safeError(error) }));
+    try { results.push(await processRow(s3, row)); }
+    catch (error) {
+      const failure = { id: row.id, updates: {}, unresolved: ["row-error"], reasons: [safeError(error)] };
+      results.push(failure);
+      console.warn(JSON.stringify({ event: "movie-backfill-failed", id: row.id, reasons: failure.reasons }));
     }
   }
   s3?.destroy();
-  const unresolved = results.filter((result) => result.unresolved.length > 0);
-  const summary = {
+  const refreshedRows = await queryD1("SELECT id, title, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
+  const audit = await auditAllMovies(refreshedRows);
+  const unresolved = results.filter((result) => result.unresolved.length);
+  const auditFailures = audit.filter((result) => result.failures);
+  console.log(JSON.stringify({
     event: "force-backfill-complete",
     mode: runExecute ? "execute" : "dry-run",
     totalMovies: rows.length,
-    rowsWithChanges: results.filter((result) => Object.keys(result.updates).length > 0).length,
+    rowsWithChanges: results.filter((result) => Object.keys(result.updates).length).length,
     unresolvedMovies: unresolved.length,
-    unresolved: unresolved.map((result) => ({ id: result.id, fields: result.unresolved, error: result.error })),
-  };
-  console.log(JSON.stringify(summary));
-  if (unresolved.length) {
-    throw new Error("STRICT_BACKFILL_UNRESOLVED: " + JSON.stringify(summary.unresolved));
-  }
+    postAuditFailures: auditFailures.length,
+    unresolved: unresolved.map((result) => ({ id: result.id, fields: result.unresolved, reasons: result.reasons })),
+  }));
+  if (unresolved.length || auditFailures.length) process.exitCode = 1;
 }
 
 main().catch((error) => {
