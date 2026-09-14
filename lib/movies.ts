@@ -7,6 +7,7 @@ export const publicationStatuses = ['draft', 'published', 'archived'] as const;
 export type PublicationStatus = (typeof publicationStatuses)[number];
 
 export type Movie = {
+  availableQualities?: ('720p' | '1080p')[];
   streamingSources?: { label: string; url: string }[];
   episodes?: { season: number; episode: number; title: string; url?: string; thumbnail?: string; backdrop?: string; description?: string; rating?: number; streamingSources?: { label: string; url: string }[]; downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string; r2StorageKey?: string; r2Bytes?: number }[]; downloadStatus?: 'available' | 'pending' }[];
   downloadStatus?: 'available' | 'pending';

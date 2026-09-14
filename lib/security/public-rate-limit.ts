@@ -24,7 +24,7 @@ export function isSameOriginRequest(request: Request): boolean {
 
 export async function enforcePublicRateLimit(
   request: Request,
-  scope: 'comments' | 'source-reports' | 'downloads',
+  scope: 'comments' | 'source-reports' | 'downloads' | 'catalogue',
   limit: number,
   windowSeconds: number,
 ): Promise<RateLimitResult> {

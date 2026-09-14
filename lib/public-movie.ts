@@ -22,7 +22,7 @@ export type PublicMovie = Pick<
   | 'poster'
   | 'backdrop'
   | 'featured'
->;
+> & { available_qualities: ('720p' | '1080p')[] };
 
 export function toPublicMovie(movie: Movie): PublicMovie {
   return {
@@ -41,5 +41,6 @@ export function toPublicMovie(movie: Movie): PublicMovie {
     poster: movie.poster,
     backdrop: movie.backdrop,
     featured: movie.featured,
+    available_qualities: [...(movie.availableQualities ?? [])],
   };
 }
