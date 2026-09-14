@@ -417,11 +417,11 @@ function ytsTrailer(movie) {
 
 async function resetTransferLocks() {
   const locks = await queryD1(
-    "SELECT id FROM movies WHERE id = 25 OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
+    "SELECT id FROM movies WHERE id = 25 OR transfer_token IS NOT NULL OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
   );
   if (locks.length) {
     await queryD1(
-      "UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE id = 25 OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
+      "UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE id = 25 OR transfer_token IS NOT NULL OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
     );
   }
   console.log(JSON.stringify({
