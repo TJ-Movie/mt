@@ -1,6 +1,7 @@
 import 'server-only';
 import { env } from 'cloudflare:workers';
 import { movies as starterMovies, type Movie, type PublicationStatus, type RightsStatus } from '../lib/movies.ts';
+import { allLanguages } from '../lib/catalogue-options.ts';
 import { requiresRightsReset, type AdminMovieInput } from '../lib/admin/movie-input.ts';
 import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
@@ -143,6 +144,12 @@ function safeStringArray(json: string): string[] {
     return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value.slice(0, 20) : [];
   } catch { return []; }
 }
+function safeLanguages(json: string): string[] {
+  return [...new Set(safeStringArray(json)
+    .flatMap((value) => value.split(/[,;|/]+/).map((item) => item.normalize('NFKC').trim()).filter(Boolean)))]
+    .filter((value) => allLanguages.includes(value))
+    .slice(0, 20);
+}
 function safeCast(json: string): (string | { actor: string; character?: string; image?: string })[] {
   try {
     const value: unknown = JSON.parse(json);
@@ -226,7 +233,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     genre: row.genre,
     director: row.director,
     cast: safeCast(row.cast_json),
-    languages: safeStringArray(row.languages_json),
+    languages: safeLanguages(row.languages_json),
     poster: row.poster,
     backdrop: row.backdrop,
     featured: row.featured === 1,

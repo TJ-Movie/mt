@@ -11,6 +11,15 @@ export const allLanguages: readonly string[] = [
   'Japanese',
   'Korean',
   'German',
+  'Italian',
+  'Chinese',
+  'Russian',
+  'Turkish',
+  'Thai',
+  'Vietnamese',
+  'Indonesian',
+  'Malayalam',
+  'Telugu',
 ];
 
 export const genres: readonly string[] = [

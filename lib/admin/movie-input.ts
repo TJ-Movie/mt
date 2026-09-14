@@ -39,8 +39,8 @@ export type ValidationResult =
   | { ok: false; errors: Record<string, string> };
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const LOCAL_ASSET = /^\/(?:og\.png|media\/(?:movie-art\/[a-f0-9-]{36}|(?:posters|backdrops)\/tt\d{7,10}|cast\/tt\d{7,10}-[1-6])\.(?:jpg|png))$/;
-const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
+const LOCAL_ASSET = /^\/(?:og\.png|media\/(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)))$/;
+const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|(?:[a-z0-9-]+\.)?yts\.(?:mx|lt|am|rs|pm)\/[^\s]+|(?:flixlyra\.com|flixlyra\.flixlyra-platform-326e\.workers\.dev)\/media\/(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png))|[a-z0-9-]+\.r2\.dev\/(?:media\/)?artworks\/\d+\/(?:poster|backdrop)\.jpg|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
 const validImage = (value: string) => LOCAL_ASSET.test(value) || REMOTE_IMAGE.test(value);
 
 type RightsControlledFields = Pick<AdminMovieInput,
@@ -95,7 +95,14 @@ function listField(source: Record<string, unknown>, key: string, allowed: readon
   const raw = source[key];
   if (raw === undefined || raw === null || raw === '') return required ? (errors[key] = 'Select at least one value.', []) : [];
   if (!Array.isArray(raw) || raw.length < (required ? 1 : 0) || raw.length > 20) { errors[key] = required ? 'Select between 1 and 20 values.' : 'Select no more than 20 values.'; return []; }
-  const values = raw.map((item) => typeof item === 'string' ? item.normalize('NFKC').trim() : '');
+  const values = raw.flatMap((item) => {
+    if (typeof item !== 'string') return [''];
+    const value = item.normalize('NFKC').trim();
+    // YTS can return several subtitle languages as one comma-separated
+    // string. Normalize that legacy/API shape to the checkbox values used by
+    // the admin form before checking the allowlist.
+    return key === 'languages' ? value.split(/[,;|/]+/).map((part) => part.trim()) : [value];
+  });
   if (values.some((item) => !item || item.length > 100 || hasControlCharacter(item))) errors[key] = 'Contains an invalid value.';
   if (allowed && values.some((item) => !allowed.includes(item))) errors[key] = 'Contains an unsupported value.';
   return [...new Set(values)];

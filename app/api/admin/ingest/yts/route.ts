@@ -1,5 +1,6 @@
 import { upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
 import { env } from 'cloudflare:workers';
+import { allLanguages } from '../../../../../lib/catalogue-options';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 
 const DEFAULT_IMDB_IDS = [
@@ -19,6 +20,9 @@ const DEFAULT_REPOSITORY = 'TJ-Movie/mt';
 const DEFAULT_WORKFLOW = 'r2-sync.yml';
 const DEFAULT_REF = 'main';
 function formatRuntime(minutes: number): string { return minutes > 0 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : ''; }
+function languagesFromYts(value: unknown): string[] {
+  return [...new Set(text(value, 200).split(/[,;|/]+/).map((item) => item.trim()).filter((item) => allLanguages.includes(item)))].slice(0, 20);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
@@ -172,7 +176,7 @@ export async function POST(request: Request) {
         genre: mapGenres(movie.genres),
         director: text(movie.director, 160) || 'Pending editorial review',
         officialWatchUrl: trailerUrl(movie.yt_trailer_code),
-        languages: (() => { const language = text(movie.language, 40); return language ? [language] : []; })(),
+        languages: languagesFromYts(movie.language),
         poster,
         backdrop,
         cast: castFromYts(movie.cast),

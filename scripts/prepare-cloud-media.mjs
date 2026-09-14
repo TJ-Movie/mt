@@ -16,6 +16,7 @@ const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 2;
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
+const YTS_FALLBACK_ENDPOINT = 'https://yts.mx/api/v2/movie_details.json';
 const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
 const ARTWORK_CONCURRENCY = 4;
 const execFileAsync = promisify(execFile);
@@ -124,16 +125,22 @@ async function downloadArtwork(url) {
 
 async function fetchArtworkMetadata(imdbId) {
   if (!/^tt\d{7,10}$/.test(String(imdbId || ''))) return null;
-  try {
-    const query = new URLSearchParams({ imdb_id: String(imdbId), with_images: 'true', with_cast: 'true' });
-    const response = await fetch(`${YTS_ENDPOINT}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) throw new Error(`YTS_ARTWORK_${response.status}`);
-    const payload = await response.json();
-    return isRecord(payload?.data?.movie) ? payload.data.movie : null;
-  } catch (error) {
-    console.warn(JSON.stringify({ event: 'artwork-metadata-warning', imdbId, error: safeLogError(error) }));
-    return null;
+  const query = new URLSearchParams({ imdb_id: String(imdbId), with_images: 'true', with_cast: 'true' });
+  let lastError;
+  for (const endpoint of [YTS_ENDPOINT, YTS_FALLBACK_ENDPOINT]) {
+    try {
+      const response = await fetch(`${endpoint}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`YTS_ARTWORK_${response.status}`);
+      const payload = await response.json();
+      const movie = isRecord(payload?.data?.movie) ? payload.data.movie : null;
+      if (movie) return movie;
+      throw new Error('YTS_ARTWORK_INVALID_RESPONSE');
+    } catch (error) {
+      lastError = error;
+    }
   }
+  console.warn(JSON.stringify({ event: 'artwork-metadata-warning', imdbId, error: safeLogError(lastError || new Error('YTS_ARTWORK_UNAVAILABLE')) }));
+  return null;
 }
 
 function metadataText(value, maximum) {

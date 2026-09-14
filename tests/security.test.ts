@@ -166,6 +166,18 @@ void test('admin movie validation accepts a complete rights-cleared record', () 
   assert.equal(result.ok, true);
 });
 
+void test('admin movie validation normalizes YTS language lists and R2 artwork URLs', () => {
+  const result = validateAdminMovieInput({
+    ...validAdminMovie,
+    languages: ['English, Spanish'],
+    poster: '/media/artworks/42/poster.jpg',
+    backdrop: 'https://flixlyra.com/media/artworks/42/backdrop.jpg',
+  }, Date.parse('2026-09-03T00:00:00.000Z'));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.value.languages, ['English', 'Spanish']);
+});
+
 void test('admin movie validation allows optional editorial fields to remain blank', () => {
   const result = validateAdminMovieInput({ ...validAdminMovie, tagline: '', description: '', runtime: '', director: '', cast: [] }, Date.parse('2026-09-03T00:00:00.000Z'));
   assert.equal(result.ok, true);
