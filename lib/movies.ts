@@ -22,7 +22,7 @@ export type Movie = {
   rating: number;
   genre: string;
   director: string;
-  cast: (string | { actor: string; character?: string; image?: string })[];
+  cast: (string | { actor: string; character?: string; image?: string; profileUrl?: string; profileR2Key?: string; source?: 'yts' | 'tmdb' | 'omdb' | 'manual'; manualOverride?: boolean })[];
   languages: readonly string[];
   poster: string;
   backdrop: string;

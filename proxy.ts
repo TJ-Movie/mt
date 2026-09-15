@@ -16,7 +16,7 @@ function sanitizePathname(pathname: string): string {
     } catch {
       return '/';
     }
-    if (decoded.includes('/') || decoded.includes('\\') || /[\u0000-\u001f\u007f]/.test(decoded)) return '/';
+    if (decoded.includes('/') || decoded.includes('\\') || /\p{Cc}/u.test(decoded)) return '/';
     safeSegments.push(encodeURIComponent(decoded));
   }
   return `/${safeSegments.join('/')}`;
@@ -41,7 +41,7 @@ async function missingPublicMovieRoute(request: NextRequest): Promise<NextRespon
   } catch {
     return new NextResponse('Not Found', { status: 404 });
   }
-  if (!slug || slug.includes('/') || slug.includes('\\') || /[\u0000-\u001f\u007f]/.test(slug)) {
+  if (!slug || slug.includes('/') || slug.includes('\\') || /\p{Cc}/u.test(slug)) {
     return new NextResponse('Not Found', { status: 404 });
   }
 

@@ -9,6 +9,17 @@ export function AdminSessionGuard({ children }: { children: React.ReactNode }) {
   const [locked, setLocked] = useState(false);
 
   useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const request = input instanceof Request ? input : null;
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : request?.url ?? '';
+      const method = (init?.method ?? request?.method ?? 'GET').toUpperCase();
+      if (!url.includes('/api/admin/') || !['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return originalFetch(input, init);
+      const token = document.cookie.match(/(?:^|;\s*)__Host-flixlyra-csrf=([^;]+)/)?.[1];
+      const headers = new Headers(init?.headers ?? request?.headers);
+      if (token) headers.set('X-CSRF-Token', decodeURIComponent(token));
+      return originalFetch(input, { ...init, headers });
+    };
     let timer: number | undefined;
     const reset = () => {
       if (locked) return;
@@ -22,6 +33,7 @@ export function AdminSessionGuard({ children }: { children: React.ReactNode }) {
     EVENTS.forEach((event) => window.addEventListener(event, reset, { passive: true }));
     reset();
     return () => {
+      window.fetch = originalFetch;
       if (timer !== undefined) window.clearTimeout(timer);
       EVENTS.forEach((event) => window.removeEventListener(event, reset));
     };

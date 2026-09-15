@@ -13,6 +13,25 @@ export const ADMIN_NO_STORE_HEADERS = {
   'X-Robots-Tag': 'noindex, nofollow, noarchive',
 };
 
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function cookieValue(request: Request, name: string): string | null {
+  const cookie = request.headers.get('cookie') ?? '';
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  let difference = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return difference === 0;
+}
+
 async function enforceAdminWriteRateLimit(request: Request, userId: string): Promise<Response | null> {
   const windowSeconds = 60;
   const limit = 30;
@@ -52,6 +71,13 @@ export async function authorizeAdminRequest(request: Request, write = false): Pr
     (fetchSite !== null && fetchSite !== 'same-origin') ||
     request.headers.get('x-sublyra-action') !== 'admin-write'
   ) return { response: Response.json({ error: 'Request rejected.' }, { status: 403, headers: ADMIN_NO_STORE_HEADERS }) };
+  if (MUTATION_METHODS.has(request.method.toUpperCase())) {
+    const supplied = request.headers.get('x-csrf-token') ?? '';
+    const expected = cookieValue(request, '__Host-flixlyra-csrf') ?? '';
+    if (!/^[a-f0-9-]{36}$/.test(supplied) || !/^[a-f0-9-]{36}$/.test(expected) || !constantTimeEqual(supplied, expected)) {
+      return { response: Response.json({ error: 'CSRF validation failed.' }, { status: 403, headers: ADMIN_NO_STORE_HEADERS }) };
+    }
+  }
   const limited = await enforceAdminWriteRateLimit(request, user.userId);
   if (limited) return { response: limited };
   return { user };

@@ -564,17 +564,13 @@ function ytsTrailer(movie) {
   return /^[A-Za-z0-9_-]{11}$/.test(code) ? "https://www.youtube.com/watch?v=" + code : null;
 }
 
-async function resetTransferLocks() {
+async function diagnoseTransferLocks() {
   const locks = await queryD1(
     "SELECT id FROM movies WHERE id = 25 OR transfer_token IS NOT NULL OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
   );
-  if (locks.length) {
-    await queryD1(
-      "UPDATE movies SET transfer_token = NULL, transfer_lease_until = NULL, transfer_error = NULL WHERE id = 25 OR transfer_token IS NOT NULL OR (transfer_lease_until IS NOT NULL AND transfer_lease_until < unixepoch())",
-    );
-  }
   console.log(JSON.stringify({
-    event: "transfer-locks-reset",
+    event: "transfer-lease-diagnostic",
+    dry_run: true,
     count: locks.length,
     ids: locks.map((row) => row.id),
     schema: "transfer_token/transfer_lease_until",
@@ -583,7 +579,7 @@ async function resetTransferLocks() {
 
 async function releaseLocksBestEffort() {
   if (!accountId || !d1Token) return;
-  try { await resetTransferLocks(); }
+  try { await diagnoseTransferLocks(); }
   catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeError(error) })); }
 }
 let shutdownStarted = false;
@@ -704,7 +700,7 @@ async function main() {
   let s3 = null;
   try {
   if (!accountId || !d1Token) throw new Error("Cloudflare account ID and D1 API token are required");
-  await resetTransferLocks();
+  await diagnoseTransferLocks();
   if (!omdbApiKey || (!tmdbApiKey && !tmdbApiToken)) {
     console.error(JSON.stringify({ event: "credential-guard-failed", required: ["OMDB_API_KEY", "TMDB_API_KEY or TMDB_API_TOKEN"] }));
     process.exit(1);

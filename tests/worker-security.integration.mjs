@@ -38,17 +38,18 @@ void test('homepage returns hardened headers without private movie fields', asyn
   );
 });
 
-void test('catalogue API enforces DTO and resource bounds', async () => {
+void test('catalogue API fails closed with a JSON rate-limit contract', async () => {
   const response = await request('/api/movies?page=2&limit=2');
   const body = await response.text();
   const data = JSON.parse(body);
 
-  assert.equal(response.status, 200);
-  // The production bundle is deliberately tested without a D1 binding: it must
-  // return an empty catalogue rather than resurrecting static/archived records.
-  assert.equal(data.results.length, 0);
-  assert.equal(data.pagination.total, 0);
-  assert.equal(response.headers.get('ratelimit-policy'), '60;w=60');
+  // The production bundle is deliberately tested without a D1 binding: the
+  // unavailable public rate-limit backend must fail closed with JSON.
+  assert.equal(response.status, 429);
+  assert.deepEqual(data, { error: 'Try again later' });
+  assert.equal(response.headers.get('ratelimit-policy'), '120;w=60');
+  assert.equal(response.headers.get('ratelimit-remaining'), '0');
+  assert.ok(response.headers.get('retry-after'));
   assert.doesNotMatch(
     body,
     /officialWatchUrl|telegramUrl|rightsReference|rightsReviewer/,
@@ -116,7 +117,7 @@ void test('studio and admin APIs deny unauthenticated or cross-site access', asy
     body: '{}',
   });
   // Legacy OpenAI identity headers are no longer authentication evidence.
-  assert.equal(crossSite.status, 404);
+  assert.equal(crossSite.status, 403);
 });
 
 void test('anonymous write routes reject requests without same-origin browser evidence', async () => {

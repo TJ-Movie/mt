@@ -95,6 +95,7 @@ test('workflow uses trusted triggers, pinned actions, scoped secrets and finite 
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   const job = workflow.jobs.transfer;
   assert.equal(job['timeout-minutes'], 180);
+  assert.equal(job.if, false);
   for (const step of job.steps.filter(step => step.uses)) assert.match(step.uses, /@[a-f0-9]{40}$/);
   const step = job.steps.find(step => step.env?.R2_ACCESS_KEY_ID && step.run?.includes('scripts/magnet-to-r2.mjs'));
   assert.equal(step.env.R2_ACCOUNT_ID, '${{ secrets.CLOUDFLARE_ACCOUNT_ID }}');

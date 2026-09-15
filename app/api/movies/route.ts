@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   if (type && type !== 'all' && !contentTypes.includes(type as typeof contentTypes[number])) return badRequest('content_type');
   if (page === null || limit === null) return badRequest('pagination_bounds');
   const rate = await enforcePublicRateLimit(request, 'catalogue', 120, 60);
-  if (!rate.allowed) return new Response('Try again later', { status: 429, headers: { ...ERROR_HEADERS, ...rate.headers } });
+  if (!rate.allowed) return Response.json({ error: 'Try again later' }, { status: 429, headers: { ...ERROR_HEADERS, ...rate.headers } });
 
   const movies = await listPublishedMovies();
   const filtered = movies.filter((movie) => {

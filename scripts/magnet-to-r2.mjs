@@ -275,6 +275,7 @@ async function transfer(row, s3, bucket, limits, requestedQuality) {
 }
 
 export async function main() {
+  throw new Error('LEGACY_MEDIA_PIPELINE_DISABLED_USE_R2_SYNC');
   const limits = transferLimits();
   const requestedQuality = /^(720p|1080p)$/.test(process.env.TRANSFER_QUALITY || '') ? process.env.TRANSFER_QUALITY : null;
   const requestedMovieIds = new Set((process.env.TRANSFER_MOVIE_IDS || '').split(',')

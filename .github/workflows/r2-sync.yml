@@ -8,12 +8,22 @@ on:
         required: false
         default: false
         type: boolean
+      movie_ids:
+        description: 'Comma-separated movie IDs for a scoped retry'
+        required: false
+        default: ''
+        type: string
+      quality:
+        description: 'Quality for a scoped retry'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: r2-sync
+  group: flixlyra-media-production
   cancel-in-progress: true
 
 jobs:
@@ -85,7 +95,8 @@ jobs:
         timeout-minutes: 15
         run: npm run typecheck
 
-      - name: Force Backfill Placeholder Artworks & Metadata to D1
+      - name: Force Backfill Placeholder Artworks & Metadata to D1 (disabled in Phase 2)
+        if: false
         timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.R2_ACCOUNT_ID || secrets.CF_ACCOUNT_ID }}
@@ -114,7 +125,9 @@ jobs:
           OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
-        run: node scripts/prepare-cloud-media.mjs --max-movies=30
+          TRANSFER_MOVIE_IDS: ${{ inputs.movie_ids }}
+          TRANSFER_QUALITY: ${{ inputs.quality }}
+        run: node scripts/prepare-cloud-media.mjs --max-movies=1
 
       - name: Verify Prepared Media Inputs
         timeout-minutes: 15
@@ -134,9 +147,10 @@ jobs:
           OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
-        run: node scripts/smart-r2-sync.mjs --manifest=tmp/r2-video-manifest.json --media-dir=tmp/media --quality=720p,1080p --concurrency=5 --force-commit
+        run: node scripts/smart-r2-sync.mjs --manifest=tmp/r2-video-manifest.json --media-dir=tmp/media --quality=720p,1080p --concurrency=1
 
       - name: Clean up orphaned R2 objects
+        if: inputs.purge_orphans == true
         timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

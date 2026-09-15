@@ -5,6 +5,8 @@ import { getRuntimeControls } from './security/runtime-controls';
 import { rightsBlockers, validVideoRecord } from './download-readiness';
 import type { Movie } from './movies.ts';
 
+export function signedUrlTtlSeconds(): number { const value = Number(process.env.R2_SIGNED_URL_TTL_SECONDS); return Number.isInteger(value) && value >= 60 && value <= 900 ? value : 120; }
+
 export function r2SigningConfigured(): boolean {
   return Boolean(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY &&
     /^[a-f0-9]{32}$/.test(process.env.R2_ACCOUNT_ID ?? '') && /^[a-z0-9-]+$/.test(process.env.R2_BUCKET_NAME ?? ''));
@@ -149,7 +151,7 @@ export async function signedVideoUrl(video: NonNullable<Awaited<ReturnType<typeo
   const title = video.movie.title.replace(/[\u0000-\u001f\u007f"\\/<>:|?*]/g, '_').slice(0, 120) || 'Movie';
   const ascii = title.replace(/[^\x20-\x7e]/g, '_');
   const url = new URL(`https://${account}.r2.cloudflarestorage.com/${bucket}/${video.key}`);
-  url.searchParams.set('X-Amz-Expires', '120');
+  url.searchParams.set('X-Amz-Expires', String(signedUrlTtlSeconds()));
   url.searchParams.set('response-content-type', 'video/mp4');
   url.searchParams.set('response-content-disposition', `attachment; filename="${ascii}.mp4"; filename*=UTF-8''${encodeURIComponent(title + '.mp4').replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16))}`);
   const client = new AwsClient({ accessKeyId, secretAccessKey, service: 's3', region: 'auto' });

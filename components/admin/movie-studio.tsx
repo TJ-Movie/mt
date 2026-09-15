@@ -92,6 +92,7 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string } | null>(null);
   const [error, setError] = useState('');
+  const [retrying, setRetrying] = useState('');
   async function check() {
     setBusy(true); setError(''); setResult(null);
     try {
@@ -103,6 +104,26 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
     } catch (err) { setError(err instanceof Error ? err.message : 'Check failed.'); }
     finally { setBusy(false); }
   }
+  async function retryQuality(quality: '720p' | '1080p') {
+    if (!id) return;
+    setRetrying(quality);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/movies/' + id + '/retry', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-sublyra-action': 'admin-write' },
+        body: JSON.stringify({ quality }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || 'Retry could not be started.');
+      await check();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Retry could not be started.');
+    } finally {
+      setRetrying('');
+    }
+  }
   return <section className="rounded-xl border border-white/15 p-4 md:col-span-2" aria-label="Direct download readiness">
     <h3 className="font-medium">Direct download readiness</h3>
     <p className="mt-2 text-sm text-white/60">Save your changes first. This checks the saved rights, transfer, R2 video and Worker signing configuration.</p>
@@ -112,6 +133,12 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
       {result && <><p>Transfer: {result.transfer}</p>
         <ul className="mt-2 list-disc pl-5 text-amber-200">{result.blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
         <p className="mt-2 text-white/60">{result.note}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(['720p', '1080p'] as const).map((quality) => {
+            const code = 'MEDIA_' + quality.toUpperCase().replace('P', '') + '_MISSING';
+            return result.blockers.includes(code) ? <Button key={quality} type="button" variant="outline" disabled={retrying !== ''} onClick={() => retryQuality(quality)}>{retrying === quality ? 'Retrying...' : 'Retry ' + quality}</Button> : null;
+          })}
+        </div>
         {result.eligible && <a className="mt-3 inline-block underline" href={`/api/download/resolve?slug=${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer">Test direct download</a>}
       </>}
     </div>
@@ -188,7 +215,7 @@ function IngestionPanel({
           <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
           <h2 className="mt-2 font-serif text-2xl">Ingest movie metadata and torrents</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-            Paste IMDb IDs to ingest a custom batch, or leave this blank to use the configured batch. Each selected title is queued with both 720p and 1080p sources for rights review.
+            Paste IMDb IDs to ingest a custom batch, or leave this blank to use the configured batch. Each selected title is queued with every available 720p/1080p source. Missing qualities can be retried independently.
           </p>
         </div>
         <div className="flex w-full max-w-md flex-col gap-3">

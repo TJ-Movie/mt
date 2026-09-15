@@ -5,6 +5,8 @@ import { allLanguages } from '../lib/catalogue-options.ts';
 import { requiresRightsReset, type AdminMovieInput } from '../lib/admin/movie-input.ts';
 import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
+import { assertLegalTransition } from '../scripts/ingest-state.mjs';
+import { parseCastJson } from '../lib/cast.ts';
 
 type Bindings = { DB?: D1Database; MEDIA?: R2Bucket };
 type StoredDownloadSource = NonNullable<Movie['downloadSources']>[number] & {
@@ -57,6 +59,7 @@ type MovieRow = {
 };
 
 export type AdminMovie = Movie & {
+  castWarnings?: string[];
   id: number;
   revision: number;
   createdAt: string;
@@ -150,30 +153,6 @@ function safeLanguages(json: string): string[] {
     .filter((value) => allLanguages.includes(value))
     .slice(0, 20);
 }
-function safeCast(json: string): (string | { actor: string; character?: string; image?: string })[] {
-  try {
-    const value: unknown = JSON.parse(json);
-    if (!Array.isArray(value)) return [];
-    const result: (string | { actor: string; character?: string; image?: string })[] = [];
-    for (const member of value.slice(0, 100) as unknown[]) {
-      if (typeof member === 'string') {
-        const actor = member.normalize('NFKC').trim().slice(0, 120);
-        if (actor) result.push(actor);
-        continue;
-      }
-      if (!member || typeof member !== 'object') continue;
-      const source = member as { actor?: unknown; name?: unknown; character?: unknown; image?: unknown; profile_url?: unknown };
-      const rawActor = typeof source.actor === 'string' ? source.actor : typeof source.name === 'string' ? source.name : '';
-      const actor = rawActor.normalize('NFKC').trim().slice(0, 120);
-      if (!actor) continue;
-      const character = typeof source.character === 'string' ? source.character.normalize('NFKC').trim().slice(0, 120) : undefined;
-      const rawImage = typeof source.image === 'string' ? source.image : typeof source.profile_url === 'string' ? source.profile_url : '';
-      const image = rawImage.trim().slice(0, 500) || undefined;
-      result.push({ actor, character: character || undefined, image });
-    }
-    return result;
-  } catch { return []; }
-}
 function safeStreamingSources(json: string): { label: string; url: string }[] { try { const value: unknown = JSON.parse(json); return Array.isArray(value) ? value.filter((item): item is { label: string; url: string } => Boolean(item && typeof item === 'object' && typeof (item as {label?:unknown}).label === 'string' && typeof (item as {url?:unknown}).url === 'string')).slice(0, 8) : []; } catch { return []; } }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -196,6 +175,27 @@ function safeSources(json: string): StoredDownloadSource[] {
     return value.filter(isStoredDownloadSource).slice(0, 12);
   } catch { return []; }
 }
+function preserveManagedDownloadSources(currentJson: string, incoming: AdminMovieInput['downloadSources']): StoredDownloadSource[] {
+  const existing = safeSources(currentJson);
+  const managedByQuality = new Map(existing
+    .filter((source) => source.descriptorKey || source.r2StorageKey || Number.isSafeInteger(source.r2Bytes))
+    .map((source) => [String(source.quality ?? source.resolution).toLowerCase(), source] as const));
+  const incomingQualities = new Set(incoming.map((source) => String(source.quality ?? source.resolution).toLowerCase()));
+  const merged = incoming.map((source) => {
+    const managed = managedByQuality.get(String(source.quality ?? source.resolution).toLowerCase());
+    if (!managed) return source;
+    return {
+      ...source,
+      ...(managed.descriptorKey ? { descriptorKey: managed.descriptorKey } : {}),
+      ...(managed.r2StorageKey ? { r2StorageKey: managed.r2StorageKey } : {}),
+      ...(Number.isSafeInteger(managed.r2Bytes) ? { r2Bytes: managed.r2Bytes } : {}),
+    };
+  }) as StoredDownloadSource[];
+  for (const [quality, managed] of managedByQuality) {
+    if (!incomingQualities.has(quality)) merged.push(managed);
+  }
+  return merged;
+}
 function isStoredEpisode(value: unknown): value is StoredEpisode {
   return isRecord(value) && Number.isInteger(value.season) && Number.isInteger(value.episode) && typeof value.title === 'string';
 }
@@ -214,14 +214,11 @@ function availableQualities(row: MovieRow): ('720p' | '1080p')[] {
     typeof source.r2Bytes === 'number' &&
     Number.isSafeInteger(source.r2Bytes) &&
     source.r2Bytes > 0));
-  // A transfer in progress can retain a stale/placeholder 720p descriptor.
-  // Only expose qualities that have a persisted R2 object reference while it
-  // is processing, so the public API cannot advertise a broken option.
-  if (row.ingest_status === 'processing' || row.ingest_status === 'transferring') return qualities.filter((quality) => quality === '1080p');
   return qualities;
 }
 
 function rowToMovie(row: MovieRow): AdminMovie {
+  const castResult = parseCastJson(row.cast_json);
   return {
     id: row.id,
     slug: row.slug,
@@ -234,7 +231,8 @@ function rowToMovie(row: MovieRow): AdminMovie {
     contentType: row.content_type === 'series' ? 'series' : 'movie',
     genre: row.genre,
     director: row.director,
-    cast: safeCast(row.cast_json),
+    cast: castResult.members,
+    castWarnings: castResult.parseError ? ['CAST_PARSE_ERROR'] : castResult.members.some((member) => !member.image && !member.profileUrl && !member.profileR2Key) ? ['CAST_IMAGE_MISSING'] : [],
     languages: safeLanguages(row.languages_json),
     poster: row.poster,
     backdrop: row.backdrop,
@@ -368,6 +366,7 @@ function movieValues(movie: Movie | AdminMovieInput, actorId: string, now: strin
   ];
 }
 
+
 function auditStatement(database: D1Database, user: ChatGPTUser, action: string, movieId: number | null, slug: string | null, fields: string[], now: string): D1PreparedStatement {
   return database.prepare(`INSERT INTO audit_events
     (actor_user_id, actor_email, action, movie_id, movie_slug, changed_fields_json, created_at)
@@ -376,6 +375,13 @@ function auditStatement(database: D1Database, user: ChatGPTUser, action: string,
     );
 }
 
+export async function recordYtsDispatchEvent(movieIds: number[], user: ChatGPTUser, status: 'DISPATCH_PENDING' | 'DISPATCH_SUCCEEDED' | 'DISPATCH_FAILED', details: Record<string, string | number | null>): Promise<void> {
+  const database = getDatabase();
+  const now = new Date().toISOString();
+  const fields = Object.entries({ dispatch_status: status, ...details })
+    .map(([key, value]) => key + ':' + String(value ?? '').slice(0, 240));
+  await database.batch(movieIds.map((movieId) => auditStatement(database, user, 'yts_dispatch_' + status.toLowerCase(), movieId, null, fields, now)));
+}
 export async function createAdminMovie(input: AdminMovieInput, user: ChatGPTUser): Promise<number> {
   const database = getDatabase();
   const now = new Date().toISOString();
@@ -416,46 +422,56 @@ export type YtsIngestRecord = {
 export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGPTUser): Promise<number> {
   const database = getDatabase();
   const now = new Date().toISOString();
-  const slugBase = record.title.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || `movie-${record.imdbId}`;
-  const existing = await database.prepare('SELECT id FROM movies WHERE imdb_id = ? LIMIT 1').bind(record.imdbId).first<{ id: number }>();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const slugBase = record.title.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) || 'movie-' + record.imdbId;
+  const existing = await database.prepare('SELECT id, ingest_status, transfer_token, transfer_lease_until, download_sources_json, storage_key FROM movies WHERE imdb_id = ? LIMIT 1').bind(record.imdbId).first<{
+    id: number; ingest_status: string; transfer_token: string | null; transfer_lease_until: number | null; download_sources_json: string; storage_key: string | null;
+  }>();
   const genre = record.genre?.trim() || 'Drama';
   const director = record.director?.trim() || 'Pending editorial review';
   const cast = record.cast.length ? record.cast : [{ actor: 'Pending editorial review', character: 'Pending editorial review' }];
+  const activeLease = existing?.ingest_status === 'transferring' && Number(existing.transfer_lease_until) > nowSeconds;
+  if (existing) assertLegalTransition(existing.ingest_status as Parameters<typeof assertLegalTransition>[0], activeLease ? 'transferring' : 'queued');
+  const downloadSources = existing
+    ? preserveManagedDownloadSources(existing.download_sources_json, record.torrents)
+    : record.torrents;
+  const transferToken = activeLease ? existing.transfer_token : null;
+  const transferLeaseUntil = activeLease ? existing.transfer_lease_until : null;
+  const nextIngestStatus = activeLease ? 'transferring' : 'queued';
+  const downloadPayload = JSON.stringify({ status: 'pending', sources: downloadSources });
   const values = [
     slugBase, record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year,
     record.runtime, Math.max(0, Math.min(10, record.rating)), 'movie', genre, director, JSON.stringify(cast), JSON.stringify(record.languages ?? []), record.poster, record.backdrop, 0,
     'draft', 'pending', '2026-09-10T00:00:00.000Z', '2035-02-02T12:00:00.000Z', 'Tj@gmail.com', 'good', record.officialWatchUrl ?? null, null, null, null,
-    JSON.stringify({ status: 'pending', sources: record.torrents }), '[]', '[]', 1,
-    user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
+    downloadPayload, '[]', '[]', 1, user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
   ];
   if (existing) {
-    await database.prepare(`UPDATE movies SET title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = CASE WHEN trim(genre) = '' THEN ? ELSE genre END, director = CASE WHEN trim(director) = '' THEN ? ELSE director END, cast_json = CASE WHEN trim(cast_json) IN ('', '[]') THEN ? ELSE cast_json END, languages_json = CASE WHEN trim(languages_json) IN ('', '[]') THEN ? ELSE languages_json END, poster = ?, backdrop = ?, official_watch_url = ?, download_sources_json = ?, storage_key = ?, ingest_status = 'queued', updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`)
-      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), JSON.stringify(record.languages ?? []), record.poster, record.backdrop, record.officialWatchUrl ?? null, JSON.stringify({ status: 'pending', sources: record.torrents }), record.storageKey, user.userId, now, existing.id).run();
+await database.prepare("UPDATE movies SET title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, genre = CASE WHEN trim(genre) = '' THEN ? ELSE genre END, director = CASE WHEN trim(director) = '' THEN ? ELSE director END, cast_json = CASE WHEN trim(cast_json) IN ('', '[]') THEN ? ELSE cast_json END, languages_json = CASE WHEN trim(languages_json) IN ('', '[]') THEN ? ELSE languages_json END, poster = ?, backdrop = ?, official_watch_url = ?, download_sources_json = ?, storage_key = ?, ingest_status = ?, transfer_token = ?, transfer_lease_until = ?, updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ?")
+      .bind(record.title.slice(0, 200), record.tagline.slice(0, 200), record.synopsis.slice(0, 5000), record.year, record.runtime, Math.max(0, Math.min(10, record.rating)), genre, director, JSON.stringify(cast), JSON.stringify(record.languages ?? []), record.poster, record.backdrop, record.officialWatchUrl ?? null, downloadPayload, record.storageKey ?? existing.storage_key, nextIngestStatus, transferToken, transferLeaseUntil, user.userId, now, existing.id).run();
     return existing.id;
   }
-  const result = await database.prepare(`INSERT INTO movies (
-    slug, title, tagline, description, release_year, runtime, rating, content_type, genre, director, cast_json, languages_json, poster, backdrop, featured,
-    publication_status, rights_status, rights_verified_at, rights_expires_at, rights_reviewer, rights_reference, official_watch_url, telegram_url, telegram_channel, subtitle_url,
-    download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status
-  ) VALUES (${Array.from({ length: 36 }, () => '?').join(', ')})`).bind(...values).run();
+  const result = await database.prepare('INSERT INTO movies (slug, title, tagline, description, release_year, runtime, rating, content_type, genre, director, cast_json, languages_json, poster, backdrop, featured, publication_status, rights_status, rights_verified_at, rights_expires_at, rights_reviewer, rights_reference, official_watch_url, telegram_url, telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status) VALUES (' + Array.from({ length: 36 }, () => '?').join(', ') + ')').bind(...values).run();
   const movieId = Number(result.meta.last_row_id);
   await auditStatement(database, user, 'yts_movie_queued', movieId, slugBase, ['yts_metadata', 'storage_key'], now).run();
   return movieId;
 }
-
 export async function updateAdminMovie(id: number, revision: number, input: AdminMovieInput, user: ChatGPTUser): Promise<boolean> {
   const database = getDatabase();
-  const current = await database.prepare(`SELECT rights_status, rights_expires_at, rights_reference,
-    official_watch_url, telegram_url, telegram_channel FROM movies WHERE id = ? AND revision = ? LIMIT 1`)
+  const current = await database.prepare('SELECT rights_status, rights_expires_at, rights_reference, download_sources_json, official_watch_url, telegram_url, telegram_channel FROM movies WHERE id = ? AND revision = ? LIMIT 1')
     .bind(id, revision).first<{
       rights_status: RightsStatus;
       rights_expires_at: string | null;
       rights_reference: string | null;
+      download_sources_json: string;
       official_watch_url: string | null;
       telegram_url: string | null;
       telegram_channel: string | null;
     }>();
   if (!current) return false;
+  const preservedInput: AdminMovieInput = {
+    ...input,
+    downloadSources: preserveManagedDownloadSources(current.download_sources_json, input.downloadSources),
+  };
   const rightsResetRequired = requiresRightsReset({
     rightsStatus: current.rights_status,
     rightsExpiresAt: current.rights_expires_at,
@@ -463,26 +479,19 @@ export async function updateAdminMovie(id: number, revision: number, input: Admi
     officialWatchUrl: current.official_watch_url,
     telegramUrl: current.telegram_url,
     telegramChannel: current.telegram_channel,
-  }, input);
+  }, preservedInput);
   const persistedInput = rightsResetRequired
-    ? { ...input, rightsStatus: 'pending' as const, rightsVerifiedAt: null, rightsExpiresAt: null, rightsReviewer: null, rightsReference: null }
-    : input;
+    ? { ...preservedInput, rightsStatus: 'pending' as const, rightsVerifiedAt: null, rightsExpiresAt: null, rightsReviewer: null, rightsReference: null }
+    : preservedInput;
   const now = new Date().toISOString();
-  const result = await database.prepare(`UPDATE movies SET
-    slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, content_type = ?, genre = ?,
-    director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?,
-    publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?,
-    rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?, download_sources_json = ?, streaming_sources_json = ?, episodes_json = ?,
-    updated_by = ?, updated_at = ?, revision = revision + 1
-    WHERE id = ? AND revision = ?`).bind(
-      ...movieValues(persistedInput, user.userId, now).slice(0, 28), user.userId, now, id, revision,
-    ).run();
+  const result = await database.prepare('UPDATE movies SET slug = ?, title = ?, tagline = ?, description = ?, release_year = ?, runtime = ?, rating = ?, content_type = ?, genre = ?, director = ?, cast_json = ?, languages_json = ?, poster = ?, backdrop = ?, featured = ?, publication_status = ?, rights_status = ?, rights_verified_at = ?, rights_expires_at = ?, rights_reviewer = ?, rights_reference = ?, official_watch_url = ?, telegram_url = ?, telegram_channel = ?, subtitle_url = ?, download_sources_json = ?, streaming_sources_json = ?, episodes_json = ?, updated_by = ?, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?').bind(
+    ...movieValues(persistedInput, user.userId, now).slice(0, 28), user.userId, now, id, revision,
+  ).run();
   if (result.meta.changes !== 1) return false;
   await auditStatement(database, user, rightsResetRequired ? 'movie_updated_rights_reset' : 'movie_updated', id, persistedInput.slug, rightsResetRequired ? ['movie_record', 'rights_reset'] : ['movie_record'], now).run();
   logSecurityEvent('admin_movie_changed', 'info', { action: rightsResetRequired ? 'updated_rights_reset' : 'updated', slug: persistedInput.slug });
   return true;
 }
-
 export async function archiveAdminMovie(id: number, revision: number, user: ChatGPTUser): Promise<boolean> {
   const database = getDatabase();
   const current = await database.prepare('SELECT slug FROM movies WHERE id = ? AND revision = ? LIMIT 1').bind(id, revision).first<{ slug: string }>();

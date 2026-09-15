@@ -5,7 +5,7 @@ import { Input } from '../ui/input';
 
 export type CastMember =
   | string
-  | { actor: string; character?: string; image?: string };
+  | { actor: string; character?: string; image?: string; profileUrl?: string; profileR2Key?: string; source?: 'yts' | 'tmdb' | 'omdb' | 'manual'; manualOverride?: boolean };
 
 export function CastBuilder({
   cast,
@@ -28,7 +28,7 @@ export function CastBuilder({
   ) {
     onChange(
       members.map((member, itemIndex) =>
-        itemIndex === index ? { ...member, [key]: value } : member,
+        itemIndex === index ? { ...member, [key]: value, manualOverride: true, source: 'manual' as const } : member,
       ),
     );
   }
@@ -71,7 +71,7 @@ export function CastBuilder({
                 </span>
                 <Input
                   id={`cast-image-${index}`}
-                  value={member.image ?? ''}
+                  value={member.image ?? member.profileUrl ?? (member.profileR2Key ? '/media/' + member.profileR2Key : '')}
                   onChange={(event) =>
                     update(index, 'image', event.target.value)
                   }

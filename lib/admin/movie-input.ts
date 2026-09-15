@@ -2,6 +2,16 @@ import { allLanguages, contentTypes, genres } from '../catalogue-options.ts';
 import { publicationStatuses, rightsStatuses, type PublicationStatus, type RightsStatus } from '../movies.ts';
 import { validateOutboundDestination } from '../security/outbound-links.ts';
 
+export type AdminCastMember = string | {
+  actor: string;
+  character?: string;
+  image?: string;
+  profileUrl?: string;
+  profileR2Key?: string;
+  source?: 'yts' | 'tmdb' | 'omdb' | 'manual';
+  manualOverride?: boolean;
+};
+
 export type AdminMovieInput = {
   streamingSources: { label: string; url: string }[];
   episodes: { season: number; episode: number; title: string; url?: string; thumbnail?: string; backdrop?: string; description?: string; rating?: number; streamingSources?: { label: string; url: string }[]; downloadSources?: { label: string; quality: string; resolution: string; size: string; url: string }[]; downloadStatus?: 'available' | 'pending' }[];
@@ -17,7 +27,7 @@ export type AdminMovieInput = {
   rating: number;
   genre: string;
   director: string;
-  cast: (string | { actor: string; character?: string; image?: string })[];
+  cast: AdminCastMember[];
   languages: string[];
   poster: string;
   backdrop: string;

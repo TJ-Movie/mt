@@ -1,4 +1,4 @@
-import { upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
+import { recordYtsDispatchEvent, upsertYtsIngestMovie, type YtsIngestRecord } from '../../../../../db';
 import { env } from 'cloudflare:workers';
 import { allLanguages } from '../../../../../lib/catalogue-options';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
@@ -12,7 +12,7 @@ const DEFAULT_IMDB_IDS = [
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
-type YtsCast = { name?: unknown; character_name?: unknown; character?: unknown; url_small_image?: unknown; image?: unknown };
+
 type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown; yt_trailer_code?: unknown };
 type RuntimeEnv = { GITHUB_ACTIONS_TOKEN?: string; GITHUB_TOKEN?: string; GITHUB_REPOSITORY?: string; GITHUB_WORKFLOW_FILE?: string; GITHUB_WORKFLOW_REF?: string };
 const MAX_SUBREQUESTS = 40;
@@ -101,41 +101,55 @@ function githubSettings(): Required<Pick<RuntimeEnv, 'GITHUB_ACTIONS_TOKEN' | 'G
   };
 }
 
-async function triggerR2Sync(): Promise<boolean> {
+export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof recordYtsDispatchEvent>[1], workflowInputs: Record<string, string> = {}): Promise<{
+  status: 'DISPATCH_PENDING' | 'DISPATCH_SUCCEEDED' | 'DISPATCH_FAILED';
+  triggered: boolean;
+  attemptId: string;
+  dispatchedAt: string;
+  runId: null;
+  name: string;
+  error?: string;
+}> {
+  const attemptId = crypto.randomUUID();
+  const dispatchedAt = new Date().toISOString();
+  const record = async (status: 'DISPATCH_PENDING' | 'DISPATCH_SUCCEEDED' | 'DISPATCH_FAILED', details: Record<string, string | number | null>) => {
+    try { await recordYtsDispatchEvent(movieIds, user, status, { attempt_id: attemptId, dispatched_at: dispatchedAt, workflow: DEFAULT_WORKFLOW, ...details, workflow_inputs: JSON.stringify(workflowInputs) }); }
+    catch (error) { console.error(JSON.stringify({ event: 'yts_dispatch_audit_failed', attemptId, error: error instanceof Error ? error.message : String(error) })); }
+  };
+  await record('DISPATCH_PENDING', { run_id: null });
   const settings = githubSettings();
+  const fail = async (error: string) => {
+    await record('DISPATCH_FAILED', { error });
+    return { status: 'DISPATCH_FAILED' as const, triggered: false, attemptId, dispatchedAt, runId: null, name: DEFAULT_WORKFLOW, error };
+  };
   if (!settings.GITHUB_ACTIONS_TOKEN) {
-    console.warn('[ingest] GitHub R2 sync dispatch skipped: GITHUB_ACTIONS_TOKEN is not configured. D1 records were saved.');
-    return false;
+    console.warn('[ingest] GitHub R2 sync dispatch skipped: token is not configured. D1 records were saved.');
+    return fail('GITHUB_ACTIONS_TOKEN_MISSING');
   }
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(settings.GITHUB_REPOSITORY) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_FILE) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_REF)) {
-    console.warn('[ingest] GitHub R2 sync dispatch skipped: invalid repository, workflow, or ref configuration. D1 records were saved.');
-    return false;
+    console.warn('[ingest] GitHub R2 sync dispatch skipped: invalid configuration. D1 records were saved.');
+    return fail('GITHUB_DISPATCH_CONFIGURATION_INVALID');
   }
   try {
-    const response = await fetch(`https://api.github.com/repos/${settings.GITHUB_REPOSITORY}/actions/workflows/${encodeURIComponent(settings.GITHUB_WORKFLOW_FILE)}/dispatches`, {
+    const response = await fetch('https://api.github.com/repos/' + settings.GITHUB_REPOSITORY + '/actions/workflows/' + encodeURIComponent(settings.GITHUB_WORKFLOW_FILE) + '/dispatches', {
       method: 'POST',
       headers: {
         accept: 'application/vnd.github+json',
-        authorization: `Bearer ${settings.GITHUB_ACTIONS_TOKEN}`,
+        authorization: 'Bearer ' + settings.GITHUB_ACTIONS_TOKEN,
         'content-type': 'application/json',
         'user-agent': 'flixlyra-yts-ingest',
         'x-github-api-version': '2022-11-28',
       },
-      body: JSON.stringify({ ref: settings.GITHUB_WORKFLOW_REF }),
+      body: JSON.stringify({ ref: settings.GITHUB_WORKFLOW_REF, inputs: workflowInputs }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) {
-      console.warn(`[ingest] GitHub R2 sync dispatch returned HTTP ${response.status}; D1 records were saved.`);
-      return false;
-    }
-    console.log(`[ingest] GitHub R2 sync dispatched for ${settings.GITHUB_REPOSITORY}@${settings.GITHUB_WORKFLOW_REF}.`);
-    return true;
+    if (response.status !== 204) return fail('GITHUB_DISPATCH_HTTP_' + response.status);
+    await record('DISPATCH_SUCCEEDED', { http_status: response.status, run_lookup: 'pending', run_id: null });
+    return { status: 'DISPATCH_SUCCEEDED', triggered: true, attemptId, dispatchedAt, runId: null, name: DEFAULT_WORKFLOW };
   } catch (error) {
-    console.warn(`[ingest] GitHub R2 sync dispatch failed: ${error instanceof Error ? error.message.slice(0, 160) : 'request error'}; D1 records were saved.`);
-    return false;
+    return fail('GITHUB_DISPATCH_REQUEST_FAILED:' + (error instanceof Error ? error.message.slice(0, 120) : 'request error'));
   }
 }
-
 export async function POST(request: Request) {
   const authorization = await authorizeAdminRequest(request, true);
   if ('response' in authorization) return authorization.response;
@@ -158,7 +172,7 @@ export async function POST(request: Request) {
       if ('error' in entry) throw entry.error;
       const movie = entry.movie;
       const torrents = selectTorrents(movie.torrents);
-      if (torrents.length !== 2) throw new Error('YTS_REQUIRES_720P_AND_1080P');
+      if (torrents.length === 0) throw new Error('YTS_NO_SUPPORTED_QUALITY');
       const preparedTorrents = torrents.map((torrent) => {
         const quality = text(torrent.quality, 20).toLowerCase();
         return { url: text(torrent.url, 1000), quality, resolution: quality, size: text(torrent.size, 40), label: `YTS ${quality}` };
@@ -190,6 +204,11 @@ export async function POST(request: Request) {
       results.push({ imdbId, status: 'failed', error: error instanceof Error ? error.message.slice(0, 80) : 'INGEST_FAILED' });
     }
   }
-  const workflowTriggered = inserted > 0 ? await triggerR2Sync() : false;
-  return Response.json({ results, workflow: { name: DEFAULT_WORKFLOW, triggered: workflowTriggered } }, { headers: ADMIN_NO_STORE_HEADERS });
+  const movieIds = results
+    .filter((item) => item.status === 'queued' && typeof item.id === 'number')
+    .map((item) => item.id as number);
+  const dispatch = movieIds.length
+    ? await triggerR2Sync(movieIds, authorization.user)
+    : { status: 'DISPATCH_FAILED' as const, triggered: false, attemptId: null, dispatchedAt: null, runId: null, name: DEFAULT_WORKFLOW, error: 'NO_METADATA_ROWS_SAVED' };
+  return Response.json({ results, metadata: { status: inserted > 0 ? 'METADATA_SAVED' : 'METADATA_FAILED', movieIds }, workflow: dispatch }, { headers: ADMIN_NO_STORE_HEADERS });
 }
