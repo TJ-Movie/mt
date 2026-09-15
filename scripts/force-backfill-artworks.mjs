@@ -680,7 +680,7 @@ async function processRow(s3, row) {
       [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id, updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop],
     );
   } else if (runExecute && unresolved.length) {
-    await markMovieFlagged(row.id, unresolved.join(', '));
+    if (!artworkCastOnly) await markMovieFlagged(row.id, unresolved.join(', '));
     console.warn(JSON.stringify({ event: "d1-update-skipped", id: row.id, unresolved, reason: "required-fields-unresolved" }));
   }
   console.log(JSON.stringify({
@@ -739,7 +739,7 @@ async function main() {
     } catch (error) {
       const failure = { id: row.id, updates: {}, unresolved: ["row-error"], reasons: [safeError(error)] };
       results.push(failure);
-      await markMovieFlagged(row.id, failure.reasons.join('; '));
+      if (!artworkCastOnly) await markMovieFlagged(row.id, failure.reasons.join('; '));
       console.warn(JSON.stringify({ event: "movie-backfill-failed", id: row.id, reasons: failure.reasons }));
     }
   }
@@ -757,6 +757,7 @@ async function main() {
     unresolved: unresolved.map((result) => ({ id: result.id, fields: result.unresolved, reasons: result.reasons })),
   }));
   console.log(JSON.stringify({ event: 'item-failures-nonfatal', unresolvedMovies: unresolved.length, postAuditFailures: auditFailures.length }));
+  if (runExecute && unresolved.length) process.exitCode = 1;
   } finally {
     s3?.destroy();
     await releaseLocksBestEffort();
