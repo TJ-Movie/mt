@@ -90,17 +90,19 @@ type FieldErrors = Record<string, string>;
 
 function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string } | null>(null);
+  const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string; qualities: Record<'720p' | '1080p', { ready: boolean; blockers: string[] }> } | null>(null);
   const [error, setError] = useState('');
   const [retrying, setRetrying] = useState('');
   async function check() {
     setBusy(true); setError(''); setResult(null);
     try {
       const response = await fetch(`/api/admin/movies/${id}/download-status`, { credentials: 'same-origin', cache: 'no-store' });
-      const data = await response.json() as { error?: string; transfer?: unknown; blockers?: unknown; eligible?: unknown; note?: unknown };
+      const data = await response.json() as { error?: string; transfer?: unknown; blockers?: unknown; eligible?: unknown; note?: unknown; readiness?: unknown };
       if (!response.ok) throw new Error(data.error || 'Check failed. Refresh your admin session and retry.');
-      if (typeof data.transfer !== 'string' || !Array.isArray(data.blockers) || !data.blockers.every(x => typeof x === 'string') || typeof data.eligible !== 'boolean' || typeof data.note !== 'string') throw new Error('Invalid status response. Refresh and retry.');
-      setResult({ transfer: data.transfer, blockers: data.blockers, eligible: data.eligible, note: data.note });
+      const qualities = (data.readiness as { qualities?: Record<string, { ready?: unknown; blockers?: unknown }> } | undefined)?.qualities;
+      if (typeof data.transfer !== 'string' || !Array.isArray(data.blockers) || !data.blockers.every(x => typeof x === 'string') || typeof data.eligible !== 'boolean' || typeof data.note !== 'string' || !qualities || !['720p', '1080p'].every(quality => qualities[quality] && typeof qualities[quality].ready === 'boolean' && Array.isArray(qualities[quality].blockers) && qualities[quality].blockers.every(x => typeof x === 'string'))) throw new Error('Invalid status response. Refresh and retry.');
+      const qualityReadiness = qualities as Record<'720p' | '1080p', { ready: boolean; blockers: string[] }>;
+      setResult({ transfer: data.transfer, blockers: data.blockers, eligible: data.eligible, note: data.note, qualities: qualityReadiness });
     } catch (err) { setError(err instanceof Error ? err.message : 'Check failed.'); }
     finally { setBusy(false); }
   }
@@ -136,7 +138,7 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
         <div className="mt-3 flex flex-wrap gap-2">
           {(['720p', '1080p'] as const).map((quality) => {
             const code = 'MEDIA_' + quality.toUpperCase().replace('P', '') + '_MISSING';
-            const retryable = result.blockers.includes(code) || (result.transfer === 'queued' && result.blockers.includes('MEDIA_NO_LIVE_VERIFIED_QUALITY'));
+            const retryable = !result.qualities[quality].ready && (result.qualities[quality].blockers.includes(code) || result.qualities[quality].blockers.includes('R2_OBJECT_MISSING') || result.qualities[quality].blockers.includes('SIZE_MISMATCH'));
             return retryable ? <Button key={quality} type="button" variant="outline" disabled={retrying !== ''} onClick={() => retryQuality(quality)}>{retrying === quality ? 'Retrying...' : 'Retry ' + quality}</Button> : null;
           })}
         </div>
