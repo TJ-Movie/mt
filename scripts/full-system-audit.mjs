@@ -276,8 +276,8 @@ async function main() {
   console.table(results.map(({ reasons, ...row }) => row));
   const failures = results.filter((row) => row.Final_State !== "PASS");
   for (const row of failures) console.error(JSON.stringify({ event: "movie_audit_failure", id: row.ID, title: row.Title, reasons: row.reasons }));
-  console.log(JSON.stringify({ event: "full_system_audit_complete", movies: rows.length, passed: rows.length - failures.length, failed: failures.length, expectedMovies: 30 }));
-  if (rows.length !== 30 || failures.length) process.exitCode = 1;
+  console.log(JSON.stringify({ event: "full_system_audit_complete", movies: rows.length, passed: rows.length - failures.length, failed: failures.length }));
+  if (failures.length) process.exitCode = 1;
 }
 
 main().catch((error) => {

@@ -28,17 +28,27 @@ on:
         required: false
         default: false
         type: boolean
+      repair_drafts:
+        description: 'Sequentially repair eligible Draft movie qualities without R2 cleanup'
+        required: false
+        default: false
+        type: boolean
+      repair_ids:
+        description: 'Optional comma-separated Draft IDs; blank means all Drafts'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
   group: flixlyra-media-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   sync-media:
-    if: inputs.artwork_only != true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: inputs.artwork_only != true && inputs.repair_drafts != true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -190,7 +200,24 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: node scripts/cleanup-r2-orphans.mjs --execute
 
+      - name: Run targeted post-repair audit
+        if: inputs.dispatch_mode == 'targeted'
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          TRANSFER_MOVIE_IDS: ${{ inputs.movie_ids }}
+          TRANSFER_QUALITY: ${{ inputs.quality }}
+        run: node scripts/targeted-media-audit.mjs
+
       - name: Run full system audit
+        if: inputs.dispatch_mode != 'targeted'
         timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -199,8 +226,37 @@ jobs:
           CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
           PUBLIC_SITE_ORIGIN: ${{ vars.PUBLIC_SITE_ORIGIN || 'https://flixlyra.com' }}
         run: node scripts/full-system-audit.mjs
+  repair-drafts:
+    if: inputs.repair_drafts == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27564c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caea8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Run sequential Draft repair orchestrator
+        timeout-minutes: 210
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
+          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
+          REPAIR_MOVIE_IDS: ${{ inputs.repair_ids }}
+        run: node scripts/repair-draft-media.mjs
   artwork-repair:
-    if: inputs.artwork_only == true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: inputs.artwork_only == true && inputs.repair_drafts != true && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
