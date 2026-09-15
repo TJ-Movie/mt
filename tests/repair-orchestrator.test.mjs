@@ -38,3 +38,19 @@ test('full audit no longer fails only because catalogue size changed', () => {
   assert.doesNotMatch(audit, /expectedMovies:\s*30/);
   assert.match(audit, /if \(failures\.length\) process\.exitCode = 1/);
 });
+
+test('normal Studio ingestion dispatches the saved movie IDs to the canonical workflow', () => {
+  const route = readFileSync(new URL('../app/api/admin/ingest/yts/route.ts', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../.github/workflows/r2-sync.yml', import.meta.url), 'utf8');
+  assert.match(route, /movie_ids: movieIds\.join\(','\)/);
+  assert.match(route, /dispatch_mode: 'targeted'/);
+  assert.match(workflow, /Fetch artwork and cast for targeted ingest/);
+  assert.match(workflow, /Run Continuous Smart R2 Sync/);
+});
+
+test('normal Studio copy exposes one ingestion action without recovery controls', () => {
+  const studio = readFileSync(new URL('../components/admin/movie-studio.tsx', import.meta.url), 'utf8');
+  assert.match(studio, /Ingest Movies/);
+  assert.match(studio, /metadata, artwork, cast, and available 720p\/1080p media automatically/);
+  assert.doesNotMatch(studio, /repair_drafts|purge_orphans|artwork_only/);
+});

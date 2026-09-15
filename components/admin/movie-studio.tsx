@@ -160,13 +160,13 @@ function IngestionPanel({
 
   async function triggerIngestion() {
     const imdbIds = [...new Set(imdbInput.split(/[\s,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean))];
-    if (imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
-      setNotice({ tone: 'error', text: 'Enter up to 20 valid IMDb IDs, separated by commas or new lines.' });
+    if (!imdbIds.length || imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
+      setNotice({ tone: 'error', text: 'Enter up to 20 valid YTS/IMDb IDs, separated by commas or new lines.' });
       return;
     }
     setRunning(true);
     setFailures([]);
-    setNotice({ tone: 'success', text: 'Ingestion in progress — fetching the YTS batch and securing torrent assets…' });
+    setNotice({ tone: 'success', text: 'Automatic ingestion started — fetching the YTS batch and securing torrent assets…' });
     try {
       const response = await fetch('/api/admin/ingest/yts', {
         method: 'POST',
@@ -175,7 +175,7 @@ function IngestionPanel({
           'content-type': 'application/json',
           'x-sublyra-action': 'admin-write',
         },
-        body: JSON.stringify(imdbIds.length ? { imdbIds } : {}),
+        body: JSON.stringify({ imdbIds }),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
@@ -189,15 +189,18 @@ function IngestionPanel({
         : [];
       const queued = results.filter((result) => result.status === 'queued').length;
       const failed = results.length - queued;
+      const dispatchFailed = payload && typeof payload === 'object' && 'workflow' in payload && payload.workflow && typeof payload.workflow === 'object' && 'status' in payload.workflow && payload.workflow.status === 'DISPATCH_FAILED';
       setFailures(results.filter((result) => result.status !== 'queued').map((result) => ({
         imdbId: typeof result.imdbId === 'string' ? result.imdbId : 'Unknown film',
         error: typeof result.error === 'string' ? result.error : 'No error details returned.',
       })));
       setNotice({
-        tone: failed ? 'error' : 'success',
-        text: failed
-          ? `Ingestion finished: ${queued} queued, ${failed} failed. See the details below.`
-          : `Ingestion complete: ${queued} movies queued for rights review.`,
+        tone: failed || dispatchFailed ? 'error' : 'success',
+        text: dispatchFailed
+          ? `Metadata saved for ${queued} movie(s), but automatic processing could not be started. Retry the ingestion after checking the dispatch configuration.`
+          : failed
+            ? `Ingestion finished: ${queued} queued, ${failed} failed. See the details below.`
+            : `Accepted: ${queued} movie(s) are now processing metadata, artwork, cast, and media automatically.`,
       });
       const refreshed = await fetch('/api/admin/movies', { credentials: 'same-origin' });
       const refreshedPayload: unknown = await refreshed.json().catch(() => null);
@@ -216,18 +219,18 @@ function IngestionPanel({
       <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
-          <h2 className="mt-2 font-serif text-2xl">Ingest movie metadata and torrents</h2>
+          <h2 className="mt-2 font-serif text-2xl">Ingest movies automatically</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-            Paste IMDb IDs to ingest a custom batch, or leave this blank to use the configured batch. Each selected title is queued with every available 720p/1080p source. Missing qualities can be retried independently.
+            Paste YTS/IMDb IDs. One click fetches metadata, artwork, cast, and available 720p/1080p media automatically. After processing, review rights and publish manually.
           </p>
         </div>
         <div className="flex w-full max-w-md flex-col gap-3">
-          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">Custom IMDb IDs</label>
+          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">YTS/IMDb IDs</label>
           <Textarea id="custom-imdb-ids" value={imdbInput} onChange={(event) => setImdbInput(event.target.value)} placeholder="tt0111161, tt0068646" rows={2} disabled={running} />
-          <p className="text-xs text-white/45">Optional · comma, space, or newline separated · maximum 20</p>
+          <p className="text-xs text-white/45">Comma, space, or newline separated · maximum 20</p>
           <Button onClick={triggerIngestion} disabled={running} className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60">
             {running ? <Loader2 className="animate-spin" /> : <UploadCloud />}
-            {running ? 'Ingesting…' : 'Run YTS ingestion'}
+            {running ? 'Processing…' : 'Ingest Movies'}
           </Button>
         </div>
       </div>
