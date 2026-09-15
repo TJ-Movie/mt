@@ -136,7 +136,8 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
         <div className="mt-3 flex flex-wrap gap-2">
           {(['720p', '1080p'] as const).map((quality) => {
             const code = 'MEDIA_' + quality.toUpperCase().replace('P', '') + '_MISSING';
-            return result.blockers.includes(code) ? <Button key={quality} type="button" variant="outline" disabled={retrying !== ''} onClick={() => retryQuality(quality)}>{retrying === quality ? 'Retrying...' : 'Retry ' + quality}</Button> : null;
+            const retryable = result.blockers.includes(code) || (result.transfer === 'queued' && result.blockers.includes('MEDIA_NO_LIVE_VERIFIED_QUALITY'));
+            return retryable ? <Button key={quality} type="button" variant="outline" disabled={retrying !== ''} onClick={() => retryQuality(quality)}>{retrying === quality ? 'Retrying...' : 'Retry ' + quality}</Button> : null;
           })}
         </div>
         {result.eligible && <a className="mt-3 inline-block underline" href={`/api/download/resolve?slug=${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer">Test direct download</a>}
