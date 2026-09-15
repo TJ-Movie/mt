@@ -7,6 +7,7 @@ import { parse } from 'yaml';
 import { guardedSource } from '../scripts/webtorrent-guard.mjs';
 import { runChild } from '../scripts/transfer-process.mjs';
 import { compileFunction } from 'node:vm';
+import { createNoProgressError, isNonRetryableAcquisitionFailure, ACQUISITION_NO_PROGRESS_TIMEOUT_MS, ACQUISITION_METADATA_TIMEOUT_MS } from '../scripts/prepare-cloud-media.mjs';
 
 test('peer requests before storage initialization and after destruction fail safely', () => {
   const original = '      if (this.pieces[index]) return\n      this.store.get(index, { offset, length }, cb)';
@@ -105,4 +106,17 @@ test('workflow uses trusted triggers, pinned actions, scoped secrets and finite 
   assert.ok(limits.timeout + 300 < limits.run);
   assert.ok(limits.run < step['timeout-minutes'] * 60);
   assert.doesNotMatch(step.run, /--watch|client_payload/);
+});
+
+test('stalled torrent fails closed with a classified no-progress error', () => {
+  assert.equal(ACQUISITION_METADATA_TIMEOUT_MS, 10 * 60 * 1000);
+  const noPeers = createNoProgressError(0, ACQUISITION_NO_PROGRESS_TIMEOUT_MS);
+  assert.equal(noPeers.code, 'NO_PEERS');
+  assert.equal(noPeers.noProgress, true);
+  assert.equal(isNonRetryableAcquisitionFailure(noPeers), true);
+
+  const stalled = createNoProgressError(1024, ACQUISITION_NO_PROGRESS_TIMEOUT_MS);
+  assert.equal(stalled.code, 'DOWNLOAD_TIMEOUT');
+  assert.equal(stalled.noProgress, true);
+  assert.equal(isNonRetryableAcquisitionFailure(stalled), true);
 });

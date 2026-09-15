@@ -46,6 +46,10 @@ let nextRequestAt = 0;
 async function throttleRequests() { const slot = Math.max(Date.now(), nextRequestAt); nextRequestAt = slot + 300; const delay = slot - Date.now(); if (delay > 0) await pause(delay); }
 const requestTimeoutMs = 10000;
 const maxRequestAttempts = 3;
+// Keep dead swarms from waiting for the overall job deadline.
+export const ACQUISITION_NO_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
+export const ACQUISITION_PROGRESS_CHECK_MS = 30 * 1000;
+export const ACQUISITION_METADATA_TIMEOUT_MS = 10 * 60 * 1000;
 async function fetchWithRetry(url, init = {}) {
   let lastError;
   for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
@@ -86,6 +90,7 @@ async function sendWithRetry(client, command, options = {}) {
   throw lastError || new Error('R2 request failed');
 }
 const activeTimers = new Set();
+const activeIntervals = new Set();
 const activeTorrentClients = new Set();
 let activeAcquisitionReject = null;
 function handleAsyncTorrentFailure(reason) {
@@ -126,6 +131,8 @@ async function destroyTorrentClient(client) {
 async function cleanupRuntime() {
   for (const timer of activeTimers) clearTimeout(timer);
   activeTimers.clear();
+  for (const interval of activeIntervals) clearInterval(interval);
+  activeIntervals.clear();
   await Promise.all([...activeTorrentClients].map(client => destroyTorrentClient(client)));
 }
 
@@ -143,7 +150,28 @@ function safeLogError(error) {
   return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]');
 }
 
-function classifyMediaError(error) { const message = safeLogError(error); if (/no peers|no seed|peer/i.test(message)) return "NO_PEERS: " + message.slice(0, 960); if (/metadata.*timeout|torrent.*metadata/i.test(message)) return "METADATA_TIMEOUT: " + message.slice(0, 930); if (/download.*timeout|timed out|ETIMEDOUT/i.test(message)) return "DOWNLOAD_TIMEOUT: " + message.slice(0, 930); if (/disk|ENOSPC|space/i.test(message)) return "DISK_LIMIT: " + message.slice(0, 930); if (/No safe playable MP4|MP4 validation|container/i.test(message)) return "NO_PLAYABLE_MP4: " + message.slice(0, 930); if (/unsupported/i.test(message)) return "UNSUPPORTED_CONTAINER: " + message.slice(0, 930); if (/source|404|unavailable/i.test(message)) return "SOURCE_UNAVAILABLE: " + message.slice(0, 930); return "UNKNOWN_MEDIA_ERROR: " + message.slice(0, 940); }
+export function createNoProgressError(downloadedBytes, idleMs) {
+  const code = Number(downloadedBytes) > 0 ? 'DOWNLOAD_TIMEOUT' : 'NO_PEERS';
+  const minutes = Math.max(1, Math.ceil(Number(idleMs || 0) / 60000));
+  const error = new Error(code + ': no media bytes received for ' + minutes + ' minute(s)');
+  error.code = code;
+  error.noProgress = true;
+  return error;
+}
+export function isNonRetryableAcquisitionFailure(error) {
+  return error?.noProgress === true;
+}
+function classifyMediaError(error) {
+  const message = safeLogError(error);
+  if (/no peers|no seed|peer/i.test(message)) return "NO_PEERS: " + message.slice(0, 960);
+  if (/metadata.*timeout|torrent.*metadata/i.test(message)) return "METADATA_TIMEOUT: " + message.slice(0, 930);
+  if (/download.*timeout|timed out|ETIMEDOUT/i.test(message)) return "DOWNLOAD_TIMEOUT: " + message.slice(0, 930);
+  if (/disk|ENOSPC|space/i.test(message)) return "DISK_LIMIT: " + message.slice(0, 930);
+  if (/No safe playable MP4|MP4 validation|container/i.test(message)) return "NO_PLAYABLE_MP4: " + message.slice(0, 930);
+  if (/unsupported/i.test(message)) return "UNSUPPORTED_CONTAINER: " + message.slice(0, 930);
+  if (/source|404|unavailable/i.test(message)) return "SOURCE_UNAVAILABLE: " + message.slice(0, 930);
+  return "UNKNOWN_MEDIA_ERROR: " + message.slice(0, 940);
+}
 
 function formatBytes(bytes) {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -476,7 +504,7 @@ export async function validateMp4(filePath, expectedBytes) {
   return { bytes: info.size, expectedBytes };
 }
 
-function progressStream(item, totalBytes) {
+function progressStream(item, totalBytes, onProgress = () => {}) {
   let downloaded = 0;
   let nextPercent = 10;
   let lastLoggedAt = 0;
@@ -498,6 +526,7 @@ function progressStream(item, totalBytes) {
   // attaches its destination, which may drain chunks before they reach disk.
   progressPassThrough.on('data', chunk => {
     downloaded += chunk.byteLength ?? chunk.length ?? 0;
+    onProgress(downloaded);
     report();
   });
   progressPassThrough.on('end', () => report(true));
@@ -624,6 +653,19 @@ export async function makePlan(ctx, options = {}) {
   }
   return plan;
 }
+function sourceIdentity(value) {
+  if (typeof value !== 'string') return null;
+  try { const url = new URL(value); return url.protocol + '//' + url.host + url.pathname; }
+  catch { return 'non-url-descriptor'; }
+}
+function descriptorIdentity(value) {
+  if (typeof value === 'string') {
+    const match = value.match(/^magnet:\?xt=urn:btih:([a-f0-9]{40}|[a-z2-7]{32})/i);
+    return match ? 'magnet:' + match[1].toLowerCase() : 'string-descriptor';
+  }
+  if (Buffer.isBuffer(value)) return 'torrent-buffer:' + value.length;
+  return typeof value;
+}
 async function acquire(ctx, item, attempt) {
   const [row] = await ctx.query('SELECT download_sources_json FROM movies WHERE id = ?', [item.id]);
   if (!row) throw new Error('Movie no longer exists');
@@ -637,6 +679,8 @@ async function acquire(ctx, item, attempt) {
     descriptor = Buffer.from(await object.Body.transformToByteArray());
   }
   if (!descriptor) descriptor = await remoteDescriptor(row.download_sources_json, item.quality);
+  if (!descriptor) throw new Error('SOURCE_UNAVAILABLE: no usable torrent descriptor');
+  console.log(JSON.stringify({ event: 'torrent-source-selected', id: item.id, quality: item.quality, attempt, source: sourceIdentity(source?.url), descriptor: descriptorIdentity(descriptor) }));
   const work = resolve(mediaRoot, `${item.id}-${item.quality}`);
   await mkdir(work, { recursive: true });
   const filePath = resolve(work, `${item.quality}.mp4`);
@@ -648,23 +692,76 @@ async function acquire(ctx, item, attempt) {
   activeTimers.add(timer);
   try {
     const torrent = await new Promise((done, reject) => {
+      let settled = false;
+      let metadataTimer;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(metadataTimer);
+        activeTimers.delete(metadataTimer);
+        if (activeAcquisitionReject === reject) activeAcquisitionReject = null;
+        fn(value);
+      };
+      const onError = error => finish(reject, error);
       activeAcquisitionReject = reject;
-      const onError = e => { controller.abort(e); reject(e); };
+      metadataTimer = setTimeout(() => {
+        const error = new Error('METADATA_TIMEOUT: torrent metadata not received');
+        error.code = 'METADATA_TIMEOUT';
+        finish(reject, error);
+      }, ACQUISITION_METADATA_TIMEOUT_MS);
+      activeTimers.add(metadataTimer);
       client.on('error', onError);
-      client.on('warning', onError);
-      const pending = client.add(descriptor, { path: resolve(work, 'pieces'), deselect: true, strategy: 'sequential', storeCacheSlots: 2 }, done);
+      client.on('warning', error => console.warn(JSON.stringify({ event: 'torrent-warning', id: item.id, quality: item.quality, error: safeLogError(error) })));
+      const pending = client.add(descriptor, { path: resolve(work, 'pieces'), deselect: true, strategy: 'sequential', storeCacheSlots: 2 }, received => finish(done, received));
       pending.on('error', onError);
-      controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+      controller.signal.addEventListener('abort', () => finish(reject, controller.signal.reason), { once: true });
     });
+    console.log(JSON.stringify({ event: 'torrent-metadata', id: item.id, quality: item.quality, infoHash: torrent.infoHash || null, pieceLength: torrent.pieceLength || null, torrentBytes: torrent.length || null, fileCount: torrent.files?.length || 0, peers: torrent.numPeers || 0 }));
+    torrent.on('noPeers', announceType => console.warn(JSON.stringify({ event: 'torrent-no-peers', id: item.id, quality: item.quality, announceType: announceType || 'unknown', peers: torrent.numPeers || 0 })));
+    torrent.on('trackerAnnounce', () => console.log(JSON.stringify({ event: 'torrent-tracker-announce', id: item.id, quality: item.quality, peers: torrent.numPeers || 0 })));
+    torrent.on('wire', () => console.log(JSON.stringify({ event: 'torrent-peer-connected', id: item.id, quality: item.quality, peers: torrent.numPeers || 0 })));
+
     const file = primaryMp4(torrent.files);
     if (!file || torrent.pieceLength > 16 * 1024 * 1024) throw new Error('No safe playable MP4 in source');
     const disk = await statfs(work);
     if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new Error('Insufficient runner disk for this video');
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
+    let downloadedBytes = 0;
+    let lastProgressAt = Date.now();
+    let noProgressFailure = null;
     const readStream = file.createReadStream();
-    const progressPassThrough = progressStream(item, file.length);
-    await pipeline(readStream, progressPassThrough, createWriteStream(filePath), { signal: controller.signal });
+    const progressPassThrough = progressStream(item, file.length, bytes => {
+      downloadedBytes = bytes;
+      lastProgressAt = Date.now();
+    });
+    const noProgressTimer = setInterval(() => {
+      const idleMs = Date.now() - lastProgressAt;
+      if (idleMs < ACQUISITION_NO_PROGRESS_TIMEOUT_MS) return;
+      const error = createNoProgressError(downloadedBytes, idleMs);
+      noProgressFailure = error;
+      console.warn(JSON.stringify({
+        event: 'torrent-no-progress-timeout',
+        id: item.id,
+        quality: item.quality,
+        downloadedBytes,
+        peers: torrent?.numPeers || 0,
+        error: error.message,
+      }));
+      controller.abort(error);
+      readStream.destroy(error);
+      progressPassThrough.destroy(error);
+      try { torrent?.destroy(); } catch { /* client cleanup follows in finally */ }
+    }, ACQUISITION_PROGRESS_CHECK_MS);
+    activeIntervals.add(noProgressTimer);
+    try {
+      await pipeline(readStream, progressPassThrough, createWriteStream(filePath), { signal: controller.signal });
+    } catch (error) {
+      throw noProgressFailure || error;
+    } finally {
+      clearInterval(noProgressTimer);
+      activeIntervals.delete(noProgressTimer);
+    }
     const written = fs.statSync(filePath);
     if (!written.isFile() || written.size <= 10 * 1024 * 1024) {
       throw new Error('NEW_FILE_ZERO_BYTES_OR_CORRUPT');
@@ -692,15 +789,19 @@ function failureState(plan, id) {
     .filter(item => item.id === id && (item.verified || item.file))
     .map(item => item.quality));
   const missing = ['720p', '1080p'].filter(quality => !present.has(quality));
+  const failureReason = (plan?.files || [])
+    .filter(item => item.id === id)
+    .map(item => item.failureReason)
+    .find(Boolean);
   if (present.size === 1 && missing.length === 1) {
     return {
       status: 'HALF',
       ingestStatus: 'skipped_unplayable',
-      error: `Missing ${missing[0]}: Dead stream / 404`,
+      error: 'Missing ' + missing[0] + ': ' + (failureReason || 'Dead stream / 404'),
     };
   }
   const unplayable = (plan?.files || []).some(item => item.id === id && item.skipped && /MP4|unplayable|corrupt|container/i.test(String(item.skipReason || '')));
-  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404' };
+  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: failureReason || (unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404') };
 }
 export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
@@ -736,10 +837,10 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
       return true;
     } catch (error) {
       const message = safeLogError(error);
-      if (isNonRetryableValidationError(error)) {
+      if (isNonRetryableValidationError(error) || isNonRetryableAcquisitionFailure(error)) {
         item.nonRetryableFailure = true;
-        item.failureReason = message;
-        console.warn(JSON.stringify({ event: 'acquisition-validation-failure', id: item.id, quality: item.quality, attempt, retryable: false, error: message }));
+        item.failureReason = classifyMediaError(error);
+        console.warn(JSON.stringify({ event: 'acquisition-nonretryable-failure', id: item.id, quality: item.quality, attempt, retryable: false, error: item.failureReason }));
         return false;
       }
       console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: message }));
