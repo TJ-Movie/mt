@@ -50,7 +50,7 @@ export type ValidationResult =
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const LOCAL_ASSET = /^\/(?:og\.png|media\/(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)))$/;
-const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|(?:[a-z0-9-]+\.)?yts\.(?:mx|lt|am|rs|pm)\/[^\s]+|(?:flixlyra\.com|flixlyra\.flixlyra-platform-326e\.workers\.dev)\/media\/(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png))|[a-z0-9-]+\.r2\.dev\/(?:media\/)?artworks\/\d+\/(?:poster|backdrop)\.jpg|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
+const REMOTE_IMAGE = /^https:\/\/(?:image\.tmdb\.org\/t\/p\/(?:w185|w342|w500|original)\/[^\s]+|yts\.gg\/[^\s]+|(?:[a-z0-9-]+\.)?yts\.(?:mx|lt|am|rs|pm)\/[^\s]+|(?:flixlyra\.com|flixlyra\.flixlyra-platform-326e\.workers\.dev)\/media\/(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png))|[a-z0-9-]+\.r2\.dev\/(?:media\/)?artworks\/\d+\/(?:poster|backdrop)\.jpg|[^\s]*cloudflarestorage\.com\/[^\s]+)$/i;
 const validImage = (value: string) => LOCAL_ASSET.test(value) || REMOTE_IMAGE.test(value);
 
 type RightsControlledFields = Pick<AdminMovieInput,

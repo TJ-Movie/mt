@@ -18,6 +18,8 @@ const ytsEndpoints = [
 const maxImageBytes = 10 * 1024 * 1024;
 const imageTimeoutMs = 10000;
 const runExecute = process.argv.includes("--execute");
+const requestedMovieIds = new Set((process.argv.find((value) => value.startsWith("--movie-ids="))?.slice("--movie-ids=".length) || "")
+  .split(",").map((value) => Number(value.trim())).filter((value) => Number.isSafeInteger(value) && value > 0));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const requestTimeoutMs = 10000;
 const maxRequestAttempts = 3;
@@ -91,7 +93,7 @@ function invalidArtworkValue(value) {
 }
 
 function allowedImageHost(hostname) {
-  return ["image.tmdb.org", "m.media-amazon.com", "yts.mx", "yts.lt", "img.yts.mx"].includes(hostname.toLowerCase());
+  return ["image.tmdb.org", "m.media-amazon.com", "yts.gg", "yts.mx", "yts.lt", "img.yts.mx"].includes(hostname.toLowerCase());
 }
 
 function sourceImage(value) {
@@ -706,7 +708,11 @@ async function main() {
     process.exit(1);
   }
   if (runExecute && (!r2AccessKeyId || !r2SecretAccessKey)) throw new Error("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for --execute");
-  const rows = await queryD1("SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies ORDER BY id");
+  const rowFilter = requestedMovieIds.size
+    ? " WHERE id IN (" + [...requestedMovieIds].map(() => "?").join(",") + ")"
+    : "";
+  const rowParams = requestedMovieIds.size ? [...requestedMovieIds] : [];
+  const rows = await queryD1("SELECT id, title, release_year, imdb_id, poster, backdrop, director, cast_json, official_watch_url FROM movies" + rowFilter + " ORDER BY id", rowParams);
   s3 = runExecute ? new S3Client({
     region: "auto",
     endpoint: "https://" + accountId + ".r2.cloudflarestorage.com",

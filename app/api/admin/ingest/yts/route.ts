@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers';
 import { allLanguages } from '../../../../../lib/catalogue-options';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
 import { buildTargetedWorkflowInputs, serializeWorkflowDispatchBody, type WorkflowDispatchInputs } from '../../../../../lib/github-dispatch';
+import { approvedImageSource } from '../../../../../lib/image-source-policy.mjs';
 
 const DEFAULT_IMDB_IDS = [
   'tt0499549', 'tt1630029', 'tt1375666', 'tt0816692', 'tt0468569', 'tt15398776', 'tt0172495',
@@ -28,13 +29,7 @@ function languagesFromYts(value: unknown): string[] {
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string { return typeof value === 'string' ? value.normalize('NFKC').trim().slice(0, maximum) : ''; }
 function remoteImage(value: unknown, fallback = '/og.png'): string {
-  const candidate = text(value, 1000);
-  try {
-    const url = new URL(candidate);
-    const hostname = url.hostname.toLowerCase();
-    const allowed = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') || hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') || hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
-    return url.protocol === 'https:' && allowed ? url.toString() : fallback;
-  } catch { return fallback; }
+  return approvedImageSource(value, { allowYtsSubdomains: true, maxLength: 1000 }) ?? fallback;
 }
 function selectTorrents(value: unknown): YtsTorrent[] {
   if (!Array.isArray(value)) return [];

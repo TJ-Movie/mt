@@ -11,6 +11,7 @@ import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from 
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 import { claimTransfer, diagnoseStaleTransfers, releaseTransfer, assertLegalTransition } from './ingest-state.mjs';
+import { approvedImageSource } from '../lib/image-source-policy.mjs';
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
@@ -156,15 +157,7 @@ function isRecord(value) {
 }
 
 function artworkUrl(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  try {
-    const url = new URL(value.trim());
-    const hostname = url.hostname.toLowerCase();
-    const allowedHost = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') ||
-      hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') ||
-      hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
-    return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowedHost ? url.toString() : null;
-  } catch { return null; }
+  return approvedImageSource(value, { allowYtsSubdomains: true });
 }
 
 function publicArtworkUrl(key) {
