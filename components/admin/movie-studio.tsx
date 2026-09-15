@@ -161,7 +161,7 @@ function IngestionPanel({
   async function triggerIngestion() {
     const imdbIds = [...new Set(imdbInput.split(/[\s,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean))];
     if (!imdbIds.length || imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
-      setNotice({ tone: 'error', text: 'Enter up to 20 valid YTS/IMDb IDs, separated by commas or new lines.' });
+      setNotice({ tone: 'error', text: 'Enter up to 20 valid IMDb IDs, separated by commas or new lines.' });
       return;
     }
     setRunning(true);
@@ -221,11 +221,11 @@ function IngestionPanel({
           <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
           <h2 className="mt-2 font-serif text-2xl">Ingest movies automatically</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-            Paste YTS/IMDb IDs. One click fetches metadata, artwork, cast, and available 720p/1080p media automatically. After processing, review rights and publish manually.
+            Paste IMDb IDs. One click fetches metadata, artwork, cast, and available 720p/1080p media automatically. After processing, review rights and publish manually.
           </p>
         </div>
         <div className="flex w-full max-w-md flex-col gap-3">
-          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">YTS/IMDb IDs</label>
+          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">IMDb IDs</label>
           <Textarea id="custom-imdb-ids" value={imdbInput} onChange={(event) => setImdbInput(event.target.value)} placeholder="tt0111161, tt0068646" rows={2} disabled={running} />
           <p className="text-xs text-white/45">Comma, space, or newline separated · maximum 20</p>
           <Button onClick={triggerIngestion} disabled={running} className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60">

@@ -10,7 +10,7 @@ const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 
 type YtsTorrent = { url?: unknown; quality?: unknown; type?: unknown; size?: unknown; size_bytes?: unknown };
 
-type YtsMovie = { id?: unknown; title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown; yt_trailer_code?: unknown };
+type YtsMovie = { title?: unknown; year?: unknown; imdb_code?: unknown; description_full?: unknown; description_intro?: unknown; rating?: unknown; medium_cover_image?: unknown; large_cover_image?: unknown; background_image?: unknown; background_image_original?: unknown; torrents?: unknown; cast?: unknown; genres?: unknown; language?: unknown; runtime?: unknown; director?: unknown; yt_trailer_code?: unknown };
 type RuntimeEnv = { GITHUB_ACTIONS_TOKEN?: string; GITHUB_TOKEN?: string; GITHUB_REPOSITORY?: string; GITHUB_WORKFLOW_FILE?: string; GITHUB_WORKFLOW_REF?: string };
 const MAX_SUBREQUESTS = 40;
 const DEFAULT_REPOSITORY = 'TJ-Movie/mt';
@@ -37,16 +37,15 @@ function mapGenres(yts: unknown): string {
   return (Array.isArray(yts) ? yts : []).map((value) => text(value, 40)).map((genre) => aliases[genre.toLowerCase()] || genre).filter((value) => supportedGenres.has(value)).slice(0, 3).join(', ') || 'Drama';
 }
 function idsFromBody(body: unknown): string[] {
-  if (!isRecord(body)) return [];
-  const submitted = body.sourceIds ?? body.imdbIds;
-  if (!Array.isArray(submitted)) return [];
-  return [...new Set(submitted.filter((id): id is string => typeof id === 'string' && /^(?:tt\d{7,10}|\d{1,10})$/.test(id.trim())).map((id) => id.trim()))].slice(0, 20);
+  if (!isRecord(body) || body.imdbIds === undefined) return [];
+  if (!Array.isArray(body.imdbIds)) return [];
+  return [...new Set(body.imdbIds.filter((id): id is string => typeof id === 'string' && /^tt\d{7,10}$/.test(id.trim())).map((id) => id.trim()))].slice(0, 20);
 }
 
-async function fetchJson(sourceId: string): Promise<YtsMovie> {
+async function fetchJson(imdbId: string): Promise<YtsMovie> {
   let response: Response;
   try {
-    const query = new URLSearchParams({ [sourceId.startsWith('tt') ? 'imdb_id' : 'movie_id']: sourceId, with_images: 'true', with_cast: 'true' });
+    const query = new URLSearchParams({ imdb_id: imdbId, with_images: 'true', with_cast: 'true' });
     response = await fetch(`${YTS_ENDPOINT}?${query}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
   } catch {
     throw new Error('YTS_UNREACHABLE: Metadata service could not be reached.');
@@ -55,10 +54,7 @@ async function fetchJson(sourceId: string): Promise<YtsMovie> {
   const payload: unknown = await response.json().catch(() => null);
   const movie = isRecord(payload) && isRecord(payload.data) ? payload.data.movie : null;
   if (!isRecord(movie)) throw new Error('YTS_INVALID_RESPONSE');
-  const resolvedImdbId = text(movie.imdb_code, 32);
-  const resolvedYtsId = Number(movie.id);
-  const matchesSource = sourceId.startsWith('tt') ? resolvedImdbId === sourceId : Number.isSafeInteger(resolvedYtsId) && resolvedYtsId === Number(sourceId);
-  if (!matchesSource || !/^tt\d{7,10}$/.test(resolvedImdbId) || !text(movie.title, 200)) throw new Error('YTS_MOVIE_MISMATCH');
+  if (movie.imdb_code !== imdbId || !text(movie.title, 200)) throw new Error('YTS_MOVIE_MISMATCH');
   return movie as YtsMovie;
 }
 
@@ -154,24 +150,23 @@ export async function POST(request: Request) {
   const authorization = await authorizeAdminRequest(request, true);
   if ('response' in authorization) return authorization.response;
   const ids = idsFromBody(await readBoundedJson(request, 4096));
-  if (!ids.length) return Response.json({ error: 'Provide up to 20 valid YTS or IMDb IDs.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
+  if (!ids.length) return Response.json({ error: 'Provide up to 20 valid IMDb IDs.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   const results: Array<Record<string, unknown>> = [];
   // Each ID consumes one YTS request. Artwork and torrent descriptors are
   // intentionally not fetched here; keeping this route at <= 20 external
   // requests leaves room for the single GitHub dispatch request under the
   // Cloudflare Worker subrequest limit.
   if (ids.length + 1 >= MAX_SUBREQUESTS) throw new Error('INGEST_BATCH_SUBREQUEST_BUDGET_EXCEEDED');
-  const fetched = await Promise.all(ids.map(async (sourceId) => {
-    try { return { sourceId, movie: await fetchJson(sourceId) }; }
-    catch (error) { return { sourceId, error }; }
+  const fetched = await Promise.all(ids.map(async (imdbId) => {
+    try { return { imdbId, movie: await fetchJson(imdbId) }; }
+    catch (error) { return { imdbId, error }; }
   }));
   let inserted = 0;
   for (const entry of fetched) {
-    const { sourceId } = entry;
+    const { imdbId } = entry;
     try {
       if ('error' in entry) throw entry.error;
       const movie = entry.movie;
-      const imdbId = text(movie.imdb_code, 32);
       const torrents = selectTorrents(movie.torrents);
       if (torrents.length === 0) throw new Error('YTS_NO_SUPPORTED_QUALITY');
       const preparedTorrents = torrents.map((torrent) => {
@@ -200,9 +195,9 @@ export async function POST(request: Request) {
       };
       const id = await upsertYtsIngestMovie(record, authorization.user);
       inserted += 1;
-      results.push({ sourceId, imdbId, id, status: 'queued', qualities: preparedTorrents.map((torrent) => torrent.quality), storageKey: null });
+      results.push({ imdbId, id, status: 'queued', qualities: preparedTorrents.map((torrent) => torrent.quality), storageKey: null });
     } catch (error) {
-      results.push({ sourceId, imdbId: sourceId, status: 'failed', error: error instanceof Error ? error.message.slice(0, 80) : 'INGEST_FAILED' });
+      results.push({ imdbId, status: 'failed', error: error instanceof Error ? error.message.slice(0, 80) : 'INGEST_FAILED' });
     }
   }
   const movieIds = results

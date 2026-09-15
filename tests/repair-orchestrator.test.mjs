@@ -45,6 +45,10 @@ test('normal Studio ingestion dispatches the saved movie IDs to the canonical wo
   assert.match(route, /movie_ids: movieIds\.join\(','\)/);
   assert.match(route, /dispatch_mode: 'targeted'/);
   assert.match(workflow, /Fetch artwork and cast for targeted ingest/);
+  const artworkStep = workflow.split('      - name: Fetch artwork and cast for targeted ingest')[1].split('      - name: Prepare Media & Manifest')[0];
+  assert.match(artworkStep, /OMDB_API_KEY: \$\{\{ secrets\.OMDB_API_KEY \}\}/);
+  assert.match(artworkStep, /TMDB_API_KEY: \$\{\{ secrets\.TMDB_API_KEY \}\}/);
+  assert.match(artworkStep, /TMDB_API_TOKEN: \$\{\{ secrets\.TMDB_API_TOKEN \}\}/);
   assert.match(workflow, /Run Continuous Smart R2 Sync/);
 });
 
