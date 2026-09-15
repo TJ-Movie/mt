@@ -18,6 +18,7 @@ const ytsEndpoints = [
 const maxImageBytes = 10 * 1024 * 1024;
 const imageTimeoutMs = 10000;
 const runExecute = process.argv.includes("--execute");
+const artworkCastOnly = process.argv.includes("--artwork-cast-only");
 const requestedMovieIds = new Set((process.argv.find((value) => value.startsWith("--movie-ids="))?.slice("--movie-ids=".length) || "")
   .split(",").map((value) => Number(value.trim())).filter((value) => Number.isSafeInteger(value) && value > 0));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -536,7 +537,7 @@ function metadataCast(value) {
       const name = text(entry.name || entry.actor, 120);
       if (!name) return [];
       const character = text(entry.character || entry.character_name, 120);
-      const profile = sourceImageCandidate(entry.profile_url || entry.profileUrl);
+      const profile = sourceImageCandidate(entry.url_small_image || entry.profile_url || entry.profileUrl || entry.image);
       const image = sourceImageCandidate(entry.image);
       return [{ name, ...(character ? { character } : {}), ...(profile ? { profile_url: profile } : {}), ...(image ? { image } : {}) }];
     });
@@ -624,19 +625,22 @@ async function markMovieFlagged(id, reason) {
 async function processRow(s3, row) {
   const posterOk = !invalidArtworkValue(row.poster) && canonicalArtworkValue(row.poster, row.id, "poster") && await verifyPublicArtwork(publicArtworkUrl(row.id, "poster"));
   const backdropOk = !invalidArtworkValue(row.backdrop) && canonicalArtworkValue(row.backdrop, row.id, "backdrop") && await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop"));
-  const trailerOk = await verifyYoutubeOembed(row.official_watch_url);
-  if (posterOk && backdropOk && !invalidDirector(row.director) && trailerOk && !castNeedsProfile(row.cast_json)) return { id: row.id, updates: {}, unresolved: [], reasons: [] };
+  const trailerOk = artworkCastOnly ? true : await verifyYoutubeOembed(row.official_watch_url);
+  const castOk = !castNeedsProfile(row.cast_json);
+  if (posterOk && backdropOk && (artworkCastOnly ? castOk : (!invalidDirector(row.director) && trailerOk && castOk))) return { id: row.id, updates: {}, unresolved: [], reasons: [] };
 
   const reasons = [];
   const yts = await fetchYts(row);
-  const providers = await providerMetadata(row, yts, true);
+  const providers = artworkCastOnly ? [] : await providerMetadata(row, yts, true);
   const poster = posterOk ? text(row.poster) : await repairArtwork(s3, row, "poster", yts, providers);
   const backdrop = backdropOk ? text(row.backdrop) : await repairArtwork(s3, row, "backdrop", yts, providers);
-  const director = invalidDirector(row.director)
-    ? [ytsDirector(yts), ...providers.map((provider) => provider.director)].find((value) => !invalidDirector(value)) || null
-    : text(row.director, 160);
-  let trailer = trailerOk ? text(row.official_watch_url) : null;
-  if (!trailer) {
+  const director = artworkCastOnly
+    ? text(row.director, 160)
+    : (invalidDirector(row.director)
+      ? [ytsDirector(yts), ...providers.map((provider) => provider.director)].find((value) => !invalidDirector(value)) || null
+      : text(row.director, 160));
+  let trailer = artworkCastOnly ? text(row.official_watch_url, 1000) : (trailerOk ? text(row.official_watch_url) : null);
+  if (!artworkCastOnly && !trailer) {
     for (const candidate of [ytsTrailer(yts), ...providers.map((provider) => provider.trailer)].filter(Boolean)) {
       if (await verifyYoutubeOembed(candidate)) { trailer = candidate; break; }
     }
@@ -644,7 +648,12 @@ async function processRow(s3, row) {
   const currentCast = metadataCast(row.cast_json);
   const providerCast = [ytsCast(yts), ...providers.map((provider) => metadataCast(provider.cast))].flat().filter(Boolean);
   const profiledProviderCast = providerCast.filter((member) => isRecord(member) && member.profile_url);
-  const cast = (profiledProviderCast.length ? profiledProviderCast : (currentCast.length ? currentCast : providerCast)).slice(0, 6);
+  const cast = artworkCastOnly
+    ? currentCast.map((member) => {
+      const match = profiledProviderCast.find((provider) => String(provider.name).toLowerCase() === String(member.name).toLowerCase());
+      return member.profile_url || !match?.profile_url ? member : { ...member, profile_url: match.profile_url };
+    }).slice(0, 6)
+    : (profiledProviderCast.length ? profiledProviderCast : (currentCast.length ? currentCast : providerCast)).slice(0, 6);
   const updates = {
     director: director || null,
     cast_json: cast.length ? JSON.stringify(cast) : text(row.cast_json) || null,
@@ -655,14 +664,17 @@ async function processRow(s3, row) {
   const unresolved = [];
   if (!updates.poster || !(await verifyPublicArtwork(publicArtworkUrl(row.id, "poster")))) unresolved.push("poster");
   if (!updates.backdrop || !(await verifyPublicArtwork(publicArtworkUrl(row.id, "backdrop")))) unresolved.push("backdrop");
-  if (invalidDirector(updates.director)) unresolved.push("director");
-  if (!trailer) unresolved.push("official_watch_url");
+  if (!artworkCastOnly && invalidDirector(updates.director)) unresolved.push("director");
+  if (!artworkCastOnly && !trailer) unresolved.push("official_watch_url");
   if (!poster) reasons.push("poster_unresolved");
   if (!backdrop) reasons.push("backdrop_unresolved");
-  if (!director) reasons.push("director_unresolved");
-  if (!trailer) reasons.push("trailer_unresolved");
 
-  if (runExecute && unresolved.length === 0) {
+  if (runExecute && unresolved.length === 0 && artworkCastOnly) {
+    await queryD1(
+      "UPDATE movies SET cast_json = ?, poster = ?, backdrop = ? WHERE id = ? AND (cast_json IS NOT ? OR poster IS NOT ? OR backdrop IS NOT ?)",
+      [updates.cast_json, updates.poster, updates.backdrop, row.id, updates.cast_json, updates.poster, updates.backdrop],
+    );
+  } else if (runExecute && unresolved.length === 0) {
     await queryD1(
       "UPDATE movies SET director = ?, cast_json = ?, official_watch_url = ?, poster = ?, backdrop = ? WHERE id = ? AND (director IS NOT ? OR cast_json IS NOT ? OR official_watch_url IS NOT ? OR poster IS NOT ? OR backdrop IS NOT ?)",
       [updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop, row.id, updates.director, updates.cast_json, updates.official_watch_url, updates.poster, updates.backdrop],
