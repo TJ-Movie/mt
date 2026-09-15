@@ -50,6 +50,9 @@ test('normal Studio ingestion dispatches the saved movie IDs to the canonical wo
   assert.match(artworkStep, /TMDB_API_KEY: \$\{\{ secrets\.TMDB_API_KEY \}\}/);
   assert.match(artworkStep, /TMDB_API_TOKEN: \$\{\{ secrets\.TMDB_API_TOKEN \}\}/);
   assert.match(workflow, /Run Continuous Smart R2 Sync/);
+  assert.match(workflow, /sync-media:[\s\S]*timeout-minutes: 180/);
+  assert.match(workflow, /Prepare Media & Manifest[\s\S]*timeout-minutes: 60/);
+  assert.match(workflow, /Run Continuous Smart R2 Sync[\s\S]*timeout-minutes: 60/);
 });
 
 test('normal Studio copy exposes one ingestion action without recovery controls', () => {
