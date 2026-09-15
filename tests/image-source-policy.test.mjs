@@ -6,6 +6,10 @@ test('accepts exact HTTPS yts.gg artwork host', () => {
   assert.equal(approvedImageSource('https://yts.gg/assets/poster.jpg'), 'https://yts.gg/assets/poster.jpg');
 });
 
+
+test('accepts the exact HTTPS img.yts.gg redirect host', () => {
+  assert.equal(approvedImageSource('https://img.yts.gg/assets/poster.jpg'), 'https://img.yts.gg/assets/poster.jpg');
+});
 test('rejects unsafe yts.gg variants and transport details', () => {
   for (const value of [
     'http://yts.gg/poster.jpg',

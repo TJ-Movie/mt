@@ -94,7 +94,7 @@ function invalidArtworkValue(value) {
 }
 
 function allowedImageHost(hostname) {
-  return ["image.tmdb.org", "m.media-amazon.com", "yts.gg", "yts.mx", "yts.lt", "img.yts.mx"].includes(hostname.toLowerCase());
+  return ["image.tmdb.org", "m.media-amazon.com", "yts.gg", "img.yts.gg", "yts.mx", "yts.lt", "img.yts.mx"].includes(hostname.toLowerCase());
 }
 
 function sourceImage(value) {
