@@ -31,6 +31,7 @@ globalThis.__SUBLYRA_TEST_ENV__ = {
     async put(key, body) { stored.set(key, await new Response(body).text()); },
     async head(key) { return stored.has(key) ? { size: 100, httpMetadata: { contentType: 'video/mp4' } } : null; },
   },
+  GITHUB_ACTIONS_TOKEN: 'test-dispatch-token',
 };
 const { publicKey, privateKey } = await generateKeyPair('RS256');
 const jwk = { ...await exportJWK(publicKey), kid: 'test-key', alg: 'RS256', use: 'sig' };
@@ -39,9 +40,14 @@ const token = await new SignJWT({ email: 'owner@example.test' }).setProtectedHea
   .setIssuedAt().setExpirationTime('5m').sign(privateKey);
 const csrfToken = '11111111-1111-4111-8111-111111111111';
 let only720 = false;
-globalThis.fetch = async input => {
+const dispatchBodies = [];
+globalThis.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === 'string' ? input : input.url ?? input);
   if (url.pathname === '/cdn-cgi/access/certs') return Response.json({ keys: [jwk] });
+  if (url.hostname === 'api.github.com') {
+    dispatchBodies.push(JSON.parse(init.body));
+    return new Response(null, { status: 204 });
+  }
   if (url.hostname === 'movies-api.accel.li') return Response.json({ status: 'ok', data: { movie: {
     title: 'Test Film', year: 2026, imdb_code: 'tt1234567', description_full: 'Synopsis', rating: 8,
     large_cover_image: 'https://yts.gg/poster.jpg', torrents: [
@@ -67,20 +73,26 @@ test('authenticated ingestion persists a draft and prefers 1080p, with 720p fall
   const payload = await response.json();
   assert.equal(payload.results[0].status, 'queued', JSON.stringify(payload));
   assert.equal(payload.metadata.status, 'METADATA_SAVED');
-  assert.equal(payload.workflow.status, 'DISPATCH_FAILED');
-  assert.equal(payload.workflow.triggered, false);
+  assert.equal(payload.workflow.status, 'DISPATCH_SUCCEEDED');
+  assert.equal(payload.workflow.triggered, true);
   assert.equal(payload.results[0].qualities[0], '1080p');
   const row = sqlite.prepare("SELECT * FROM movies WHERE imdb_id = 'tt1234567'").get();
   assert.equal(row.publication_status, 'draft');
   assert.equal(row.rights_status, 'pending');
   assert.equal(row.ingest_status, 'queued');
   assert.equal(row.storage_key, null);
+  assert.deepEqual(dispatchBodies[0], { ref: 'main', inputs: { movie_ids: String(payload.metadata.movieIds[0]), dispatch_mode: 'targeted' } });
+  const dispatchAuditFields = sqlite.prepare("SELECT changed_fields_json FROM audit_events WHERE movie_id=? AND action='yts_dispatch_dispatch_succeeded'").all(payload.metadata.movieIds[0])
+    .flatMap((event) => JSON.parse(event.changed_fields_json));
+  assert.ok(dispatchAuditFields.some((field) => field.startsWith('workflow_inputs:') &&
+    JSON.stringify(JSON.parse(field.slice('workflow_inputs:'.length))) === JSON.stringify({ movie_ids: String(payload.metadata.movieIds[0]), dispatch_mode: 'targeted' })));
   assert.equal(stored.size, 0);
   assert.equal(JSON.parse(row.download_sources_json).status, 'pending');
   assert.equal(JSON.parse(row.download_sources_json).sources[0].quality, '1080p');
   only720 = true;
   const retry = await (await ingest()).json();
   assert.equal(retry.results[0].status, 'queued'); assert.deepEqual(retry.results[0].qualities, ['720p']);
+  assert.deepEqual(dispatchBodies[1], { ref: 'main', inputs: { movie_ids: String(payload.metadata.movieIds[0]), dispatch_mode: 'targeted' } });
   assert.equal(sqlite.prepare("SELECT count(*) AS n FROM movies WHERE imdb_id = 'tt1234567'").get().n, 1);
   assert.equal((await ingest('invalid')).status, 404);
 });

@@ -16,8 +16,24 @@ export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 30;
-const FILTER_MOVIE_IDS = new Set((process.env.TRANSFER_MOVIE_IDS || '').split(',').map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0));
+const RAW_TRANSFER_MOVIE_IDS = process.env.TRANSFER_MOVIE_IDS || '';
+const FILTER_MOVIE_IDS = new Set(RAW_TRANSFER_MOVIE_IDS.split(',').map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0));
 const FILTER_QUALITY = /^(720p|1080p)$/.test(process.env.TRANSFER_QUALITY || '') ? process.env.TRANSFER_QUALITY : null;
+const DISPATCH_MODE = process.env.TRANSFER_DISPATCH_MODE || 'queue';
+
+export function selectRowsForMovieIds(rows, movieIds) {
+  const ids = new Set([...movieIds].map((id) => Number(id)));
+  return rows.filter((row) => ids.has(Number(row.id)));
+}
+
+export function validateDispatchScope(mode, movieIds, rawMovieIds = '') {
+  if (!['queue', 'targeted'].includes(mode)) throw new Error('TRANSFER_DISPATCH_MODE_INVALID');
+  if (mode !== 'targeted') return;
+  const values = rawMovieIds.split(',').map((value) => value.trim()).filter(Boolean);
+  if (!values.length) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_REQUIRED');
+  if (values.some((value) => !/^\d+$/.test(value) || Number(value) <= 0)) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_INVALID');
+  if (!movieIds.size) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_REQUIRED');
+}
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 const YTS_FALLBACK_ENDPOINT = 'https://yts.mx/api/v2/movie_details.json';
 const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
@@ -585,10 +601,12 @@ export async function diagnoseTransferLocks(ctx) {
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
   if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 30) throw new Error('Invalid maxMovies');
-  const queryLimit = FILTER_MOVIE_IDS.size ? 30 : maxMovies;
-  const rows = await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [queryLimit]);
+  validateDispatchScope(DISPATCH_MODE, FILTER_MOVIE_IDS, RAW_TRANSFER_MOVIE_IDS);
+  const rows = FILTER_MOVIE_IDS.size
+    ? await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') AND id IN (" + [...FILTER_MOVIE_IDS].map(() => '?').join(',') + ") ORDER BY id", [...FILTER_MOVIE_IDS])
+    : await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
   const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
-  const selectedRows = FILTER_MOVIE_IDS.size ? rows.filter(row => FILTER_MOVIE_IDS.has(Number(row.id))) : rows;
+  const selectedRows = FILTER_MOVIE_IDS.size ? selectRowsForMovieIds(rows, FILTER_MOVIE_IDS) : rows;
   for (const row of selectedRows) {
     const movieItems = [];
     try {

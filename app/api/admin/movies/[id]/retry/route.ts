@@ -1,4 +1,4 @@
-﻿import { getDatabase } from '../../../../../../db';
+import { getDatabase } from '../../../../../../db';
 import { triggerR2Sync } from '../../../../../../app/api/admin/ingest/yts/route';
 import { assertLegalTransition } from '../../../../../../scripts/ingest-state.mjs';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../../lib/security/admin-api';
@@ -33,7 +33,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try { assertLegalTransition(row.ingest_status, 'processing'); } catch { return Response.json({ error: 'This movie is in a state that cannot be retried safely.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS }); }
   const updated = await database.prepare("UPDATE movies SET ingest_status = 'processing', transfer_error = NULL, transfer_token = NULL, transfer_lease_until = NULL, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = ? AND revision = ? AND publication_status <> 'archived' AND ingest_status = ? AND (transfer_token IS NULL OR transfer_lease_until IS NULL OR transfer_lease_until <= strftime('%s','now')) RETURNING id").bind(authorization.user.userId, new Date().toISOString(), id, row.revision, row.ingest_status).all();
   if (!updated.results?.length) return Response.json({ error: 'The record changed or has an active transfer lease. Refresh and retry.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
-  const workflow = await triggerR2Sync([id], authorization.user, { movie_ids: String(id), quality });
+  const workflow = await triggerR2Sync([id], authorization.user, { movie_ids: String(id), quality, dispatch_mode: 'targeted' });
   if (workflow.status === 'DISPATCH_FAILED') {
     await database.prepare("UPDATE movies SET ingest_status = 'retry_pending', transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, revision = revision + 1, updated_by = ?, updated_at = ? WHERE id = ? AND ingest_status = 'processing'").bind('DISPATCH_FAILED: ' + (workflow.error ?? 'unknown'), authorization.user.userId, new Date().toISOString(), id).run();
   }

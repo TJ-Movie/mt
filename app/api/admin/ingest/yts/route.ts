@@ -2,6 +2,7 @@ import { recordYtsDispatchEvent, upsertYtsIngestMovie, type YtsIngestRecord } fr
 import { env } from 'cloudflare:workers';
 import { allLanguages } from '../../../../../lib/catalogue-options';
 import { ADMIN_NO_STORE_HEADERS, authorizeAdminRequest, readBoundedJson } from '../../../../../lib/security/admin-api';
+import { buildTargetedWorkflowInputs, serializeWorkflowDispatchBody, type WorkflowDispatchInputs } from '../../../../../lib/github-dispatch';
 
 const DEFAULT_IMDB_IDS = [
   'tt0499549', 'tt1630029', 'tt1375666', 'tt0816692', 'tt0468569', 'tt15398776', 'tt0172495',
@@ -101,7 +102,7 @@ function githubSettings(): Required<Pick<RuntimeEnv, 'GITHUB_ACTIONS_TOKEN' | 'G
   };
 }
 
-export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof recordYtsDispatchEvent>[1], workflowInputs: Record<string, string> = {}): Promise<{
+export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof recordYtsDispatchEvent>[1], workflowInputs: WorkflowDispatchInputs = {}): Promise<{
   status: 'DISPATCH_PENDING' | 'DISPATCH_SUCCEEDED' | 'DISPATCH_FAILED';
   triggered: boolean;
   attemptId: string;
@@ -112,8 +113,12 @@ export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof 
 }> {
   const attemptId = crypto.randomUUID();
   const dispatchedAt = new Date().toISOString();
+  let dispatchInputs = { ...workflowInputs };
+  let inputError: string | null = null;
+  try { dispatchInputs = buildTargetedWorkflowInputs(movieIds, workflowInputs); }
+  catch (error) { inputError = error instanceof Error ? error.message : 'GITHUB_DISPATCH_INPUT_INVALID'; }
   const record = async (status: 'DISPATCH_PENDING' | 'DISPATCH_SUCCEEDED' | 'DISPATCH_FAILED', details: Record<string, string | number | null>) => {
-    try { await recordYtsDispatchEvent(movieIds, user, status, { attempt_id: attemptId, dispatched_at: dispatchedAt, workflow: DEFAULT_WORKFLOW, ...details, workflow_inputs: JSON.stringify(workflowInputs) }); }
+    try { await recordYtsDispatchEvent(movieIds, user, status, { attempt_id: attemptId, dispatched_at: dispatchedAt, workflow: DEFAULT_WORKFLOW, ...details, workflow_inputs: JSON.stringify(dispatchInputs) }); }
     catch (error) { console.error(JSON.stringify({ event: 'yts_dispatch_audit_failed', attemptId, error: error instanceof Error ? error.message : String(error) })); }
   };
   await record('DISPATCH_PENDING', { run_id: null });
@@ -126,6 +131,7 @@ export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof 
     console.warn('[ingest] GitHub R2 sync dispatch skipped: token is not configured. D1 records were saved.');
     return fail('GITHUB_ACTIONS_TOKEN_MISSING');
   }
+  if (inputError) return fail(inputError);
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(settings.GITHUB_REPOSITORY) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_FILE) || !/^[A-Za-z0-9_.-]+$/.test(settings.GITHUB_WORKFLOW_REF)) {
     console.warn('[ingest] GitHub R2 sync dispatch skipped: invalid configuration. D1 records were saved.');
     return fail('GITHUB_DISPATCH_CONFIGURATION_INVALID');
@@ -140,7 +146,7 @@ export async function triggerR2Sync(movieIds: number[], user: Parameters<typeof 
         'user-agent': 'flixlyra-yts-ingest',
         'x-github-api-version': '2022-11-28',
       },
-      body: JSON.stringify({ ref: settings.GITHUB_WORKFLOW_REF, inputs: workflowInputs }),
+      body: serializeWorkflowDispatchBody(settings.GITHUB_WORKFLOW_REF, dispatchInputs),
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status !== 204) return fail('GITHUB_DISPATCH_HTTP_' + response.status);
@@ -208,7 +214,7 @@ export async function POST(request: Request) {
     .filter((item) => item.status === 'queued' && typeof item.id === 'number')
     .map((item) => item.id as number);
   const dispatch = movieIds.length
-    ? await triggerR2Sync(movieIds, authorization.user)
+    ? await triggerR2Sync(movieIds, authorization.user, { movie_ids: movieIds.join(','), dispatch_mode: 'targeted' })
     : { status: 'DISPATCH_FAILED' as const, triggered: false, attemptId: null, dispatchedAt: null, runId: null, name: DEFAULT_WORKFLOW, error: 'NO_METADATA_ROWS_SAVED' };
   return Response.json({ results, metadata: { status: inserted > 0 ? 'METADATA_SAVED' : 'METADATA_FAILED', movieIds }, workflow: dispatch }, { headers: ADMIN_NO_STORE_HEADERS });
 }

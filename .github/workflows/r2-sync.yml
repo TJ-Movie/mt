@@ -13,6 +13,11 @@ on:
         required: false
         default: ''
         type: string
+      dispatch_mode:
+        description: 'Dispatch scope: queue for general processing or targeted for an explicit movie_ids list'
+        required: false
+        default: queue
+        type: string
       quality:
         description: 'Quality for a scoped retry'
         required: false
@@ -111,6 +116,22 @@ jobs:
           PUBLIC_SITE_ORIGIN: ${{ vars.PUBLIC_SITE_ORIGIN || 'https://flixlyra.com' }}
         run: node scripts/force-backfill-artworks.mjs --execute
 
+      - name: Validate targeted dispatch scope
+        if: inputs.dispatch_mode == 'targeted'
+        timeout-minutes: 5
+        env:
+          TRANSFER_MOVIE_IDS: ${{ inputs.movie_ids }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          const raw = process.env.TRANSFER_MOVIE_IDS || '';
+          const values = raw.split(',').map((value) => value.trim()).filter(Boolean);
+          if (!values.length || values.some((value) => ! /^\d+$/.test(value) || Number(value) <= 0)) {
+            console.error('Targeted dispatch requires one or more positive numeric movie_ids.');
+            process.exit(1);
+          }
+          NODE
+
       - name: Prepare Media & Manifest
         timeout-minutes: 15
         env:
@@ -127,6 +148,7 @@ jobs:
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
           TRANSFER_MOVIE_IDS: ${{ inputs.movie_ids }}
           TRANSFER_QUALITY: ${{ inputs.quality }}
+          TRANSFER_DISPATCH_MODE: ${{ inputs.dispatch_mode }}
         run: node scripts/prepare-cloud-media.mjs --max-movies=1
 
       - name: Verify Prepared Media Inputs
