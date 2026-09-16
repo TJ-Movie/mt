@@ -4,7 +4,7 @@ import { primaryMp4, sourceMagnet, transferLimits, hasDiskBudget, uploadStream }
 import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
-import { guardedSource } from '../scripts/webtorrent-guard.mjs';
+import { guardedFileIteratorSource, guardedSource } from '../scripts/webtorrent-guard.mjs';
 import { runChild } from '../scripts/transfer-process.mjs';
 import { compileFunction } from 'node:vm';
 
@@ -29,6 +29,14 @@ test('lifecycle guard matches the locked dependency request handler', () => {
   const patched = guardedSource(source);
   assert.equal(guardedSource(patched), patched);
   assert.match(patched, /if \(this.destroyed \|\| !this.ready \|\| !this.store\) return wire.destroy\(\)/);
+});
+
+test('file iterator guard settles a pending read during torrent teardown', () => {
+  const source = readFileSync('node_modules/webtorrent/lib/file-iterator.js', 'utf8');
+  const patched = guardedFileIteratorSource(source);
+  assert.equal(guardedFileIteratorSource(patched), patched);
+  assert.match(patched, /this\._pendingResolve = resolve/);
+  assert.match(patched, /resolve\(\{ done: true \}\)/);
 });
 
 test('an isolated process crash does not prevent the next film from running', async () => {

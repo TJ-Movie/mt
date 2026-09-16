@@ -1,29 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { patchWebTorrent } from '../scripts/webtorrent-guard.mjs';
 
 const MAGNET = 'magnet:?xt=urn:btih:0123456789012345678901234567890123456789';
 const VIDEO_BYTES = 10 * 1024 * 1024 + 12;
-
-class HangingReadable extends Readable {
-  _read() {}
-}
-
-class FakeFile {
-  constructor(mode) {
-    this.mode = mode;
-    this.name = 'feature.mp4';
-    this.length = VIDEO_BYTES;
-    this.streams = [];
-  }
-  select() {}
-  createReadStream() {
-    const bytes = Buffer.alloc(this.length);
-    bytes.write('ftyp', 4, 'ascii');
-    const stream = this.mode === 'success' ? Readable.from([bytes]) : new HangingReadable();
-    this.streams.push(stream);
-    return stream;
-  }
-}
+let WebTorrentFile;
 
 class FakeTorrent extends EventEmitter {
   constructor(mode) {
@@ -34,13 +14,34 @@ class FakeTorrent extends EventEmitter {
     this.pieceLength = 1024 * 1024;
     this.pieces = [Buffer.alloc(20)];
     this.wires = [];
-    this.files = [new FakeFile(mode)];
+    this.lastPieceLength = this.pieceLength;
+    this.destroyed = false;
+    this.bitfield = { get: () => this.mode === 'success' };
+    this._select = () => {};
+    this._deselect = () => {};
+    this.select = () => {};
+    this.deselect = () => {};
+    this.critical = () => {};
+    this.store = {
+      get: (_index, options, callback) => {
+        const bytes = Buffer.alloc(options.length);
+        bytes.write('ftyp', 4, 'ascii');
+        setImmediate(() => callback(null, bytes));
+      },
+      close: callback => setImmediate(() => callback()),
+    };
+    this.client = null;
+    this.files = [new WebTorrentFile(this, { name: 'feature.mp4', path: 'feature.mp4', length: VIDEO_BYTES, offset: 0 })];
     this.destroyObserved = false;
   }
-  deselect() {}
+  _destroyFileStreams() {
+    for (const file of this.files) file._destroy();
+  }
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.destroyObserved = true;
-    for (const file of this.files) for (const stream of file.streams) stream.destroy(new Error('fixture torrent destroyed'));
+    this._destroyFileStreams();
     this.emit('close');
   }
 }
@@ -69,6 +70,12 @@ function modes() {
 
 export function createContext() {
   const configuredModes = modes();
+  return initializeContext(configuredModes);
+}
+
+async function initializeContext(configuredModes) {
+  await patchWebTorrent();
+  ({ default: WebTorrentFile } = await import('webtorrent/lib/file.js'));
   return {
     s3: { destroy() {} },
     bucket: 'fixture-bucket',
@@ -77,6 +84,12 @@ export function createContext() {
       const mode = configuredModes[item.quality] || 'zero-byte';
       if (mode === 'fatal') throw Object.assign(new Error('fixture R2 boundary failure'), { code: 'R2_UPLOAD_FAILED' });
       return new FakeClient(mode);
+    },
+    validateMp4: async (filePath, expectedBytes) => {
+      const { stat } = await import('node:fs/promises');
+      const info = await stat(filePath);
+      if (!info.isFile() || info.size !== expectedBytes) throw new Error('fixture MP4 validation failed');
+      return { bytes: info.size };
     },
     head: async () => null,
     query: async (sql) => {
