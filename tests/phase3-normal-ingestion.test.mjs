@@ -18,6 +18,10 @@ function dbHarness() {
     query: async (sql, params = []) => {
       if (sql.startsWith('UPDATE movies SET ingest_status = \'transferring\'')) {
         const movieId = Number(params[2]);
+        const currentState = state.get(movieId) || 'queued';
+        const currentToken = tokens.get(movieId) || null;
+        const claimable = ['queued', 'processing', 'retry_pending', 'half', 'flagged_for_review', 'ready'].includes(currentState) && !currentToken;
+        if (!claimable) return [];
         state.set(movieId, 'transferring');
         tokens.set(movieId, params[0]);
         updates.push({ kind: 'claim', id: movieId });
@@ -46,9 +50,10 @@ function dbHarness() {
       }
       if (sql.startsWith('SELECT id, slug, ingest_status')) return [];
       if (sql.startsWith('UPDATE movies SET ingest_status = ?')) {
-        const movieId = Number(params[2]);
+        const movieId = Number(params[params.length === 4 ? 2 : 3]);
         state.set(movieId, params[0]);
-        updates.push({ kind: 'release', id: movieId, state: params[0] });
+        tokens.delete(movieId);
+        updates.push({ kind: params.length === 4 ? 'release' : 'final-state', id: movieId, state: params[0] });
         return [{ id: movieId }];
       }
       return [];

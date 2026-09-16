@@ -119,7 +119,7 @@ test('two-pass preparation permanently skips a movie after the final retry', asy
       pause: async () => {},
       saveManifest: async () => {},
     });
-    assert.deepEqual(result, { prepared:0, skipped:1, permanentlyFailedIds:[14], markedFailed:1 });
+    assert.deepEqual(result, { prepared:0, skipped:1, permanentlyFailedIds:[14], markedFailed:0 });
     assert.deepEqual(attempts, [1,2,3,4]);
     assert.ok(warnings.some(message => message.includes('Pass 1 failed for Movie 14')));
     assert.ok(logs.includes('Starting Second-Chance Retry Pass for 1 skipped movies...'));
@@ -147,8 +147,7 @@ test('permanent D1 failure marking uses the guarded repository schema and surviv
   assert.match(calls[0].sql, /SELECT ingest_status/);
   assert.match(calls[1].sql, /ingest_status = \?/);
 
-  const unavailable = await markPermanentlyFailed({ query: async () => { throw new Error('network glitch'); } }, [15]);
-  assert.equal(unavailable, 0);
+  await assert.rejects(markPermanentlyFailed({ query: async () => { throw new Error('network glitch'); } }, [15]), error => error.code === 'D1_STATE_READ_FAILED');
 });
 
 test('permanent failure preserves a successfully prepared quality as a half-ready record', async () => {
@@ -168,7 +167,8 @@ test('permanent failure preserves a successfully prepared quality as a half-read
   assert.equal(calls.length, 2);
   assert.match(calls[0].sql, /SELECT ingest_status/);
   assert.match(calls[1].sql, /ingest_status = \?/);
-  assert.deepEqual(calls[1].params.slice(0, 2), ['skipped_unplayable', 'Missing 1080p: Dead stream / 404']);
+  assert.equal(calls[1].params[0], 'half');
+  assert.equal(JSON.parse(calls[1].params[1]).type, 'MEDIA_FAILURES');
 });
 
 test('verification accepts a manifest containing only skipped pending movies', async () => {
@@ -179,4 +179,24 @@ test('verification accepts a manifest containing only skipped pending movies', a
     }] };
     assert.deepEqual(await verifyPlan(plan,root), { total:1, staged:0, verified:0, skipped:1 });
   } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('explicit targeted movie selection is not limited by queue prefix', async () => {
+  const target = 999;
+  const sources = JSON.stringify({ sources: [{ quality: '720p', url: 'https://example.invalid/720.torrent' }, { quality: '1080p', url: 'https://example.invalid/1080.torrent' }] });
+  const plan = await makePlan({
+    query: async sql => sql.includes('id IN')
+      ? [{ id: target, slug: 'target', imdb_id: 'tt1234567', download_sources_json: sources, r2_storage_key: null, r2_video_bytes: null }]
+      : Array.from({ length: 30 }, (_, index) => ({ id: index + 1, download_sources_json: sources })),
+    head: async () => null,
+  }, { movieIds: [target], maxMovies: 1 });
+  assert.deepEqual([...new Set(plan.files.map(file => file.id))], [target]);
+});
+
+test('explicit batch selection represents all requested IDs and rejects over-limit batches', async () => {
+  const ids = Array.from({ length: 20 }, (_, index) => 2000 + index);
+  const sources = JSON.stringify({ sources: [{ quality: '720p', url: 'https://example.invalid/720.torrent' }] });
+  const plan = await makePlan({ query: async () => ids.map(id => ({ id, slug: String(id), imdb_id: 'tt1234567', download_sources_json: sources, r2_storage_key: null, r2_video_bytes: null })), head: async () => null }, { movieIds: ids, maxMovies: 1 });
+  assert.deepEqual([...new Set(plan.files.map(file => file.id))], ids);
+  await assert.rejects(makePlan({ query: async () => [], head: async () => null }, { movieIds: [...ids, 2020] }), /Too many/);
 });

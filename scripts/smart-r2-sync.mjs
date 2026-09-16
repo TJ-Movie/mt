@@ -117,7 +117,11 @@ async function syncOne(client, bucket, item, dryRun) {
   const timer = setTimeout(() => { void upload.abort(); body.destroy(new Error('Upload timeout')); }, 30 * 60000);
   try { await upload.done(); } finally { clearTimeout(timer); body.destroy(); }
   const verified = await head(client, bucket, item.key);
-  if (!verified || Number(verified.ContentLength) !== local.size) throw new Error(`post-upload HEAD size mismatch (local ${local.size}, R2 ${verified?.ContentLength ?? 'missing'})`);
+  if (!verified || Number(verified.ContentLength) !== local.size) {
+    const error = new Error(`post-upload HEAD size mismatch (local ${local.size}, R2 ${verified?.ContentLength ?? 'missing'})`);
+    error.code = 'R2_VERIFY_FAILED';
+    throw error;
+  }
   console.log(`✅ [Movie ID: ${item.id ?? 'unknown'}] R2 Upload complete & verified.`);
   return { state: 'uploaded', bytes: local.size };
 }
@@ -219,10 +223,10 @@ try { cloudPlan = JSON.parse(await readFile(manifestPath, 'utf8')); } catch (e) 
 if (cloudPlan?.schema === 'flixlyra-cloud-v1') {
   if (dryRun) { console.log(JSON.stringify({ status: 'dry-run', remaining: cloudPlan.files.filter(f => !f.verified).length })); process.exitCode = 2; }
   else {
-    const { drainCloudPlan, syncAllArtwork } = await import('./prepare-cloud-media.mjs');
+    const { drainCloudPlan, syncAllArtwork, MediaInfrastructureError } = await import('./prepare-cloud-media.mjs');
     await drainCloudPlan(cloudPlan, async item => {
       const counts = await uploadBatch([item]);
-      if (counts.failed) throw new Error('Upload batch failed');
+      if (counts.failed) throw new MediaInfrastructureError('R2_UPLOAD_FAILED', 'One or more staged media uploads failed');
     }, { enrich: async (ctx, id) => { await syncAllArtwork(ctx, [id]); } });
   }
 } else {

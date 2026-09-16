@@ -1,8 +1,10 @@
+import { spawn } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { acquire, drainCloudPlan, prepareAll, stableKey } from '../scripts/prepare-cloud-media.mjs';
 
 const MAGNET = 'magnet:?xt=urn:btih:0123456789012345678901234567890123456789';
@@ -313,11 +315,11 @@ test('scoped lease release clears only the owned transfer', async () => {
   const item = itemFor(9009, '720p');
   item.file = 'tmp/media/owned-lease-test/720p.mp4';
   const plan = { files: [item] };
-  await drainCloudPlan(plan, async () => { throw new Error('upload failed'); }, {
+  await assert.rejects(drainCloudPlan(plan, async () => { throw new Error('upload failed'); }, {
     context: db.ctx,
     pause: async () => {},
     saveManifest: async () => {},
-  });
+  }), error => error.code === 'R2_UPLOAD_FAILED');
   assert.ok(db.updates.some(update => update.kind === 'release-or-flag' && update.state === 'retry_pending'));
   assert.ok(db.updates.every(update => update.kind === 'release-or-flag' || update.kind === 'commit'));
 });
@@ -353,4 +355,64 @@ test('structured dead-source failures are not retried by the acquisition wrapper
   assert.deepEqual(attempts, ['720p:1']);
   assert.equal(result.skipped, 1);
   assert.deepEqual(result.permanentlyFailedIds, [9011]);
+});
+
+test('Run #95 real orchestration process settles NO_PEERS and continues to 1080p', async () => {
+  const childPath = fileURLToPath(new URL('./run95-lifecycle-child.mjs', import.meta.url));
+  const started = Date.now();
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [childPath], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  try {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.signal, null);
+    assert.ok(Date.now() - started < 5000, 'orchestration child exceeded the short test bound');
+    const settled = result.stdout.split(/\r?\n/).map(line => line.trim()).find(line => line.includes('"event":"RUN95_SETTLED"'));
+    assert.ok(settled, result.stdout);
+    const summary = JSON.parse(settled);
+    assert.deepEqual(summary.attempts, ['720p:1', '1080p:1']);
+    assert.equal(summary.quality_720, 'NO_PEERS');
+    assert.equal(summary.quality_1080, 'prepared');
+    assert.equal(summary.prepared, 1);
+    assert.equal(summary.downstream_r2_reachable, true);
+    assert.equal(summary.expected_media_state, 'HALF');
+  } finally {
+    await rm('tmp/media/9501-1080p', { recursive: true, force: true });
+  }
+});
+
+test('literal prepare CLI returns non-zero for fatal infrastructure failure', async () => {
+  const childPath = fileURLToPath(new URL('./run95-lifecycle-child.mjs', import.meta.url));
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [childPath, 'fatal'], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, stderr }));
+  });
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /unsettled top-level await|exit code 13/i);
+});
+test('literal prepare CLI completes cleanly when both sources are dead', async () => {
+  const childPath = fileURLToPath(new URL('./run95-lifecycle-child.mjs', import.meta.url));
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [childPath, 'both-zero-byte'], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.signal, null);
+  assert.doesNotMatch(result.stderr, /unsettled top-level await|exit code 13/i);
+  assert.match(result.stdout, /"expected_media_state":"FAILED"/);
 });

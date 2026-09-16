@@ -74,6 +74,7 @@ async function sendWithRetry(client, command, options = {}) {
 }
 const activeTimers = new Set();
 const activeTorrentClients = new Set();
+const activeTransferOwners = new Map();
 function handleAsyncTorrentFailure(reason) {
   const error = reason instanceof Error ? reason : new Error(String(reason));
   console.error(JSON.stringify({ event: 'uncaught-media-error', error: safeLogError(error) }));
@@ -82,7 +83,7 @@ function handleAsyncTorrentFailure(reason) {
 process.on('uncaughtException', handleAsyncTorrentFailure);
 process.on('unhandledRejection', handleAsyncTorrentFailure);
 
-function destroyClientResource(client) {
+function destroyClientResource(client, timeoutMs = 5000) {
   return new Promise(resolve => {
     let settled = false;
     const finish = () => {
@@ -91,8 +92,7 @@ function destroyClientResource(client) {
       clearTimeout(timeout);
       resolve();
     };
-    const timeout = setTimeout(finish, 5000);
-    timeout.unref?.();
+    const timeout = setTimeout(finish, timeoutMs);
     if (!client?.destroy) {
       finish();
       return;
@@ -104,9 +104,9 @@ function destroyClientResource(client) {
     }
   });
 }
-async function destroyTorrentClient(client) {
+async function destroyTorrentClient(client, timeoutMs = 5000) {
   if (!activeTorrentClients.delete(client)) return;
-  await destroyClientResource(client);
+  await destroyClientResource(client, timeoutMs);
 }
 
 function awaitWithAbort(operation, signal, onLateValue) {
@@ -141,7 +141,8 @@ function awaitWithAbort(operation, signal, onLateValue) {
       reject(error);
     });
   });
-}async function cleanupRuntime() {
+}
+async function cleanupRuntime() {
   for (const timer of activeTimers) clearTimeout(timer);
   activeTimers.clear();
   await Promise.all([...activeTorrentClients].map(client => destroyTorrentClient(client)));
@@ -169,6 +170,19 @@ export class MediaAcquisitionError extends Error {
     this.code = code;
     Object.assign(this, details);
   }
+}
+
+export class MediaInfrastructureError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'MediaInfrastructureError';
+    this.code = code;
+    Object.assign(this, details);
+  }
+}
+
+export function isInfrastructureFailure(error) {
+  return error instanceof MediaInfrastructureError || /^(?:D1_|R2_|TRANSFER_|MANIFEST_|LEASE_|STAGED_)/.test(String(error?.code || ''));
 }
 
 function mediaFailureCode(error) {
@@ -480,7 +494,12 @@ export async function syncAllArtwork(ctx, eligibleIds = []) {
     return { scanned: 0, updated: 0, updatesByMovie: {} };
   }
   const placeholders = ids.map(() => '?').join(', ');
-  const rows = await ctx.query("SELECT id, revision, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' AND id IN (" + placeholders + ") ORDER BY id", ids);
+  let rows;
+  try {
+    rows = await ctx.query("SELECT id, revision, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' AND id IN (" + placeholders + ") ORDER BY id", ids);
+  } catch (error) {
+    throw new MediaInfrastructureError('D1_ENRICHMENT_READ_FAILED', 'D1 enrichment lookup failed', { cause: safeLogError(error) });
+  }
   let cursor = 0;
   const results = [];
   async function worker() {
@@ -499,7 +518,12 @@ export async function syncAllArtwork(ctx, eligibleIds = []) {
     const assignments = result.synced.map((field) => field + '=?');
     const values = result.synced.map((field) => result.updates[field]);
     const sql = "UPDATE movies SET " + (assignments.length ? assignments.join(',') + ',' : '') + " enrichment_status=?, enrichment_error=?, revision=revision+1, updated_at=? WHERE id=? AND revision=? AND publication_status <> 'archived' RETURNING id";
-    const committed = await ctx.query(sql, [...values, result.enrichmentStatus, result.enrichmentError, new Date().toISOString(), result.id, result.revision]);
+    let committed;
+    try {
+      committed = await ctx.query(sql, [...values, result.enrichmentStatus, result.enrichmentError, new Date().toISOString(), result.id, result.revision]);
+    } catch (error) {
+      throw new MediaInfrastructureError('D1_ENRICHMENT_COMMIT_FAILED', 'D1 enrichment commit failed', { cause: safeLogError(error) });
+    }
     if (committed.length) { updated += 1; updatesByMovie[String(result.id)] = result.updates; }
     console.log(JSON.stringify({ event: 'enrichment-result', movie_id: result.id, enrichment_status: result.enrichmentStatus, enrichment_error: result.enrichmentError, fields: result.synced }));
   }
@@ -634,6 +658,15 @@ export async function context() {
   }
   return { s3, bucket, query, head, headArtwork };
 }
+
+async function cliContext() {
+  const modulePath = process.env.PREPARE_CLOUD_MEDIA_CONTEXT_MODULE;
+  if (!modulePath) return context();
+  const imported = await import(pathToFileURL(resolve(modulePath)).href);
+  if (typeof imported.createContext !== 'function') throw new Error('Injected media context must export createContext');
+  return imported.createContext();
+}
+
 const validVideo = object => object?.ContentLength > 0 && ['video/mp4', 'application/octet-stream'].includes(object.ContentType);
 export async function saveManifest(plan) {
   await mkdir('tmp', { recursive: true });
@@ -645,33 +678,64 @@ async function markMovieFlagged(ctx, id, error) {
   try {
     await ctx.query("UPDATE movies SET ingest_status = 'flagged_for_review', transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (ingest_status IS NOT 'flagged_for_review' OR transfer_error IS NOT ?)", [message, id, message]);
   } catch (updateError) {
-    console.error(JSON.stringify({ event: 'movie-review-flag-failed', id, error: safeLogError(updateError) }));
+    const failure = updateError instanceof MediaInfrastructureError ? updateError : new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not mark movie for review', { cause: safeLogError(updateError) });
+    console.error(JSON.stringify({ event: 'movie-review-flag-failed', id, failure_code: failure.code, error: safeLogError(failure) }));
+    throw failure;
   }
 }
 async function markMovieRetryPending(ctx, id, error) {
   const message = safeLogError(error).slice(0, 1000);
   try {
-    await ctx.query("UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND publication_status IN ('draft','published')", ['retry_pending', message, id]);
+    const result = await ctx.query("UPDATE movies SET ingest_status = ?, transfer_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND publication_status IN ('draft','published') RETURNING id", ['retry_pending', message, id]);
+    if (!result?.length) throw new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not mark movie retry-pending');
     return true;
   } catch (updateError) {
-    console.error(JSON.stringify({ event: 'movie-status-update-failed', id, status: 'retry_pending', error: safeLogError(updateError) }));
-    return false;
+    const error = updateError instanceof MediaInfrastructureError ? updateError : new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not mark movie retry-pending', { cause: safeLogError(updateError) });
+    console.error(JSON.stringify({ event: 'movie-status-update-failed', id, status: 'retry_pending', failure_code: error.code, error: safeLogError(error) }));
+    throw error;
   }
 }
 let activeContext = null;
 let shutdownStarted = false;
+export async function releaseActiveTransferOwners(reason = 'TRANSFER_CANCELLED') {
+  const failures = [];
+  for (const [token, owner] of activeTransferOwners) {
+    let timeout;
+    try {
+      const released = await Promise.race([
+        releaseTransfer(owner.ctx, { id: owner.id, token, nextState: 'retry_pending', error: reason }),
+        new Promise(resolve => { timeout = setTimeout(() => resolve(false), 5000); }),
+      ]);
+      clearTimeout(timeout);
+      if (!released) {
+        const failure = { movie_id: owner.id, failure_code: 'LEASE_RELEASE_UNCONFIRMED' };
+        failures.push(failure);
+        console.error(JSON.stringify({ event: 'transfer-cancellation-release-failed', ...failure }));
+      }
+    } catch (error) {
+      clearTimeout(timeout);
+      const failure = { movie_id: owner.id, failure_code: 'LEASE_RELEASE_FAILED', error: safeLogError(error) };
+      failures.push(failure);
+      console.error(JSON.stringify({ event: 'transfer-cancellation-release-failed', ...failure }));
+    }
+  }
+  return failures;
+}
 async function handleShutdown(signal) {
   if (shutdownStarted) return;
   shutdownStarted = true;
   console.warn(JSON.stringify({ event: 'shutdown-requested', signal }));
+  const releaseFailures = await releaseActiveTransferOwners('TRANSFER_CANCELLED');
+  if (releaseFailures.length) process.exitCode = 1;
   if (activeContext) {
     try { await diagnoseTransferLocks(activeContext); }
-    catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeLogError(error) })); }
+    catch (error) {
+      process.exitCode = 1;
+      console.error(JSON.stringify({ event: 'transfer-lock-release-failed', failure_code: 'D1_LEASE_DIAGNOSTIC_FAILED', error: safeLogError(error) }));
+    }
   }
-
   process.exit();
-}
-process.once('SIGINT', () => { void handleShutdown('SIGINT'); });
+}process.once('SIGINT', () => { void handleShutdown('SIGINT'); });
 process.once('SIGTERM', () => { void handleShutdown('SIGTERM'); });
 export async function diagnoseTransferLocks(ctx) {
   const records = await diagnoseStaleTransfers(ctx);
@@ -681,8 +745,13 @@ export async function diagnoseTransferLocks(ctx) {
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
   if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 30) throw new Error('Invalid maxMovies');
-  const queryLimit = FILTER_MOVIE_IDS.size ? 30 : maxMovies;
-  const rows = await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [queryLimit]);
+  const configuredIds = options.movieIds ?? (FILTER_MOVIE_IDS.size ? [...FILTER_MOVIE_IDS] : []);
+  const targetIds = [...new Set(configuredIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))];
+  if (targetIds.length > 20) throw new Error('Too many targeted movie IDs');
+  const select = "SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published')";
+  const rows = targetIds.length
+    ? await ctx.query(select + ' AND id IN (' + targetIds.map(() => '?').join(',') + ') ORDER BY id', targetIds)
+    : await ctx.query(select + " ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
   const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
   const selectedRows = FILTER_MOVIE_IDS.size ? rows.filter(row => FILTER_MOVIE_IDS.has(Number(row.id))) : rows;
   for (const row of selectedRows) {
@@ -701,6 +770,7 @@ export async function makePlan(ctx, options = {}) {
       }
       plan.files.push(...movieItems);
     } catch (error) {
+      if (isInfrastructureFailure(error)) throw error;
       const message = safeLogError(error);
       plan.failures.push({ id: row.id, imdbId: row.imdb_id, status: 'retry_pending', error: message });
       console.error(JSON.stringify({ event: 'movie-plan-failed', id: row.id, imdbId: row.imdb_id, status: 'retry_pending', error: message }));
@@ -729,10 +799,11 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
   const filePath = resolve(work, `${item.quality}.mp4`);
   const metadataTimeoutMs = runtime.metadataTimeoutMs ?? Number(process.env.TRANSFER_METADATA_TIMEOUT_SECONDS ?? DEFAULT_METADATA_TIMEOUT_MS / 1000) * 1000;
   const noProgressTimeoutMs = runtime.noProgressTimeoutMs ?? Number(process.env.TRANSFER_NO_PROGRESS_TIMEOUT_SECONDS ?? DEFAULT_NO_PROGRESS_TIMEOUT_MS / 1000) * 1000;
-  if (![metadataTimeoutMs, noProgressTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 900_000)) throw new Error('Invalid media watchdog timeout');
+  const cleanupTimeoutMs = runtime.cleanupTimeoutMs ?? Math.max(1, Number(process.env.TRANSFER_CLEANUP_TIMEOUT_SECONDS ?? 5)) * 1000;
+  if (![metadataTimeoutMs, noProgressTimeoutMs, cleanupTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 900_000)) throw new Error('Invalid media watchdog timeout');
   const state = {
     startedAt: Date.now(), infoHash: null, expectedBytes: null, metadataReceived: false,
-    trackerEvent: null, peerCount: 0, payloadBytes: 0, lastProgressAt: null, failureCode: null,
+    trackerEvent: null, peerCount: 0, payloadBytes: 0, lastProgressAt: null, failureCode: null, failureStage: null, lastAttemptAt: null,
   };
   item.mediaDiagnostics = state;
   let client;
@@ -756,6 +827,9 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
     abortHandled = true;
     const failure = error instanceof MediaAcquisitionError ? error : new MediaAcquisitionError('SOURCE_INVALID', safeLogError(error));
     state.failureCode = failure.code;
+    state.failureStage = acquisitionPhase;
+    state.lastAttemptAt = new Date().toISOString();
+    state.elapsedMs = Date.now() - state.startedAt;
     state.failureMessage = failure.message;
     acquisitionEvent(item, state, 'acquisition-abort', { stage: acquisitionPhase });
     controller.abort(failure);
@@ -767,7 +841,7 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
     safeDestroy(writer);
     // The client owns torrent teardown. Calling torrent.destroy() first makes
     // WebTorrent skip the client's destroy callback for an already-destroyed torrent.
-    cleanupPromise ||= destroyTorrentClient(client);
+    cleanupPromise ||= destroyTorrentClient(client, cleanupTimeoutMs);
     rejectMetadata?.(reason);
   };
   controller.signal.addEventListener('abort', onAbort, { once: true });
@@ -777,8 +851,8 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
     metadataTimer = trackTimer(setTimeout(() => abort(new MediaAcquisitionError('METADATA_TIMEOUT', 'Torrent metadata was not received within the metadata watchdog')), metadataTimeoutMs));
     const clientOptions = { webSeeds: false, maxConns: 30, uploadLimit: 131072 };
     client = await awaitWithAbort(
-      () => runtime.createClient
-        ? runtime.createClient(clientOptions)
+      () => runtime.createClient || ctx.createClient
+        ? (runtime.createClient || ctx.createClient)(clientOptions, item)
         : loadGuardedWebTorrent().then(WebTorrent => new WebTorrent(clientOptions)),
       controller.signal,
       lateClient => destroyClientResource(lateClient),
@@ -841,7 +915,7 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
       progressTimer = trackTimer(setTimeout(() => abort(new MediaAcquisitionError(code, code === 'DOWNLOAD_STALLED' ? 'Torrent payload stopped progressing' : 'No torrent payload bytes arrived')), noProgressTimeoutMs));
     };
     armProgressWatchdog();
-    const disk = await awaitWithAbort(() => (runtime.statfs || statfs)(work), controller.signal);
+    const disk = await awaitWithAbort(() => (runtime.statfs || ctx.statfs || statfs)(work), controller.signal);
     if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new MediaAcquisitionError('SOURCE_INVALID', 'Insufficient runner disk for this video');
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
@@ -857,7 +931,7 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
     const written = fs.statSync(filePath);
     if (!written.isFile() || written.size <= 10 * 1024 * 1024) throw new MediaAcquisitionError('SOURCE_INVALID', 'NEW_FILE_ZERO_BYTES_OR_CORRUPT');
     acquisitionPhase = 'validation';
-    const validated = await (runtime.validateMp4 || validateMp4)(filePath, file.length);
+    const validated = await (runtime.validateMp4 || ctx.validateMp4 || validateMp4)(filePath, file.length);
     item.file = filePath;
     item.bytes = validated.bytes;
     acquisitionEvent(item, state, 'payload-complete', { phase: 'validation' });
@@ -866,23 +940,54 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
       ? new MediaAcquisitionError(state.failureCode, state.failureMessage || safeLogError(error), { infoHash: state.infoHash, expectedBytes: state.expectedBytes, payloadBytes: state.payloadBytes })
       : error;
     if (!state.failureCode) state.failureCode = mediaFailureCode(failure);
+    state.failureStage ||= acquisitionPhase;
+    state.lastAttemptAt ||= new Date().toISOString();
+    state.elapsedMs = Date.now() - state.startedAt;
     acquisitionEvent(item, state, 'acquisition-failure', { phase: acquisitionPhase, error: safeLogError(failure) });
     throw failure;
   } finally {
     for (const timer of timers) clearTrackedTimer(timer);
     controller.signal.removeEventListener('abort', onAbort);
-    cleanupPromise ||= destroyTorrentClient(client);
+    cleanupPromise ||= destroyTorrentClient(client, cleanupTimeoutMs);
     await cleanupPromise;
     await rm(resolve(work, 'pieces'), { recursive: true, force: true });
     if (!item.file) await rm(work, { recursive: true, force: true });
   }
 }
 
+function qualityDiagnostic(item) {
+  const state = item.mediaDiagnostics || {};
+  const code = item.failureCode || state.failureCode || item.skipReason || 'DOWNLOAD_FAILED';
+  return {
+    quality: item.quality,
+    failure_code: code,
+    failure_stage: item.failureStage || state.failureStage || null,
+    info_hash: state.infoHash || item.infoHash || null,
+    payload_bytes: Number.isFinite(Number(item.payloadBytes ?? state.payloadBytes)) ? Number(item.payloadBytes ?? state.payloadBytes) : null,
+    elapsed_ms: Number.isFinite(Number(item.elapsedMs ?? state.elapsedMs)) ? Number(item.elapsedMs ?? state.elapsedMs) : null,
+    last_attempt_at: item.lastAttemptAt || state.lastAttemptAt || null,
+  };
+}
+function movieFailureDiagnostics(plan, id) {
+  const failures = (plan?.files || []).filter(item => item.id === id && item.skipped).map(qualityDiagnostic);
+  return JSON.stringify({ type: 'MEDIA_FAILURES', qualities: failures });
+}
+async function persistPlan(plan, persist) {
+  try { return await persist(plan); }
+  catch (error) { throw new MediaInfrastructureError('MANIFEST_PERSIST_FAILED', 'Could not persist the media manifest', { cause: safeLogError(error) }); }
+}
 async function markSkipped(plan, item, persist, reason = 'download-failure') {
-  item.file = null;
-  item.bytes = null;
+  item.failureCode ||= reason;
+  item.lastAttemptAt ||= new Date().toISOString();
+  item.failureStage ||= item.mediaDiagnostics?.failureStage || 'acquisition';
+  item.failureDiagnostic = qualityDiagnostic(item);
+  if (!Array.isArray(plan.failures)) plan.failures = [];
+  plan.failures = plan.failures.filter(failure => !(failure.id === item.id && failure.quality === item.quality));
+  plan.failures.push({ id: item.id, quality: item.quality, ...item.failureDiagnostic });
   item.skipped = true;
   item.skipReason = reason;
+  item.file = null;
+  item.bytes = null;
   await persist(plan);
 }
 function failureState(plan, id) {
@@ -893,12 +998,11 @@ function failureState(plan, id) {
   if (present.size === 1 && missing.length === 1) {
     return {
       status: 'HALF',
-      ingestStatus: 'skipped_unplayable',
-      error: `Missing ${missing[0]}: ${(plan?.files || []).find(item => item.id === id && item.skipped && item.quality === missing[0])?.failureCode || 'Dead stream / 404'}`,
+      ingestStatus: 'half',
+      error: movieFailureDiagnostics(plan, id),
     };
   }
-  const unplayable = (plan?.files || []).some(item => item.id === id && item.skipped && /MP4|unplayable|corrupt|container/i.test(String(item.skipReason || '')));
-  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404' };
+  return { status: 'FAILED', ingestStatus: 'skipped_unplayable', error: movieFailureDiagnostics(plan, id) };
 }
 export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
@@ -909,20 +1013,24 @@ export async function markPermanentlyFailed(ctx, ids, plan) {
     try {
       [row] = await ctx.query('SELECT ingest_status, transfer_lease_until FROM movies WHERE id = ?', [id]);
     } catch (error) {
-      console.error(JSON.stringify({ event: 'media-flag-read-failed', id, error: safeLogError(error) }));
-      continue;
+      const failure = new MediaInfrastructureError('D1_STATE_READ_FAILED', 'Could not read movie state before failure marking', { cause: safeLogError(error) });
+      console.error(JSON.stringify({ event: 'media-flag-read-failed', id, failure_code: failure.code, error: safeLogError(failure) }));
+      throw failure;
     }
-    if (!row || !['queued', 'processing', 'transferring', 'retry_pending', 'half', 'flagged_for_review'].includes(row.ingest_status)) continue;
-    if (row.ingest_status === 'transferring' && Number(row.transfer_lease_until) > Math.floor(Date.now() / 1000)) continue;
+    if (!row) throw new MediaInfrastructureError('D1_STATE_READ_FAILED', 'Movie state disappeared before failure marking');
+    if (!['queued', 'processing', 'transferring', 'retry_pending', 'half', 'flagged_for_review'].includes(row.ingest_status)) continue;
+    if (row.ingest_status === 'transferring' && Number(row.transfer_lease_until) > Math.floor(Date.now() / 1000)) throw new MediaInfrastructureError('TRANSFER_OWNERSHIP_CONFLICT', 'Active transfer ownership prevented failure marking');
     try {
       assertLegalTransition(row.ingest_status, state.ingestStatus);
-const result = await ctx.query("UPDATE movies SET ingest_status = ?, transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, updated_at = ? WHERE id = ? AND ingest_status = ? AND (ingest_status <> 'transferring' OR transfer_lease_until IS NULL OR transfer_lease_until <= unixepoch())", [state.ingestStatus, state.error, new Date().toISOString(), id, row.ingest_status]);
-      if (!result.length) continue;
+const result = await ctx.query("UPDATE movies SET ingest_status = ?, transfer_error = ?, transfer_token = NULL, transfer_lease_until = NULL, updated_at = ? WHERE id = ? AND ingest_status = ? AND (ingest_status <> 'transferring' OR transfer_lease_until IS NULL OR transfer_lease_until <= unixepoch()) RETURNING id", [state.ingestStatus, state.error, new Date().toISOString(), id, row.ingest_status]);
+      if (!result.length) throw new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Movie failure state was not updated');
       marked += 1;
       if (state.status === 'HALF') half += 1;
       console.warn(JSON.stringify({ event: 'media_flagged', id, status: state.ingestStatus, reason: state.error }));
     } catch (error) {
-      console.error(JSON.stringify({ event: 'media-flag-state-transition-failed', id, error: safeLogError(error) }));
+      const failure = error instanceof MediaInfrastructureError ? error : new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not persist movie failure state', { cause: safeLogError(error) });
+      console.error(JSON.stringify({ event: 'media-flag-state-transition-failed', id, failure_code: failure.code, error: safeLogError(failure) }));
+      throw failure;
     }
   }
   console.log('Flagged ' + marked + ' movies for review in D1 Database.');
@@ -936,9 +1044,10 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await acquireItem(ctx, item, attempt);
-      await persist(plan);
+      await persistPlan(plan, persist);
       return true;
     } catch (error) {
+      if (isInfrastructureFailure(error)) throw error;
       const message = safeLogError(error);
       const failureCode = error?.code || mediaFailureCode(error);
       if (failureCode) item.failureCode = failureCode;
@@ -963,9 +1072,9 @@ export async function prepareOne(ctx, plan, options = {}) {
     try {
       if (await acquireWithRetries(ctx, plan, item, 3, options)) return item;
       if (!item.nonRetryableFailure) console.warn(`ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
-      if (item.nonRetryableFailure) await markMovieRetryPending(ctx, item.id, item.failureReason);
        await markSkipped(plan, item, persist, item.failureCode || (item.nonRetryableFailure ? 'validation-failure' : 'download-failure'));
     } catch (error) {
+      if (isInfrastructureFailure(error)) throw error;
       console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
       await markSkipped(plan, item, persist, 'download-failure');
     }
@@ -997,7 +1106,6 @@ export async function prepareAll(ctx, plan, options = {}) {
         }
         console.warn('Pass 1 failed for Movie ' + item.id + '. Queuing for final retry pass.');
         if (item.nonRetryableFailure) {
-          await markMovieRetryPending(ctx, item.id, item.failureReason);
           await markSkipped(plan, item, persistQueued, item.failureCode || 'validation-failure');
           if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
         } else {
@@ -1005,6 +1113,7 @@ export async function prepareAll(ctx, plan, options = {}) {
           failedQueue.push(item);
         }
       } catch (error) {
+        if (isInfrastructureFailure(error)) throw error;
         console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
         failedQueue.push(item);
       }
@@ -1035,6 +1144,7 @@ export async function prepareAll(ctx, plan, options = {}) {
           await persistQueued(plan);
           prepared += 1;
         } catch (error) {
+          if (isInfrastructureFailure(error)) throw error;
           const failureCode = item.mediaDiagnostics?.failureCode || mediaFailureCode(error);
           item.failureCode = failureCode || item.failureCode || 'DOWNLOAD_FAILED';
           console.error(JSON.stringify({ event: 'movie-preparation-permanently-skipped', id: item.id, quality: item.quality, failure_code: item.failureCode, error: safeLogError(error) }));
@@ -1046,18 +1156,22 @@ export async function prepareAll(ctx, plan, options = {}) {
     await Promise.all(Array.from({ length: Math.min(MEDIA_CONCURRENCY, failedQueue.length) }, retryWorker));
     await persistTail;
   }
-  const markedFailed = await markPermanentlyFailed(ctx, permanentlyFailedIds, plan);
-  await persist(plan);
-  return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed };
-}export async function commitItem(ctx, item, options = {}) {
+  await persistPlan(plan, persist);
+  return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed: 0 };
+}
+export async function commitItem(ctx, item, options = {}) {
   const transferToken = options.transferToken;
   if (typeof transferToken !== 'string' || transferToken.length < 16) throw new Error('TRANSFER_OWNER_REQUIRED');
   qualityWorkflowEvent(item, 'r2-verify-start');
-  const object = await ctx.head(item.key);
-  if (!validVideo(object) || object.ContentLength !== item.bytes) throw new Error('R2 verification failed before D1 commit');
+  let object;
+  try { object = await ctx.head(item.key); }
+  catch (error) { throw new MediaInfrastructureError('R2_VERIFY_FAILED', 'R2 HEAD failed before D1 commit', { cause: safeLogError(error) }); }
+  if (!validVideo(object) || object.ContentLength !== item.bytes) throw new MediaInfrastructureError('R2_VERIFY_FAILED', 'R2 verification failed before D1 commit');
   qualityWorkflowEvent(item, 'r2-verify-complete');
-  const [row] = await ctx.query('SELECT download_sources_json, revision, ingest_status, transfer_token FROM movies WHERE id = ?', [item.id]);
-  if (!row || row.transfer_token !== transferToken || row.ingest_status !== 'transferring') throw new Error('TRANSFER_OWNERSHIP_LOST');
+  let row;
+  try { [row] = await ctx.query('SELECT download_sources_json, revision, ingest_status, transfer_token FROM movies WHERE id = ?', [item.id]); }
+  catch (error) { throw new MediaInfrastructureError('D1_COMMIT_FAILED', 'D1 ownership read failed', { cause: safeLogError(error) }); }
+  if (!row || row.transfer_token !== transferToken || row.ingest_status !== 'transferring') throw new MediaInfrastructureError('D1_COMMIT_FAILED', 'TRANSFER_OWNERSHIP_LOST');
   const sources = sourcesOf(row.download_sources_json);
   const existing = sources.find(s => (s.quality || s.resolution)?.toLowerCase() === item.quality);
   const downloadUrl = item.slug ? (siteOrigin + '/api/download/resolve?slug=' + encodeURIComponent(item.slug) + '&quality=' + item.quality) : existing?.download_url || null;
@@ -1066,7 +1180,9 @@ export async function prepareAll(ctx, plan, options = {}) {
   let verifiedQualities = 0;
   for (const q of ['720p','1080p']) {
     const s = next.find(s => (s.quality || s.resolution)?.toLowerCase() === q);
-    const h = await ctx.head(s?.r2StorageKey);
+    let h;
+    try { h = await ctx.head(s?.r2StorageKey); }
+    catch (error) { throw new MediaInfrastructureError('R2_VERIFY_FAILED', 'R2 quality verification failed', { cause: safeLogError(error) }); }
     if (s && validVideo(h) && h.ContentLength === s.r2Bytes) verifiedQualities += 1;
   }
   const ready = verifiedQualities === 2;
@@ -1076,22 +1192,45 @@ export async function prepareAll(ctx, plan, options = {}) {
   const primary = next.find(s => s.quality === '1080p' && s.r2StorageKey) || updated;
   const nextStatus = ready ? 'ready' : verifiedQualities > 0 ? 'half' : 'retry_pending';
   assertLegalTransition(row.ingest_status, nextStatus);
-const result = await ctx.query("UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_token=NULL,transfer_lease_until=NULL,transfer_error=NULL,revision=revision+1,updated_at=?" + metadataAssignments + " WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND ingest_status='transferring' AND transfer_token=? RETURNING id", [JSON.stringify({ status: verifiedQualities > 0 ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, nextStatus, new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), item.id, row.revision, transferToken]);
-  if (!result.length) throw new Error('D1 changed or transfer ownership was lost; retry required');
+  let result;
+  try {
+    result = await ctx.query("UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_token=NULL,transfer_lease_until=NULL,transfer_error=NULL,revision=revision+1,updated_at=?" + metadataAssignments + " WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND ingest_status='transferring' AND transfer_token=? RETURNING id", [JSON.stringify({ status: verifiedQualities > 0 ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, nextStatus, new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), item.id, row.revision, transferToken]);
+  } catch (error) {
+    throw new MediaInfrastructureError('D1_COMMIT_FAILED', 'Guarded D1 mapping commit failed', { cause: safeLogError(error) });
+  }
+  if (!result?.length) throw new MediaInfrastructureError('D1_COMMIT_FAILED', 'D1 changed or transfer ownership was lost; retry required');
   qualityWorkflowEvent(item, 'd1-commit-complete', { committed_status: nextStatus, verified_qualities: verifiedQualities });
 }
 async function claimItem(ctx, item) {
   const attemptId = randomUUID();
   const token = item.quality + ':' + attemptId;
-  const claim = await claimTransfer(ctx, { id: Number(item.id), quality: item.quality, token, leaseSeconds: 3600 });
-  if (!claim.claimed) throw new Error('TRANSFER_ALREADY_OWNED');
+  let claim;
+  try {
+    claim = await claimTransfer(ctx, { id: Number(item.id), quality: item.quality, token, leaseSeconds: 3600 });
+  } catch (error) {
+    throw new MediaInfrastructureError('TRANSFER_CLAIM_FAILED', 'Transfer lease claim failed', { cause: safeLogError(error) });
+  }
+  if (!claim.claimed) throw new MediaInfrastructureError('TRANSFER_ALREADY_OWNED', 'Transfer lease is already owned or the movie is not claimable');
   item.attemptId = attemptId;
   item.transferToken = token;
   item.transferLeaseUntil = claim.leaseUntil;
   return token;
 }
+async function cleanupStagedItem(item) {
+  const candidate = typeof item.file === 'string' ? resolve(item.file) : null;
+  if (!candidate || !candidate.startsWith(mediaRoot + sep)) return;
+  try {
+    await rm(dirname(candidate), { recursive: true, force: true });
+  } catch (error) {
+    throw new MediaInfrastructureError('STAGED_CLEANUP_FAILED', 'Could not remove staged media artifacts', { cause: safeLogError(error) });
+  }
+  item.file = null;
+  item.bytes = null;
+}
+
 async function processItem(ctx, item, sync) {
   const token = await claimItem(ctx, item);
+  activeTransferOwners.set(token, { ctx, id: Number(item.id) });
   let phase = 'r2_upload';
   try {
     qualityWorkflowEvent(item, 'r2-upload-start');
@@ -1101,22 +1240,47 @@ async function processItem(ctx, item, sync) {
     qualityWorkflowEvent(item, 'd1-commit-start');
     await commitItem(ctx, item, { transferToken: token });
     item.verified = true;
-    if (item.file && resolve(item.file).startsWith(mediaRoot + sep)) await rm(dirname(item.file), { recursive: true, force: true });
-    item.file = null;
+    await cleanupStagedItem(item);
     return true;
   } catch (error) {
+    const fatalError = isInfrastructureFailure(error)
+      ? error
+      : new MediaInfrastructureError(phase === 'r2_upload' ? 'R2_UPLOAD_FAILED' : 'D1_COMMIT_FAILED', phase === 'r2_upload' ? 'R2 upload operation failed' : 'Guarded D1 commit operation failed', { cause: safeLogError(error) });
     let nextState = 'retry_pending';
+    let stateReadFailure = null;
     try {
       const rows = await ctx.query('SELECT download_sources_json FROM movies WHERE id = ?', [item.id]);
       const existing = rows[0] ? sourcesOf(rows[0].download_sources_json) : [];
       if (existing.some((source) => source.r2StorageKey && Number(source.r2Bytes) > 0)) nextState = 'half';
-    } catch { /* Keep retry_pending when the diagnostic read fails. */ }
-    const failureCode = item.mediaDiagnostics?.failureCode || mediaFailureCode(error) || 'TRANSFER_FAILED';
+    } catch (readError) {
+      stateReadFailure = new MediaInfrastructureError('D1_STATE_READ_FAILED', 'Could not read media state while releasing transfer', { cause: safeLogError(readError) });
+    }
+    const failureCode = item.mediaDiagnostics?.failureCode || mediaFailureCode(fatalError) || fatalError?.code || 'TRANSFER_FAILED';
     qualityWorkflowEvent(item, 'transfer-failure', { phase, failure_code: failureCode, error: safeLogError(error) });
-    await releaseTransfer(ctx, { id: Number(item.id), token, nextState, error: failureCode + ': ' + safeLogError(error) }).catch((releaseError) => {
-      console.error(JSON.stringify({ event: 'transfer-lease-release-failed', id: item.id, error: safeLogError(releaseError) }));
-    });
-    throw error;
+    let releaseFailure = null;
+    try {
+      const released = await releaseTransfer(ctx, { id: Number(item.id), token, nextState, error: failureCode + ': ' + safeLogError(fatalError) });
+      if (!released) releaseFailure = new MediaInfrastructureError('LEASE_RELEASE_UNCONFIRMED', 'Transfer lease release did not update the owning row');
+    } catch (releaseError) {
+      releaseFailure = releaseError instanceof MediaInfrastructureError
+        ? releaseError
+        : new MediaInfrastructureError('LEASE_RELEASE_FAILED', 'Transfer lease release failed', { cause: safeLogError(releaseError) });
+    }
+    let cleanupFailure = null;
+    try { await cleanupStagedItem(item); }
+    catch (cleanupError) { cleanupFailure = cleanupError; }
+    if (cleanupFailure) {
+      console.error(JSON.stringify({ event: 'staged-cleanup-failed', movie_id: item.id, failure_code: cleanupFailure.code, error: safeLogError(cleanupFailure) }));
+      throw cleanupFailure;
+    }
+    if (releaseFailure) {
+      console.error(JSON.stringify({ event: 'transfer-lease-release-failed', movie_id: item.id, failure_code: releaseFailure.code, error: safeLogError(releaseFailure) }));
+      throw releaseFailure;
+    }
+    if (stateReadFailure) throw stateReadFailure;
+    throw fatalError;
+  } finally {
+    activeTransferOwners.delete(token);
   }
 }
 export async function drainCloudPlan(plan, sync, _options = {}) {
@@ -1124,11 +1288,15 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
   const ctx = options.context || await context();
   const persist = options.saveManifest || saveManifest;
   const enriched = new Set();
+  activeContext = ctx;
   const enrichMovie = async (id) => {
     if (typeof options.enrich !== 'function' || enriched.has(Number(id))) return;
     enriched.add(Number(id));
     try { await options.enrich(ctx, Number(id)); }
-    catch (error) { console.warn(JSON.stringify({ event: 'enrichment-failed', movie_id: Number(id), failure_code: 'ENRICHMENT_FAILED', error: safeLogError(error) })); }
+    catch (error) {
+      if (isInfrastructureFailure(error)) throw error;
+      console.warn(JSON.stringify({ event: 'enrichment-failed', movie_id: Number(id), failure_code: 'ENRICHMENT_FAILED', error: safeLogError(error) }));
+    }
   };
   try {
     let consecutiveFailures = 0;
@@ -1140,8 +1308,9 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
           const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
           if (skippedIds.length) {
             const marked = await markPermanentlyFailed(ctx, skippedIds, plan);
-            if (marked !== skippedIds.length) throw new Error('Could not persist all permanent media failure states');
+            if (marked !== skippedIds.length) throw new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not persist all permanent media failure states');
           }
+          await persistPlan(plan, persist);
           console.log('[complete] cloud snapshot verified in R2 and D1');
           return;
         }
@@ -1168,6 +1337,7 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
         if (failed) throw failed.reason;
         consecutiveFailures = 0;
       } catch (error) {
+        if (isInfrastructureFailure(error)) throw error;
         consecutiveFailures += 1;
         const pending = plan.files.filter(f => !f.verified && !f.skipped);
         const pendingIds = [...new Set(pending.map(f => f.id))];
@@ -1176,7 +1346,7 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
         if (consecutiveFailures >= MAX_RETRIES) {
           for (const item of pending) await markSkipped(plan, item, persist, item.failureCode || code);
           const marked = await markPermanentlyFailed(ctx, pendingIds, plan);
-          await persist(plan);
+          await persistPlan(plan, persist);
           console.error('MAX_RETRIES=' + MAX_RETRIES + ' reached. Marked Movie IDs as failed: ' + (pendingIds.join(', ') || 'none') + ' (D1 marked: ' + marked + ').');
           return;
         }
@@ -1184,15 +1354,20 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
       }
     }
   } finally {
-    try { await diagnoseTransferLocks(ctx); } catch (error) { console.error(JSON.stringify({ event: 'transfer-lease-diagnostic-failed', error: safeLogError(error) })); }
-    ctx.s3?.destroy?.();
+    let finalFailure = null;
+    try { await diagnoseTransferLocks(ctx); }
+    catch (error) { finalFailure = new MediaInfrastructureError('D1_LEASE_DIAGNOSTIC_FAILED', 'Could not verify scoped lease cleanup', { cause: safeLogError(error) }); }
+    if (activeContext === ctx) activeContext = null;
+    try { ctx.s3?.destroy?.(); }
+    catch (error) { finalFailure ||= new MediaInfrastructureError('R2_CLIENT_CLEANUP_FAILED', 'Could not destroy the R2 client', { cause: safeLogError(error) }); }
+    if (finalFailure) throw finalFailure;
   }
 }if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let ctx;
   let summary;
   let fatalError;
   try {
-    ctx = await context();
+    ctx = await cliContext();
     await mkdir(mediaRoot, { recursive: true });
     await diagnoseTransferLocks(ctx);
     const maxMovies = maxMoviesFromArgs();
@@ -1204,14 +1379,21 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
     fatalError = error;
   } finally {
     await cleanupRuntime();
-    if (ctx) { try { await diagnoseTransferLocks(ctx); } catch (error) { console.error(JSON.stringify({ event: 'transfer-lock-release-failed', error: safeLogError(error) })); } }
+    if (ctx) {
+      try { await diagnoseTransferLocks(ctx); }
+      catch (error) {
+        const failure = new MediaInfrastructureError('D1_LEASE_DIAGNOSTIC_FAILED', 'Could not verify scoped lease cleanup', { cause: safeLogError(error) });
+        console.error(JSON.stringify({ event: 'transfer-lock-release-failed', failure_code: failure.code, error: safeLogError(failure) }));
+        fatalError ||= failure;
+      }
+    }
     activeContext = null;
     ctx?.s3.destroy();
   }
   if (fatalError) {
     console.error(JSON.stringify({ event: 'prepare-fatal-error', error: safeLogError(fatalError) }));
-    process.exit(1);
+    process.exitCode = 1;
+  } else {
+    console.log(JSON.stringify(summary));
   }
-  console.log(JSON.stringify(summary));
-  process.exit(0);
 }
