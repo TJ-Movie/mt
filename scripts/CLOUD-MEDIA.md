@@ -1,37 +1,19 @@
-# Cloud media sync
+# Normal cloud media ingestion
 
-`r2-sync.yml` runs on default-branch pushes, manual dispatch, and every six hours.
-The runner queries D1, checks mapped R2 videos, downloads one missing quality
-using the existing torrent helpers, and creates `tmp/r2-video-manifest.json`.
-No local media or committed manifest is required.
+Studio accepts up to 20 valid IMDb/YTS-supported IDs and automatically dispatches one scoped r2-sync.yml run after light YTS metadata is saved. The normal operator does not select qualities, manage leases, or run recovery controls. Manual workflow inputs remain developer-only recovery mechanisms.
 
-Required repository secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-`R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, and `CLOUDFLARE_API_TOKEN` (D1 read/write).
-Account, database and bucket are checked against `wrangler.json`.
+The Studio route stores only light title/year/IMDb/source identifiers, torrent descriptors, supported qualities, and source size labels. It does not fetch or persist heavy artwork or cast assets at ingest time.
 
-The cloud manifest tracks the whole D1 snapshot but stages only one video at a
-time. The sync worker acquires the next file after uploading and verifying the
-current file, then removes its temporary directory. Multipart uploads use two
-8 MiB parts concurrently. This bounds disk use despite the CLI concurrency of 5.
-Existing fully verified snapshots need no local video and are valid no-op inputs.
+The runner builds a scoped manifest and uses a bounded pool of 2 movie jobs. Each movie processes 720p and 1080p sequentially so its D1 revision/lease state is serialized; different movies can progress concurrently. A stalled movie therefore does not block the next movie in a batch. The sync CLI also defaults to concurrency 2, and the workflow passes concurrency 2 explicitly to keep torrent piece stores, writers, and multipart uploads within the GitHub runner disk and memory budget.
 
-D1 quality descriptors and readiness are updated only after HEAD/size checks;
-publication status is never changed. Explicit legacy quality mappings are reused.
-Unlabelled primary files are not guessed to be 1080p. Stable per-quality keys let
-later runs recover uploads completed before a D1 update or runner interruption.
+Each quality is committed independently. Download completion is followed by expected-file selection, MP4 validation, R2 upload, R2 HEAD/content-type/size verification, and a guarded D1 revision/lease commit. Only then is that quality verified. Two verified qualities produce READY; exactly one produces HALF/PARTIAL; zero produces FAILED/UNAVAILABLE. A failed quality never removes a verified quality.
 
-Both transfer workflows share a concurrency group. A job has a 350-minute limit;
-unavailable peers, invalid secrets or insufficient disk can still prevent completion.
-Acquisition has bounded retries/timeouts, and later scheduled runs resume from
-durable R2/D1 state. A continuous loop does not remove GitHub's job time limit.
+Enrichment runs only after at least one quality has passed the full verification chain. Poster, backdrop, cast images, director/details, and other enrichment metadata are stored with their own pending, ready, or failed status. Enrichment failure preserves verified media, and enrichment-only retry does not re-download media. When both qualities fail, new heavy artwork/cast storage is skipped; valid older assets are not deleted automatically.
 
-Permanent Admin deletion also attempts to remove the movie's unshared R2 media
-before deleting its D1 row. For direct D1 deletions or historical leftovers, run
-`node scripts/purge-orphaned-r2.mjs --dry-run` first, then
-`node scripts/purge-orphaned-r2.mjs` after reviewing the
-candidate count. The GitHub Actions `r2-sync` manual dispatch exposes the same
-operation as an explicit `purge_orphans` option. Normal push and scheduled syncs
-never purge orphaned objects. Archived movies remain protected because they still
-exist in D1 and may be restored.
+Acquisition has bounded metadata and byte-progress watchdogs. Metadata is limited by TRANSFER_METADATA_TIMEOUT_SECONDS (default 90 seconds). Once file information exists, TRANSFER_NO_PROGRESS_TIMEOUT_SECONDS (default 120 seconds) is reset only by positive bytes crossing the real media pipeline. Failures are classified as METADATA_TIMEOUT, NO_PEERS, ZERO_BYTE_STALL, DOWNLOAD_STALLED, or SOURCE_INVALID. Timeout abort destroys streams, writers, torrent clients, and temporary pieces before the quality is recorded as failed.
 
-Checks: `node --test scripts/cloud-media.test.mjs` and `node --check` on the scripts.
+Terminal dead-source failures do not retry the identical source. Transfer retries are bounded and reserved for non-terminal errors. Scoped transfer ownership is released on every failure, publication and rights state are never changed by ingestion, and verified R2 objects are never broadly deleted.
+
+The GitHub job ceiling is emergency-only; normal dead-source detection occurs inside application logic. The existing optional orphan-cleanup step and separate recovery scripts are not part of normal ingestion.
+
+Checks include node --test scripts/cloud-media.test.mjs, the real-path torrent tests, phase 3 orchestration tests, and the repository typecheck/lint/build/security suites.

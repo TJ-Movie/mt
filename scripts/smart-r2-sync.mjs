@@ -132,7 +132,7 @@ if (!/^[a-f0-9]{32}$/.test(account) || !/^[a-z0-9-]+$/.test(bucket)) fail('Inval
 
 const manifestPath = option('manifest', 'tmp/tmdb-r2-uploads.json');
 const mediaDirectory = option('media-dir', 'tmp/r2-assets');
-const concurrency = Math.min(10, Math.max(1, Number(option('concurrency', '5'))));
+const concurrency = Math.min(10, Math.max(1, Number(option('concurrency', '2'))));
 if (!Number.isSafeInteger(concurrency)) fail('Invalid --concurrency');
 const qualityFilter = option('quality', '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
 if (qualityFilter.some((value) => !/^(720p|1080p)$/.test(value))) fail('--quality only accepts 720p and/or 1080p');
@@ -219,11 +219,11 @@ try { cloudPlan = JSON.parse(await readFile(manifestPath, 'utf8')); } catch (e) 
 if (cloudPlan?.schema === 'flixlyra-cloud-v1') {
   if (dryRun) { console.log(JSON.stringify({ status: 'dry-run', remaining: cloudPlan.files.filter(f => !f.verified).length })); process.exitCode = 2; }
   else {
-    const { drainCloudPlan } = await import('./prepare-cloud-media.mjs');
+    const { drainCloudPlan, syncAllArtwork } = await import('./prepare-cloud-media.mjs');
     await drainCloudPlan(cloudPlan, async item => {
       const counts = await uploadBatch([item]);
       if (counts.failed) throw new Error('Upload batch failed');
-    }, {});
+    }, { enrich: async (ctx, id) => { await syncAllArtwork(ctx, [id]); } });
   }
 } else {
 let iteration = 0;

@@ -14,6 +14,18 @@ import {
   UploadCloud,
 } from 'lucide-react';
 import type { AdminMovie, AuditEvent } from '../../db';
+function mediaLabel(movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status'>): string {
+  const count = qualityAssetCount(movie);
+  if (count === 2 || movie.ingestStatus === 'ready') return 'READY';
+  if (count === 1 || movie.ingestStatus?.toLowerCase() === 'half' || movie.ingest_status === 'half') return 'HALF';
+  if (movie.ingest_status === 'flagged_for_review' || movie.ingest_status === 'skipped_unplayable') return 'FAILED';
+  return 'PROCESSING';
+}
+
+function qualityMark(movie: Pick<AdminMovie, 'availableQualities'>, quality: '720p' | '1080p'): string {
+  return movie.availableQualities?.includes(quality) ? 'verified' : 'missing';
+}
+
 import type { RuntimeControls } from '../../lib/security/runtime-controls';
 import {
   allLanguages,
@@ -90,41 +102,18 @@ type FieldErrors = Record<string, string>;
 
 function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string; qualities: Record<'720p' | '1080p', { ready: boolean; blockers: string[] }> } | null>(null);
+  const [result, setResult] = useState<{ transfer: string; blockers: string[]; eligible: boolean; note: string } | null>(null);
   const [error, setError] = useState('');
-  const [retrying, setRetrying] = useState('');
   async function check() {
     setBusy(true); setError(''); setResult(null);
     try {
       const response = await fetch(`/api/admin/movies/${id}/download-status`, { credentials: 'same-origin', cache: 'no-store' });
-      const data = await response.json() as { error?: string; transfer?: unknown; blockers?: unknown; eligible?: unknown; note?: unknown; readiness?: unknown };
+      const data = await response.json() as { error?: string; transfer?: unknown; blockers?: unknown; eligible?: unknown; note?: unknown };
       if (!response.ok) throw new Error(data.error || 'Check failed. Refresh your admin session and retry.');
-      const qualities = (data.readiness as { qualities?: Record<string, { ready?: unknown; blockers?: unknown }> } | undefined)?.qualities;
-      if (typeof data.transfer !== 'string' || !Array.isArray(data.blockers) || !data.blockers.every(x => typeof x === 'string') || typeof data.eligible !== 'boolean' || typeof data.note !== 'string' || !qualities || !['720p', '1080p'].every(quality => qualities[quality] && typeof qualities[quality].ready === 'boolean' && Array.isArray(qualities[quality].blockers) && qualities[quality].blockers.every(x => typeof x === 'string'))) throw new Error('Invalid status response. Refresh and retry.');
-      const qualityReadiness = qualities as Record<'720p' | '1080p', { ready: boolean; blockers: string[] }>;
-      setResult({ transfer: data.transfer, blockers: data.blockers, eligible: data.eligible, note: data.note, qualities: qualityReadiness });
+      if (typeof data.transfer !== 'string' || !Array.isArray(data.blockers) || !data.blockers.every(x => typeof x === 'string') || typeof data.eligible !== 'boolean' || typeof data.note !== 'string') throw new Error('Invalid status response. Refresh and retry.');
+      setResult({ transfer: data.transfer, blockers: data.blockers, eligible: data.eligible, note: data.note });
     } catch (err) { setError(err instanceof Error ? err.message : 'Check failed.'); }
     finally { setBusy(false); }
-  }
-  async function retryQuality(quality: '720p' | '1080p') {
-    if (!id) return;
-    setRetrying(quality);
-    setError('');
-    try {
-      const response = await fetch('/api/admin/movies/' + id + '/retry', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', 'x-sublyra-action': 'admin-write' },
-        body: JSON.stringify({ quality }),
-      });
-      const data = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(data.error || 'Retry could not be started.');
-      await check();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Retry could not be started.');
-    } finally {
-      setRetrying('');
-    }
   }
   return <section className="rounded-xl border border-white/15 p-4 md:col-span-2" aria-label="Direct download readiness">
     <h3 className="font-medium">Direct download readiness</h3>
@@ -135,13 +124,7 @@ function DownloadReadiness({ id, slug }: { id?: number; slug: string }) {
       {result && <><p>Transfer: {result.transfer}</p>
         <ul className="mt-2 list-disc pl-5 text-amber-200">{result.blockers.map(reason => <li key={reason}>{reason}</li>)}</ul>
         <p className="mt-2 text-white/60">{result.note}</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {(['720p', '1080p'] as const).map((quality) => {
-            const code = 'MEDIA_' + quality.toUpperCase().replace('P', '') + '_MISSING';
-            const retryable = !result.qualities[quality].ready && (result.qualities[quality].blockers.includes(code) || result.qualities[quality].blockers.includes('R2_OBJECT_MISSING') || result.qualities[quality].blockers.includes('SIZE_MISMATCH'));
-            return retryable ? <Button key={quality} type="button" variant="outline" disabled={retrying !== ''} onClick={() => retryQuality(quality)}>{retrying === quality ? 'Retrying...' : 'Retry ' + quality}</Button> : null;
-          })}
-        </div>
+
         {result.eligible && <a className="mt-3 inline-block underline" href={`/api/download/resolve?slug=${encodeURIComponent(slug)}`} target="_blank" rel="noreferrer">Test direct download</a>}
       </>}
     </div>
@@ -160,13 +143,13 @@ function IngestionPanel({
 
   async function triggerIngestion() {
     const imdbIds = [...new Set(imdbInput.split(/[\s,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean))];
-    if (!imdbIds.length || imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
+    if (imdbIds.some((id) => !/^tt\d{7,10}$/.test(id)) || imdbIds.length > 20) {
       setNotice({ tone: 'error', text: 'Enter up to 20 valid IMDb IDs, separated by commas or new lines.' });
       return;
     }
     setRunning(true);
     setFailures([]);
-    setNotice({ tone: 'success', text: 'Automatic ingestion started — fetching the YTS batch and securing torrent assets…' });
+    setNotice({ tone: 'success', text: 'Ingestion in progress â€” fetching the YTS batch and securing torrent assetsâ€¦' });
     try {
       const response = await fetch('/api/admin/ingest/yts', {
         method: 'POST',
@@ -189,18 +172,15 @@ function IngestionPanel({
         : [];
       const queued = results.filter((result) => result.status === 'queued').length;
       const failed = results.length - queued;
-      const dispatchFailed = payload && typeof payload === 'object' && 'workflow' in payload && payload.workflow && typeof payload.workflow === 'object' && 'status' in payload.workflow && payload.workflow.status === 'DISPATCH_FAILED';
       setFailures(results.filter((result) => result.status !== 'queued').map((result) => ({
         imdbId: typeof result.imdbId === 'string' ? result.imdbId : 'Unknown film',
         error: typeof result.error === 'string' ? result.error : 'No error details returned.',
       })));
       setNotice({
-        tone: failed || dispatchFailed ? 'error' : 'success',
-        text: dispatchFailed
-          ? `Metadata saved for ${queued} movie(s), but automatic processing could not be started. Retry the ingestion after checking the dispatch configuration.`
-          : failed
-            ? `Ingestion finished: ${queued} queued, ${failed} failed. See the details below.`
-            : `Accepted: ${queued} movie(s) are now processing metadata, artwork, cast, and media automatically.`,
+        tone: failed ? 'error' : 'success',
+        text: failed
+          ? `Ingestion finished: ${queued} queued, ${failed} failed. See the details below.`
+          : `Ingestion complete: ${queued} movies queued for rights review.`,
       });
       const refreshed = await fetch('/api/admin/movies', { credentials: 'same-origin' });
       const refreshedPayload: unknown = await refreshed.json().catch(() => null);
@@ -219,18 +199,18 @@ function IngestionPanel({
       <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">YTS batch</p>
-          <h2 className="mt-2 font-serif text-2xl">Ingest movies automatically</h2>
+          <h2 className="mt-2 font-serif text-2xl">Ingest movie metadata and torrents</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
-            Paste IMDb IDs. One click fetches metadata, artwork, cast, and available 720p/1080p media automatically. After processing, review rights and publish manually.
+            Enter up to 20 IMDb IDs. The system resolves sources, acquires each quality independently, verifies R2/D1, and enriches only after media succeeds.
           </p>
         </div>
         <div className="flex w-full max-w-md flex-col gap-3">
-          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">IMDb IDs</label>
+          <label htmlFor="custom-imdb-ids" className="text-xs font-medium uppercase tracking-[.12em] text-white/55">IMDb / supported IDs</label>
           <Textarea id="custom-imdb-ids" value={imdbInput} onChange={(event) => setImdbInput(event.target.value)} placeholder="tt0111161, tt0068646" rows={2} disabled={running} />
-          <p className="text-xs text-white/45">Comma, space, or newline separated · maximum 20</p>
+          <p className="text-xs text-white/45">Optional Â· comma, space, or newline separated Â· maximum 20</p>
           <Button onClick={triggerIngestion} disabled={running} className="h-11 rounded-xl bg-[#ef796d] px-5 text-white disabled:opacity-60">
             {running ? <Loader2 className="animate-spin" /> : <UploadCloud />}
-            {running ? 'Processing…' : 'Ingest Movies'}
+            {running ? 'Ingestingâ€¦' : 'Ingest Movies'}
           </Button>
         </div>
       </div>
@@ -599,7 +579,7 @@ export function MovieStudio({
                         </div>
                       </div>
                       <p className="mt-3 text-xs text-white/35">
-                         {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) ? 'Ready for Review · ' : ''}Rights: {movie.rightsStatus} · rev {movie.revision}
+                        Media: {mediaLabel(movie)} Â· 720p {qualityMark(movie, '720p')} Â· 1080p {qualityMark(movie, '1080p')} Â· Enrichment: {movie.enrichmentStatus ?? 'pending'} Â· Rights: {movie.rightsStatus} Â· rev {movie.revision}
                       </p>
                     </button>
                   ))}
@@ -1134,7 +1114,7 @@ export function MovieStudio({
                       {new Date(event.createdAt).toLocaleString()}
                     </TableCell>
                     <TableCell>{event.action}</TableCell>
-                    <TableCell>{event.movieSlug ?? '—'}</TableCell>
+                    <TableCell>{event.movieSlug ?? 'â€”'}</TableCell>
                     <TableCell className="text-white/45">
                       {event.actorEmail}
                     </TableCell>

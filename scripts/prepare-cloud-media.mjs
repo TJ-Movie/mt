@@ -4,41 +4,28 @@ import fs, { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, rm, statfs, stat, open } from 'node:fs/promises';
 import { resolve, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PassThrough } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 import { claimTransfer, diagnoseStaleTransfers, releaseTransfer, assertLegalTransition } from './ingest-state.mjs';
-import { approvedImageSource } from '../lib/image-source-policy.mjs';
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
 const DEFAULT_MAX_MOVIES = 30;
-const RAW_TRANSFER_MOVIE_IDS = process.env.TRANSFER_MOVIE_IDS || '';
-const FILTER_MOVIE_IDS = new Set(RAW_TRANSFER_MOVIE_IDS.split(',').map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0));
+const DEFAULT_METADATA_TIMEOUT_MS = 90_000;
+const DEFAULT_NO_PROGRESS_TIMEOUT_MS = 120_000;
+const FILTER_MOVIE_IDS = new Set((process.env.TRANSFER_MOVIE_IDS || '').split(',').map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0));
 const FILTER_QUALITY = /^(720p|1080p)$/.test(process.env.TRANSFER_QUALITY || '') ? process.env.TRANSFER_QUALITY : null;
-const DISPATCH_MODE = process.env.TRANSFER_DISPATCH_MODE || 'queue';
-
-export function selectRowsForMovieIds(rows, movieIds) {
-  const ids = new Set([...movieIds].map((id) => Number(id)));
-  return rows.filter((row) => ids.has(Number(row.id)));
-}
-
-export function validateDispatchScope(mode, movieIds, rawMovieIds = '') {
-  if (!['queue', 'targeted'].includes(mode)) throw new Error('TRANSFER_DISPATCH_MODE_INVALID');
-  if (mode !== 'targeted') return;
-  const values = rawMovieIds.split(',').map((value) => value.trim()).filter(Boolean);
-  if (!values.length) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_REQUIRED');
-  if (values.some((value) => !/^\d+$/.test(value) || Number(value) <= 0)) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_INVALID');
-  if (!movieIds.size) throw new Error('TARGETED_DISPATCH_MOVIE_IDS_REQUIRED');
-}
 const YTS_ENDPOINT = 'https://movies-api.accel.li/api/v2/movie_details.json';
 const YTS_FALLBACK_ENDPOINT = 'https://yts.mx/api/v2/movie_details.json';
 const MAX_ARTWORK_BYTES = 10 * 1024 * 1024;
 const ARTWORK_CONCURRENCY = 4;
+// Two active movie jobs keeps two torrent piece stores and writers bounded on the GitHub runner.
+export const MEDIA_CONCURRENCY = 2;
 const execFileAsync = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const siteOrigin = (process.env.PUBLIC_SITE_ORIGIN || 'https://flixlyra.com').replace(/\/+$/, '');
@@ -46,10 +33,6 @@ let nextRequestAt = 0;
 async function throttleRequests() { const slot = Math.max(Date.now(), nextRequestAt); nextRequestAt = slot + 300; const delay = slot - Date.now(); if (delay > 0) await pause(delay); }
 const requestTimeoutMs = 10000;
 const maxRequestAttempts = 3;
-// Keep dead swarms from waiting for the overall job deadline.
-export const ACQUISITION_NO_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
-export const ACQUISITION_PROGRESS_CHECK_MS = 30 * 1000;
-export const ACQUISITION_METADATA_TIMEOUT_MS = 10 * 60 * 1000;
 async function fetchWithRetry(url, init = {}) {
   let lastError;
   for (let attempt = 1; attempt <= maxRequestAttempts; attempt += 1) {
@@ -90,27 +73,17 @@ async function sendWithRetry(client, command, options = {}) {
   throw lastError || new Error('R2 request failed');
 }
 const activeTimers = new Set();
-const activeIntervals = new Set();
 const activeTorrentClients = new Set();
-let activeAcquisitionReject = null;
 function handleAsyncTorrentFailure(reason) {
   const error = reason instanceof Error ? reason : new Error(String(reason));
-  if (activeAcquisitionReject && /UTP|ECONNRESET|ECONN|ETIMEDOUT|timeout|network/i.test(error.message)) {
-    const reject = activeAcquisitionReject;
-    activeAcquisitionReject = null;
-    console.warn(JSON.stringify({ event: 'torrent-network-error', error: safeLogError(error) }));
-    reject(error);
-    return;
-  }
   console.error(JSON.stringify({ event: 'uncaught-media-error', error: safeLogError(error) }));
   process.exitCode = 1;
 }
 process.on('uncaughtException', handleAsyncTorrentFailure);
 process.on('unhandledRejection', handleAsyncTorrentFailure);
 
-async function destroyTorrentClient(client) {
-  if (!activeTorrentClients.delete(client)) return;
-  await new Promise(resolve => {
+function destroyClientResource(client) {
+  return new Promise(resolve => {
     let settled = false;
     const finish = () => {
       if (settled) return;
@@ -120,6 +93,10 @@ async function destroyTorrentClient(client) {
     };
     const timeout = setTimeout(finish, 5000);
     timeout.unref?.();
+    if (!client?.destroy) {
+      finish();
+      return;
+    }
     try {
       client.destroy(finish);
     } catch {
@@ -127,12 +104,46 @@ async function destroyTorrentClient(client) {
     }
   });
 }
+async function destroyTorrentClient(client) {
+  if (!activeTorrentClients.delete(client)) return;
+  await destroyClientResource(client);
+}
 
-async function cleanupRuntime() {
+function awaitWithAbort(operation, signal, onLateValue) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const operationPromise = Promise.resolve().then(operation);
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      operationPromise.then(value => Promise.resolve(onLateValue?.(value)).catch(() => {}), () => {});
+      reject(signal.reason || new Error('Operation aborted'));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    operationPromise.then(value => {
+      if (settled) {
+        Promise.resolve(onLateValue?.(value)).catch(() => {});
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(value);
+    }, error => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+  });
+}async function cleanupRuntime() {
   for (const timer of activeTimers) clearTimeout(timer);
   activeTimers.clear();
-  for (const interval of activeIntervals) clearInterval(interval);
-  activeIntervals.clear();
   await Promise.all([...activeTorrentClients].map(client => destroyTorrentClient(client)));
 }
 
@@ -150,34 +161,45 @@ function safeLogError(error) {
   return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]');
 }
 
-export function createNoProgressError(downloadedBytes, idleMs) {
-  const code = Number(downloadedBytes) > 0 ? 'DOWNLOAD_TIMEOUT' : 'NO_PEERS';
-  const minutes = Math.max(1, Math.ceil(Number(idleMs || 0) / 60000));
-  const error = new Error(code + ': no media bytes received for ' + minutes + ' minute(s)');
-  error.code = code;
-  error.noProgress = true;
-  return error;
-}
-export function isNonRetryableAcquisitionFailure(error) {
-  return error?.noProgress === true;
-}
-function classifyMediaError(error) {
-  const message = safeLogError(error);
-  if (/no peers|no seed|peer/i.test(message)) return "NO_PEERS: " + message.slice(0, 960);
-  if (/metadata.*timeout|torrent.*metadata/i.test(message)) return "METADATA_TIMEOUT: " + message.slice(0, 930);
-  if (/download.*timeout|timed out|ETIMEDOUT/i.test(message)) return "DOWNLOAD_TIMEOUT: " + message.slice(0, 930);
-  if (/disk|ENOSPC|space/i.test(message)) return "DISK_LIMIT: " + message.slice(0, 930);
-  if (/No safe playable MP4|MP4 validation|container/i.test(message)) return "NO_PLAYABLE_MP4: " + message.slice(0, 930);
-  if (/unsupported/i.test(message)) return "UNSUPPORTED_CONTAINER: " + message.slice(0, 930);
-  if (/source|404|unavailable/i.test(message)) return "SOURCE_UNAVAILABLE: " + message.slice(0, 930);
-  return "UNKNOWN_MEDIA_ERROR: " + message.slice(0, 940);
+
+export class MediaAcquisitionError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'MediaAcquisitionError';
+    this.code = code;
+    Object.assign(this, details);
+  }
 }
 
-function formatBytes(bytes) {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
+function mediaFailureCode(error) {
+  if (error?.code && /^(METADATA_TIMEOUT|NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID)$/.test(error.code)) return error.code;
+  const message = safeLogError(error);
+  if (/metadata.*timeout|torrent.*metadata/i.test(message)) return 'METADATA_TIMEOUT';
+  if (/no peers|no seed/i.test(message)) return 'NO_PEERS';
+  if (/download.*timeout|timed out|ETIMEDOUT/i.test(message)) return 'DOWNLOAD_STALLED';
+  if (/No safe playable MP4|MP4 validation|container|descriptor|unsupported|source|404|unavailable/i.test(message)) return 'SOURCE_INVALID';
+  return null;
+}
+
+function acquisitionEvent(item, state, event, extra = {}) {
+  console.log(JSON.stringify({
+    event, movie_id: Number(item.id), quality: item.quality, info_hash: state.infoHash,
+    expected_bytes: state.expectedBytes, metadata_received: state.metadataReceived,
+    tracker_event: state.trackerEvent, peer_count: state.peerCount, payload_bytes: state.payloadBytes,
+    last_progress_at: state.lastProgressAt, failure_code: state.failureCode,
+    elapsed_ms: Date.now() - state.startedAt, ...extra,
+  }));
+}
+
+function qualityWorkflowEvent(item, event, extra = {}) {
+  const state = item.mediaDiagnostics || {};
+  console.log(JSON.stringify({
+    event, movie_id: Number(item.id), quality: item.quality, info_hash: state.infoHash || null,
+    expected_bytes: state.expectedBytes ?? item.bytes ?? null, metadata_received: state.metadataReceived ?? null,
+    tracker_event: state.trackerEvent || null, peer_count: state.peerCount ?? null,
+    payload_bytes: state.payloadBytes ?? null, last_progress_at: state.lastProgressAt || null,
+    failure_code: state.failureCode || null, elapsed_ms: state.startedAt ? Date.now() - state.startedAt : null, ...extra,
+  }));
 }
 
 function isRecord(value) {
@@ -185,7 +207,15 @@ function isRecord(value) {
 }
 
 function artworkUrl(value) {
-  return approvedImageSource(value, { allowYtsSubdomains: true });
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    const allowedHost = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') ||
+      hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') ||
+      hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowedHost ? url.toString() : null;
+  } catch { return null; }
 }
 
 function publicArtworkUrl(key) {
@@ -348,6 +378,7 @@ async function syncArtworkForMovie(ctx, row) {
   const updates = {};
   let metadata;
   let metadataLoaded = false;
+  const errors = [];
   const getMetadata = async () => {
     if (!metadataLoaded) {
       metadataLoaded = true;
@@ -355,9 +386,8 @@ async function syncArtworkForMovie(ctx, row) {
     }
     return metadata;
   };
-
-  const metadataUpdates = metadataUpdatesForMovie(row, needsMovieMetadata(row) ? await getMetadata() : null);
-  Object.assign(updates, metadataUpdates);
+  try { Object.assign(updates, metadataUpdatesForMovie(row, needsMovieMetadata(row) ? await getMetadata() : null)); }
+  catch (error) { errors.push('METADATA_UNAVAILABLE'); }
 
   for (const kind of ['poster', 'backdrop']) {
     const key = artworkKey(row.id, kind);
@@ -368,11 +398,8 @@ async function syncArtworkForMovie(ctx, row) {
         if (!isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
         continue;
       }
-
       const current = artworkUrl(row[kind]);
-      const fields = kind === 'poster'
-        ? ['large_cover_image', 'medium_cover_image']
-        : ['background_image_original', 'background_image'];
+      const fields = kind === 'poster' ? ['large_cover_image', 'medium_cover_image'] : ['background_image_original', 'background_image'];
       const sources = [];
       if (current) sources.push(current);
       const yts = current ? null : await getMetadata();
@@ -380,55 +407,80 @@ async function syncArtworkForMovie(ctx, row) {
         const source = artworkUrl(yts?.[field]);
         if (source && !sources.includes(source)) sources.push(source);
       }
-      if (!sources.length) {
-        console.warn(JSON.stringify({ event: 'artwork-source-missing', id: row.id, imdbId: row.imdb_id, kind }));
-        continue;
-      }
-
       let uploaded = false;
       for (const source of sources) {
         try {
           const downloaded = await downloadArtwork(source);
           if (!downloaded) continue;
-          await sendWithRetry(ctx.s3, new PutObjectCommand({
-            Bucket: ctx.bucket,
-            Key: key,
-            Body: downloaded.bytes,
-            ContentType: downloaded.contentType,
-            CacheControl: 'public, max-age=31536000, immutable',
-            Metadata: { source: 'yts-artwork', movieId: String(row.id), kind },
-          }));
+          await sendWithRetry(ctx.s3, new PutObjectCommand({ Bucket: ctx.bucket, Key: key, Body: downloaded.bytes, ContentType: downloaded.contentType, CacheControl: 'public, max-age=31536000, immutable', Metadata: { source: 'yts-artwork', movieId: String(row.id), kind } }));
           const verified = await ctx.headArtwork(key);
           if (!verified || Number(verified.ContentLength) !== downloaded.bytes.byteLength) throw new Error('ARTWORK_R2_VERIFY_FAILED');
           updates[kind] = publicArtworkUrl(key);
           uploaded = true;
           break;
-        } catch (error) {
-          console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) }));
-        }
+        } catch (error) { console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) })); }
       }
-      if (!uploaded) {
-        console.warn(JSON.stringify({ event: 'artwork-unavailable', id: row.id, imdbId: row.imdb_id, kind, non_blocking: true }));
-        console.warn(JSON.stringify({ event: 'artwork-unavailable', id: row.id, imdbId: row.imdb_id, kind }));
-      }
+      if (!uploaded && !isManagedArtworkUrl(row[kind], row.id, kind)) errors.push(kind.toUpperCase() + '_UNAVAILABLE');
     } catch (error) {
+      errors.push(kind.toUpperCase() + '_SYNC_FAILED');
       console.warn(JSON.stringify({ event: 'artwork-sync-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error), non_blocking: true }));
     }
   }
 
-  const fields = METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(updates, field));
-  return { id: row.id, synced: fields, updates };
+  const cast = updates.cast_json ? parsedArray(updates.cast_json) : parsedArray(row.cast_json);
+  const storedCast = [];
+  for (let index = 0; index < cast.length; index += 1) {
+    const member = cast[index];
+    if (typeof member === 'string') { storedCast.push(member); continue; }
+    if (!isRecord(member)) continue;
+    const next = { ...member };
+    const key = /^tt\d{7,10}$/.test(String(row.imdb_id || '')) && index < 6 ? 'cast/' + row.imdb_id + '-' + (index + 1) + '.jpg' : null;
+    try {
+      if (key) {
+        const existing = await ctx.headArtwork(key);
+        if (existing && Number(existing.ContentLength) > 0 && String(existing.ContentType || '').startsWith('image/')) {
+          next.profileR2Key = key;
+        } else {
+          const source = artworkUrl(next.image || next.profileUrl);
+          if (source) {
+            const downloaded = await downloadArtwork(source);
+            if (downloaded) {
+              await sendWithRetry(ctx.s3, new PutObjectCommand({ Bucket: ctx.bucket, Key: key, Body: downloaded.bytes, ContentType: downloaded.contentType, CacheControl: 'public, max-age=31536000, immutable', Metadata: { source: 'yts-cast', movieId: String(row.id), castIndex: String(index + 1) } }));
+              const verified = await ctx.headArtwork(key);
+              if (!verified || Number(verified.ContentLength) !== downloaded.bytes.byteLength) throw new Error('CAST_R2_VERIFY_FAILED');
+              next.profileR2Key = key;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ event: 'cast-image-warning', id: row.id, imdbId: row.imdb_id, index: index + 1, error: safeLogError(error) }));
+    }
+    if (!next.profileR2Key && !next.image && !next.profileUrl) errors.push('CAST_IMAGE_MISSING');
+    storedCast.push(next);
+  }
+  if (storedCast.length && JSON.stringify(storedCast) !== JSON.stringify(parsedArray(row.cast_json))) updates.cast_json = JSON.stringify(storedCast);
+
+  const finalPoster = updates.poster || row.poster;
+  const finalBackdrop = updates.backdrop || row.backdrop;
+  const finalDirector = updates.director || row.director;
+  const finalCast = updates.cast_json ? parsedArray(updates.cast_json) : parsedArray(row.cast_json);
+  const enrichmentReady = isManagedArtworkUrl(finalPoster, row.id, 'poster') &&
+    isManagedArtworkUrl(finalBackdrop, row.id, 'backdrop') &&
+    !isBlankOrPending(finalDirector) && finalCast.length > 0 &&
+    finalCast.every((member) => typeof member === 'string' || (isRecord(member) && Boolean(member.profileR2Key || member.image || member.profileUrl)));
+  if (!enrichmentReady && !errors.length) errors.push('ENRICHMENT_INCOMPLETE');
+  return { id: row.id, revision: row.revision, synced: METADATA_COLUMNS.filter((field) => Object.prototype.hasOwnProperty.call(updates, field)), updates, enrichmentStatus: enrichmentReady ? 'ready' : 'failed', enrichmentError: errors.length ? errors.join(',') : null };
 }
 
-async function syncAllArtwork(ctx, eligibleIds = []) {
+export async function syncAllArtwork(ctx, eligibleIds = []) {
   const ids = [...new Set(eligibleIds.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
   if (!ids.length) {
-    console.log(JSON.stringify({ event: 'artwork-sync-complete', scanned: 0, updated: 0, fields: 0, deferred: true }));
+    console.log(JSON.stringify({ event: 'enrichment-complete', scanned: 0, updated: 0, fields: 0 }));
     return { scanned: 0, updated: 0, updatesByMovie: {} };
   }
   const placeholders = ids.map(() => '?').join(', ');
-
-  const rows = await ctx.query(`SELECT id, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' AND id IN (${placeholders}) ORDER BY id`, ids);
+  const rows = await ctx.query("SELECT id, revision, imdb_id, title, description, release_year, runtime, rating, genre, director, cast_json, languages_json, official_watch_url, poster, backdrop FROM movies WHERE publication_status <> 'archived' AND id IN (" + placeholders + ") ORDER BY id", ids);
   let cursor = 0;
   const results = [];
   async function worker() {
@@ -437,16 +489,23 @@ async function syncAllArtwork(ctx, eligibleIds = []) {
       if (index >= rows.length) return;
       const row = rows[index];
       try { results.push(await syncArtworkForMovie(ctx, row)); }
-      catch (error) { console.warn(JSON.stringify({ event: 'artwork-movie-warning', id: row.id, error: safeLogError(error), non_blocking: true })); }
+      catch (error) { results.push({ id: row.id, revision: row.revision, synced: [], updates: {}, enrichmentStatus: 'failed', enrichmentError: 'ENRICHMENT_FAILED' }); console.warn(JSON.stringify({ event: 'enrichment-failed', movie_id: row.id, failure_code: 'ENRICHMENT_FAILED', error: safeLogError(error) })); }
     }
   }
   await Promise.all(Array.from({ length: Math.min(ARTWORK_CONCURRENCY, rows.length) }, worker));
-  const synced = results.filter((result) => result.synced.length > 0).length;
-  const updatesByMovie = Object.fromEntries(results.filter((result) => result.synced.length > 0).map((result) => [String(result.id), result.updates]));
-  console.log(JSON.stringify({ event: 'artwork-sync-complete', scanned: rows.length, updated: synced, fields: results.reduce((total, result) => total + result.synced.length, 0) }));
-  return { scanned: rows.length, updated: synced, updatesByMovie };
+  const updatesByMovie = {};
+  let updated = 0;
+  for (const result of results) {
+    const assignments = result.synced.map((field) => field + '=?');
+    const values = result.synced.map((field) => result.updates[field]);
+    const sql = "UPDATE movies SET " + (assignments.length ? assignments.join(',') + ',' : '') + " enrichment_status=?, enrichment_error=?, revision=revision+1, updated_at=? WHERE id=? AND revision=? AND publication_status <> 'archived' RETURNING id";
+    const committed = await ctx.query(sql, [...values, result.enrichmentStatus, result.enrichmentError, new Date().toISOString(), result.id, result.revision]);
+    if (committed.length) { updated += 1; updatesByMovie[String(result.id)] = result.updates; }
+    console.log(JSON.stringify({ event: 'enrichment-result', movie_id: result.id, enrichment_status: result.enrichmentStatus, enrichment_error: result.enrichmentError, fields: result.synced }));
+  }
+  console.log(JSON.stringify({ event: 'enrichment-complete', scanned: rows.length, updated, fields: Object.values(updatesByMovie).reduce((total, updates) => total + Object.keys(updates).length, 0) }));
+  return { scanned: rows.length, updated, updatesByMovie };
 }
-
 export function maxMoviesFromArgs(argv = process.argv) {
   const raw = argv.find(value => value.startsWith('--max-movies='))?.slice('--max-movies='.length);
   if (raw === undefined || raw === '') return DEFAULT_MAX_MOVIES;
@@ -457,6 +516,10 @@ export function maxMoviesFromArgs(argv = process.argv) {
 
 export function isNonRetryableValidationError(error) {
   return /(?:MP4 validation failed|No safe playable MP4 in source)/i.test(safeLogError(error));
+}
+
+export function isNonRetryableAcquisitionError(error) {
+  return Boolean(error?.code && /^(NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID|METADATA_TIMEOUT)$/.test(error.code));
 }
 
 async function readProbeWindow(filePath, position, length) {
@@ -504,34 +567,29 @@ export async function validateMp4(filePath, expectedBytes) {
   return { bytes: info.size, expectedBytes };
 }
 
-function progressStream(item, totalBytes, onProgress = () => {}) {
-  let downloaded = 0;
+function createByteProgressTransform(item, totalBytes, state, onPayloadProgress) {
   let nextPercent = 10;
   let lastLoggedAt = 0;
-  const startedAt = Date.now();
-  const progressPassThrough = new PassThrough();
-  const report = (force = false) => {
-    const now = Date.now();
-    const percent = totalBytes > 0 ? Math.min(100, Math.floor(downloaded / totalBytes * 100)) : 0;
-    if (!force && percent < nextPercent && now - lastLoggedAt < 10_000) return;
-    const seconds = Math.max((now - startedAt) / 1000, 0.001);
-    const speed = downloaded / seconds / 1_000_000;
-    console.log(`â¬‡ï¸ [Movie ID: ${item.id}] Downloading ${item.quality}: ${percent}% (${formatBytes(downloaded)} / ${formatBytes(totalBytes)}) - Speed: ${speed.toFixed(1)} MB/s`);
-    lastLoggedAt = now;
-    while (nextPercent <= percent) nextPercent += 10;
-  };
-  report(true);
-  // Observe the intermediate PassThrough only. Attaching a data listener to
-  // WebTorrent's raw stream can put it into flowing mode before pipeline()
-  // attaches its destination, which may drain chunks before they reach disk.
-  progressPassThrough.on('data', chunk => {
-    downloaded += chunk.byteLength ?? chunk.length ?? 0;
-    onProgress(downloaded);
-    report();
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      const bytes = chunk?.byteLength ?? chunk?.length ?? 0;
+      if (bytes > 0) {
+        state.payloadBytes += bytes;
+        state.lastProgressAt = new Date().toISOString();
+        onPayloadProgress();
+        const now = Date.now();
+        const percent = totalBytes > 0 ? Math.min(100, Math.floor(state.payloadBytes / totalBytes * 100)) : 0;
+        if (percent >= nextPercent || now - lastLoggedAt >= 10_000) {
+          acquisitionEvent(item, state, 'payload-progress', { percent });
+          lastLoggedAt = now;
+          while (nextPercent <= percent) nextPercent += 10;
+        }
+      }
+      callback(null, chunk);
+    },
   });
-  progressPassThrough.on('end', () => report(true));
-  return progressPassThrough;
 }
+
 export function sourcesOf(value) {
   const parsed = JSON.parse(value || '{}');
   return Array.isArray(parsed) ? parsed : (parsed.sources || []);
@@ -570,7 +628,7 @@ export async function context() {
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
   async function headArtwork(key) {
-    if (!/^artworks\/\d+\/(?:poster|backdrop)\.jpg$/.test(key || '')) return null;
+    if (!/^(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|cast\/tt\d{7,10}-[1-6]\.jpg)$/.test(key || '')) return null;
     try { return await sendWithRetry(s3, new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) }); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
@@ -623,12 +681,10 @@ export async function diagnoseTransferLocks(ctx) {
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
   if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 30) throw new Error('Invalid maxMovies');
-  validateDispatchScope(DISPATCH_MODE, FILTER_MOVIE_IDS, RAW_TRANSFER_MOVIE_IDS);
-  const rows = FILTER_MOVIE_IDS.size
-    ? await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') AND id IN (" + [...FILTER_MOVIE_IDS].map(() => '?').join(',') + ") ORDER BY id", [...FILTER_MOVIE_IDS])
-    : await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [maxMovies]);
+  const queryLimit = FILTER_MOVIE_IDS.size ? 30 : maxMovies;
+  const rows = await ctx.query("SELECT id,slug,imdb_id,download_sources_json,r2_storage_key,r2_video_bytes FROM movies WHERE publication_status IN ('draft','published') ORDER BY CASE WHEN ingest_status IN ('queued','processing','retry_pending','half','transferring') THEN 0 WHEN ingest_status = 'ready' THEN 2 ELSE 1 END, id LIMIT ?", [queryLimit]);
   const plan = { schema: 'flixlyra-cloud-v1', files: [], failures: [], createdAt: new Date().toISOString() };
-  const selectedRows = FILTER_MOVIE_IDS.size ? selectRowsForMovieIds(rows, FILTER_MOVIE_IDS) : rows;
+  const selectedRows = FILTER_MOVIE_IDS.size ? rows.filter(row => FILTER_MOVIE_IDS.has(Number(row.id))) : rows;
   for (const row of selectedRows) {
     const movieItems = [];
     try {
@@ -653,130 +709,175 @@ export async function makePlan(ctx, options = {}) {
   }
   return plan;
 }
-function sourceIdentity(value) {
-  if (typeof value !== 'string') return null;
-  try { const url = new URL(value); return url.protocol + '//' + url.host + url.pathname; }
-  catch { return 'non-url-descriptor'; }
-}
-function descriptorIdentity(value) {
-  if (typeof value === 'string') {
-    const match = value.match(/^magnet:\?xt=urn:btih:([a-f0-9]{40}|[a-z2-7]{32})/i);
-    return match ? 'magnet:' + match[1].toLowerCase() : 'string-descriptor';
-  }
-  if (Buffer.isBuffer(value)) return 'torrent-buffer:' + value.length;
-  return typeof value;
-}
-async function acquire(ctx, item, attempt) {
+export async function acquire(ctx, item, attempt = 1, runtime = {}) {
   const [row] = await ctx.query('SELECT download_sources_json FROM movies WHERE id = ?', [item.id]);
-  if (!row) throw new Error('Movie no longer exists');
+  if (!row) throw new MediaAcquisitionError('SOURCE_INVALID', 'Movie no longer exists');
   const source = sourcesOf(row.download_sources_json).find(s => (s.quality || s.resolution)?.toLowerCase() === item.quality);
   let descriptor;
   if (attempt > 1 || !source) descriptor = await alternativeDescriptor(item.imdbId, item.quality, source?.url);
   if (!descriptor) descriptor = sourceMagnet(row.download_sources_json, item.quality);
   if (!descriptor && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(source?.descriptorKey || '')) {
     const object = await sendWithRetry(ctx.s3, new GetObjectCommand({ Bucket: ctx.bucket, Key: source.descriptorKey }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) });
-    if (!object.ContentLength || object.ContentLength > 2097152) { object.Body?.destroy(); throw new Error('Invalid descriptor size'); }
+    if (!object.ContentLength || object.ContentLength > 2097152) { object.Body?.destroy(); throw new MediaAcquisitionError('SOURCE_INVALID', 'Invalid descriptor size'); }
     descriptor = Buffer.from(await object.Body.transformToByteArray());
   }
   if (!descriptor) descriptor = await remoteDescriptor(row.download_sources_json, item.quality);
-  if (!descriptor) throw new Error('SOURCE_UNAVAILABLE: no usable torrent descriptor');
-  console.log(JSON.stringify({ event: 'torrent-source-selected', id: item.id, quality: item.quality, attempt, source: sourceIdentity(source?.url), descriptor: descriptorIdentity(descriptor) }));
+  if (!descriptor) throw new MediaAcquisitionError('SOURCE_INVALID', 'No usable torrent source');
+
   const work = resolve(mediaRoot, `${item.id}-${item.quality}`);
   await mkdir(work, { recursive: true });
   const filePath = resolve(work, `${item.quality}.mp4`);
-  const WebTorrent = await loadGuardedWebTorrent();
-  const client = new WebTorrent({ webSeeds: false, maxConns: 30, uploadLimit: 131072 });
-  activeTorrentClients.add(client);
+  const metadataTimeoutMs = runtime.metadataTimeoutMs ?? Number(process.env.TRANSFER_METADATA_TIMEOUT_SECONDS ?? DEFAULT_METADATA_TIMEOUT_MS / 1000) * 1000;
+  const noProgressTimeoutMs = runtime.noProgressTimeoutMs ?? Number(process.env.TRANSFER_NO_PROGRESS_TIMEOUT_SECONDS ?? DEFAULT_NO_PROGRESS_TIMEOUT_MS / 1000) * 1000;
+  if (![metadataTimeoutMs, noProgressTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 900_000)) throw new Error('Invalid media watchdog timeout');
+  const state = {
+    startedAt: Date.now(), infoHash: null, expectedBytes: null, metadataReceived: false,
+    trackerEvent: null, peerCount: 0, payloadBytes: 0, lastProgressAt: null, failureCode: null,
+  };
+  item.mediaDiagnostics = state;
+  let client;
+  let torrent;
+  let readStream;
+  let progressStream;
+  let writer;
+  let metadataTimer;
+  let progressTimer;
+  let cleanupPromise;
+  let rejectMetadata;
+  let abortHandled = false;
+  let acquisitionPhase = 'source';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Acquisition timed out')), 20 * 60000);
-  activeTimers.add(timer);
+  const timers = [];
+  const trackTimer = timer => { timers.push(timer); activeTimers.add(timer); return timer; };
+  const clearTrackedTimer = timer => { if (timer) { clearTimeout(timer); activeTimers.delete(timer); } };
+  const safeDestroy = stream => { try { stream?.destroy?.(); } catch { /* cleanup is best effort */ } };
+  const abort = error => {
+    if (abortHandled) return;
+    abortHandled = true;
+    const failure = error instanceof MediaAcquisitionError ? error : new MediaAcquisitionError('SOURCE_INVALID', safeLogError(error));
+    state.failureCode = failure.code;
+    state.failureMessage = failure.message;
+    acquisitionEvent(item, state, 'acquisition-abort', { stage: acquisitionPhase });
+    controller.abort(failure);
+  };
+  const onAbort = () => {
+    const reason = controller.signal.reason;
+    safeDestroy(readStream);
+    safeDestroy(progressStream);
+    safeDestroy(writer);
+    // The client owns torrent teardown. Calling torrent.destroy() first makes
+    // WebTorrent skip the client's destroy callback for an already-destroyed torrent.
+    cleanupPromise ||= destroyTorrentClient(client);
+    rejectMetadata?.(reason);
+  };
+  controller.signal.addEventListener('abort', onAbort, { once: true });
   try {
-    const torrent = await new Promise((done, reject) => {
+    acquisitionEvent(item, state, 'acquisition-start');
+    acquisitionPhase = 'metadata';
+    metadataTimer = trackTimer(setTimeout(() => abort(new MediaAcquisitionError('METADATA_TIMEOUT', 'Torrent metadata was not received within the metadata watchdog')), metadataTimeoutMs));
+    const clientOptions = { webSeeds: false, maxConns: 30, uploadLimit: 131072 };
+    client = await awaitWithAbort(
+      () => runtime.createClient
+        ? runtime.createClient(clientOptions)
+        : loadGuardedWebTorrent().then(WebTorrent => new WebTorrent(clientOptions)),
+      controller.signal,
+      lateClient => destroyClientResource(lateClient),
+    );
+    activeTorrentClients.add(client);
+    controller.signal.throwIfAborted();
+    torrent = await new Promise((resolveTorrent, reject) => {
       let settled = false;
-      let metadataTimer;
-      const finish = (fn, value) => {
+      const finish = (error, value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(metadataTimer);
-        activeTimers.delete(metadataTimer);
-        if (activeAcquisitionReject === reject) activeAcquisitionReject = null;
-        fn(value);
+        client.removeListener('error', onError);
+        client.removeListener('warning', onWarning);
+        pending?.removeListener?.('error', onError);
+        rejectMetadata = null;
+        if (error) reject(error); else resolveTorrent(value);
       };
-      const onError = error => finish(reject, error);
-      activeAcquisitionReject = reject;
-      metadataTimer = setTimeout(() => {
-        const error = new Error('METADATA_TIMEOUT: torrent metadata not received');
-        error.code = 'METADATA_TIMEOUT';
-        finish(reject, error);
-      }, ACQUISITION_METADATA_TIMEOUT_MS);
-      activeTimers.add(metadataTimer);
+      const onError = error => { abort(error); finish(error); };
+      const onWarning = warning => {
+        state.trackerEvent = 'warning';
+        acquisitionEvent(item, state, 'tracker-warning', { warning: safeLogError(warning) });
+      };
+      let pending;
+      rejectMetadata = finish;
       client.on('error', onError);
-      client.on('warning', error => console.warn(JSON.stringify({ event: 'torrent-warning', id: item.id, quality: item.quality, error: safeLogError(error) })));
-      const pending = client.add(descriptor, { path: resolve(work, 'pieces'), deselect: true, strategy: 'sequential', storeCacheSlots: 2 }, received => finish(done, received));
-      pending.on('error', onError);
-      controller.signal.addEventListener('abort', () => finish(reject, controller.signal.reason), { once: true });
+      client.on('warning', onWarning);
+      try {
+        pending = client.add(descriptor, { path: resolve(work, 'pieces'), deselect: true, strategy: 'sequential', storeCacheSlots: 2 }, ready => finish(null, ready));
+        pending.on('error', onError);
+      } catch (error) { onError(error); }
     });
-    console.log(JSON.stringify({ event: 'torrent-metadata', id: item.id, quality: item.quality, infoHash: torrent.infoHash || null, pieceLength: torrent.pieceLength || null, torrentBytes: torrent.length || null, fileCount: torrent.files?.length || 0, peers: torrent.numPeers || 0 }));
-    torrent.on('noPeers', announceType => console.warn(JSON.stringify({ event: 'torrent-no-peers', id: item.id, quality: item.quality, announceType: announceType || 'unknown', peers: torrent.numPeers || 0 })));
-    torrent.on('trackerAnnounce', () => console.log(JSON.stringify({ event: 'torrent-tracker-announce', id: item.id, quality: item.quality, peers: torrent.numPeers || 0 })));
-    torrent.on('wire', () => console.log(JSON.stringify({ event: 'torrent-peer-connected', id: item.id, quality: item.quality, peers: torrent.numPeers || 0 })));
-
-    const file = primaryMp4(torrent.files);
-    if (!file || torrent.pieceLength > 16 * 1024 * 1024) throw new Error('No safe playable MP4 in source');
-    const disk = await statfs(work);
-    if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new Error('Insufficient runner disk for this video');
+    clearTrackedTimer(metadataTimer);
+    metadataTimer = null;
+    state.metadataReceived = true;
+    state.infoHash = torrent.infoHash || null;
+    state.expectedBytes = Number(torrent.length) || null;
+    state.peerCount = Array.isArray(torrent.wires) ? torrent.wires.length : Number(torrent.wires?.length || 0);
+    acquisitionEvent(item, state, 'torrent-metadata');
+    acquisitionPhase = 'peer_discovery';
+    const onWire = () => {
+      state.peerCount = Array.isArray(torrent.wires) ? torrent.wires.length : Number(torrent.wires?.length || 0);
+      state.trackerEvent = 'wire';
+      acquisitionEvent(item, state, 'peer-discovered');
+    };
+    const onTracker = event => {
+      state.trackerEvent = event;
+      state.peerCount = Array.isArray(torrent.wires) ? torrent.wires.length : Number(torrent.wires?.length || 0);
+      acquisitionEvent(item, state, 'tracker-event');
+    };
+    torrent.on?.('wire', onWire);
+    torrent.on?.('trackerAnnounce', () => onTracker('trackerAnnounce'));
+    torrent.on?.('dhtAnnounce', () => onTracker('dhtAnnounce'));
+    const file = primaryMp4(torrent.files || []);
+    if (!file || !Number.isSafeInteger(Number(file.length)) || Number(file.length) <= 0 || !Number.isSafeInteger(Number(torrent.pieceLength)) || Number(torrent.pieceLength) <= 0 || Number(torrent.pieceLength) > 16 * 1024 * 1024 || !Array.isArray(torrent.pieces) || torrent.pieces.length === 0) throw new MediaAcquisitionError('SOURCE_INVALID', 'No safe playable MP4 in source');
+    state.expectedBytes = Number(file.length);
+    acquisitionEvent(item, state, 'file-selected', { file_name: file.name });
+    const armProgressWatchdog = () => {
+      clearTrackedTimer(progressTimer);
+      const code = state.payloadBytes > 0 ? 'DOWNLOAD_STALLED' : state.peerCount === 0 ? 'NO_PEERS' : 'ZERO_BYTE_STALL';
+      progressTimer = trackTimer(setTimeout(() => abort(new MediaAcquisitionError(code, code === 'DOWNLOAD_STALLED' ? 'Torrent payload stopped progressing' : 'No torrent payload bytes arrived')), noProgressTimeoutMs));
+    };
+    armProgressWatchdog();
+    const disk = await awaitWithAbort(() => (runtime.statfs || statfs)(work), controller.signal);
+    if (torrent.length + file.length + 2 * 1024 ** 3 > disk.bavail * disk.bsize) throw new MediaAcquisitionError('SOURCE_INVALID', 'Insufficient runner disk for this video');
     torrent.deselect(0, torrent.pieces.length - 1, false);
     file.select();
-    let downloadedBytes = 0;
-    let lastProgressAt = Date.now();
-    let noProgressFailure = null;
-    const readStream = file.createReadStream();
-    const progressPassThrough = progressStream(item, file.length, bytes => {
-      downloadedBytes = bytes;
-      lastProgressAt = Date.now();
-    });
-    const noProgressTimer = setInterval(() => {
-      const idleMs = Date.now() - lastProgressAt;
-      if (idleMs < ACQUISITION_NO_PROGRESS_TIMEOUT_MS) return;
-      const error = createNoProgressError(downloadedBytes, idleMs);
-      noProgressFailure = error;
-      console.warn(JSON.stringify({
-        event: 'torrent-no-progress-timeout',
-        id: item.id,
-        quality: item.quality,
-        downloadedBytes,
-        peers: torrent?.numPeers || 0,
-        error: error.message,
-      }));
-      controller.abort(error);
-      readStream.destroy(error);
-      progressPassThrough.destroy(error);
-      try { torrent?.destroy(); } catch { /* client cleanup follows in finally */ }
-    }, ACQUISITION_PROGRESS_CHECK_MS);
-    activeIntervals.add(noProgressTimer);
-    try {
-      await pipeline(readStream, progressPassThrough, createWriteStream(filePath), { signal: controller.signal });
-    } catch (error) {
-      throw noProgressFailure || error;
-    } finally {
-      clearInterval(noProgressTimer);
-      activeIntervals.delete(noProgressTimer);
-    }
+    acquisitionPhase = 'payload';
+
+    readStream = file.createReadStream();
+    progressStream = createByteProgressTransform(item, file.length, state, armProgressWatchdog);
+    writer = createWriteStream(filePath);
+    acquisitionEvent(item, state, 'payload-wait-start');
+    await pipeline(readStream, progressStream, writer, { signal: controller.signal });
+    clearTrackedTimer(progressTimer);
+    progressTimer = null;
     const written = fs.statSync(filePath);
-    if (!written.isFile() || written.size <= 10 * 1024 * 1024) {
-      throw new Error('NEW_FILE_ZERO_BYTES_OR_CORRUPT');
-    }
-    const validated = await validateMp4(filePath, file.length);
-    item.file = filePath; item.bytes = validated.bytes;
+    if (!written.isFile() || written.size <= 10 * 1024 * 1024) throw new MediaAcquisitionError('SOURCE_INVALID', 'NEW_FILE_ZERO_BYTES_OR_CORRUPT');
+    acquisitionPhase = 'validation';
+    const validated = await (runtime.validateMp4 || validateMp4)(filePath, file.length);
+    item.file = filePath;
+    item.bytes = validated.bytes;
+    acquisitionEvent(item, state, 'payload-complete', { phase: 'validation' });
+  } catch (error) {
+    const failure = state.failureCode
+      ? new MediaAcquisitionError(state.failureCode, state.failureMessage || safeLogError(error), { infoHash: state.infoHash, expectedBytes: state.expectedBytes, payloadBytes: state.payloadBytes })
+      : error;
+    if (!state.failureCode) state.failureCode = mediaFailureCode(failure);
+    acquisitionEvent(item, state, 'acquisition-failure', { phase: acquisitionPhase, error: safeLogError(failure) });
+    throw failure;
   } finally {
-    if (activeAcquisitionReject) activeAcquisitionReject = null;
-    clearTimeout(timer);
-    activeTimers.delete(timer);
-    await destroyTorrentClient(client);
+    for (const timer of timers) clearTrackedTimer(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+    cleanupPromise ||= destroyTorrentClient(client);
+    await cleanupPromise;
     await rm(resolve(work, 'pieces'), { recursive: true, force: true });
     if (!item.file) await rm(work, { recursive: true, force: true });
   }
 }
+
 async function markSkipped(plan, item, persist, reason = 'download-failure') {
   item.file = null;
   item.bytes = null;
@@ -789,26 +890,28 @@ function failureState(plan, id) {
     .filter(item => item.id === id && (item.verified || item.file))
     .map(item => item.quality));
   const missing = ['720p', '1080p'].filter(quality => !present.has(quality));
-  const failureReason = (plan?.files || [])
-    .filter(item => item.id === id)
-    .map(item => item.failureReason)
-    .find(Boolean);
   if (present.size === 1 && missing.length === 1) {
     return {
       status: 'HALF',
       ingestStatus: 'skipped_unplayable',
-      error: 'Missing ' + missing[0] + ': ' + (failureReason || 'Dead stream / 404'),
+      error: `Missing ${missing[0]}: ${(plan?.files || []).find(item => item.id === id && item.skipped && item.quality === missing[0])?.failureCode || 'Dead stream / 404'}`,
     };
   }
   const unplayable = (plan?.files || []).some(item => item.id === id && item.skipped && /MP4|unplayable|corrupt|container/i.test(String(item.skipReason || '')));
-  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: failureReason || (unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404') };
+  return { status: 'FLAGGED_FOR_REVIEW', ingestStatus: unplayable ? 'skipped_unplayable' : 'flagged_for_review', error: unplayable ? 'Unplayable or corrupt MP4' : 'Dead stream / 404' };
 }
 export async function markPermanentlyFailed(ctx, ids, plan) {
   let marked = 0;
   let half = 0;
   for (const id of new Set(ids)) {
     const state = failureState(plan, id);
-    const [row] = await ctx.query('SELECT ingest_status, transfer_lease_until FROM movies WHERE id = ?', [id]);
+    let row;
+    try {
+      [row] = await ctx.query('SELECT ingest_status, transfer_lease_until FROM movies WHERE id = ?', [id]);
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'media-flag-read-failed', id, error: safeLogError(error) }));
+      continue;
+    }
     if (!row || !['queued', 'processing', 'transferring', 'retry_pending', 'half', 'flagged_for_review'].includes(row.ingest_status)) continue;
     if (row.ingest_status === 'transferring' && Number(row.transfer_lease_until) > Math.floor(Date.now() / 1000)) continue;
     try {
@@ -837,15 +940,17 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
       return true;
     } catch (error) {
       const message = safeLogError(error);
-      if (isNonRetryableValidationError(error) || isNonRetryableAcquisitionFailure(error)) {
+      const failureCode = error?.code || mediaFailureCode(error);
+      if (failureCode) item.failureCode = failureCode;
+      if (isNonRetryableValidationError(error) || isNonRetryableAcquisitionError(error)) {
         item.nonRetryableFailure = true;
-        item.failureReason = classifyMediaError(error);
-        console.warn(JSON.stringify({ event: 'acquisition-nonretryable-failure', id: item.id, quality: item.quality, attempt, retryable: false, error: item.failureReason }));
+        item.failureReason = message;
+        console.warn(JSON.stringify({ event: 'acquisition-terminal-failure', id: item.id, quality: item.quality, attempt, failure_code: failureCode || 'SOURCE_INVALID', retryable: false, error: message }));
         return false;
       }
       console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: message }));
       if (attempt < maxAttempts) {
-        console.warn(`ðŸ” [Movie ID: ${item.id}] Retrying acquisition (Attempt ${attempt + 1}/${maxAttempts})...`);
+        console.warn(`ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â [Movie ID: ${item.id}] Retrying acquisition (Attempt ${attempt + 1}/${maxAttempts})...`);
         await wait(5000 * 2 ** (attempt - 1));
       }
     }
@@ -857,9 +962,9 @@ export async function prepareOne(ctx, plan, options = {}) {
   for (const item of plan.files.filter(f => !f.verified && !f.skipped && !f.file)) {
     try {
       if (await acquireWithRetries(ctx, plan, item, 3, options)) return item;
-      if (!item.nonRetryableFailure) console.warn(`âš ï¸ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
+      if (!item.nonRetryableFailure) console.warn(`ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
       if (item.nonRetryableFailure) await markMovieRetryPending(ctx, item.id, item.failureReason);
-      await markSkipped(plan, item, persist, item.nonRetryableFailure ? 'validation-failure' : 'download-failure');
+       await markSkipped(plan, item, persist, item.failureCode || (item.nonRetryableFailure ? 'validation-failure' : 'download-failure'));
     } catch (error) {
       console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
       await markSkipped(plan, item, persist, 'download-failure');
@@ -873,51 +978,84 @@ export async function prepareAll(ctx, plan, options = {}) {
   const permanentlyFailedIds = [];
   let prepared = 0;
   const pending = plan.files.filter(f => !f.verified && !f.skipped && !f.file);
-  for (const item of pending) {
-    try {
-      if (await acquireWithRetries(ctx, plan, item, 3, options)) prepared += 1;
-      else if (item.nonRetryableFailure) {
-        console.warn(`âš ï¸ Skipping Movie ${item.id} ${item.quality} after non-retryable MP4 validation failure.`);
-        await markMovieRetryPending(ctx, item.id, item.failureReason);
-        await markSkipped(plan, item, persist, 'validation-failure');
-        if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
-      } else {
-        console.warn(`âš ï¸ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
+  const groups = [...new Map(pending.map(item => [Number(item.id), item])).keys()]
+    .map(id => pending.filter(item => Number(item.id) === id));
+  let persistTail = Promise.resolve();
+  const persistQueued = (nextPlan) => {
+    const next = persistTail.then(() => persist(nextPlan));
+    persistTail = next.catch(() => {});
+    return next;
+  };
+  const workerOptions = { ...options, saveManifest: persistQueued };
+  let cursor = 0;
+  async function prepareGroup(items) {
+    for (const item of items) {
+      try {
+        if (await acquireWithRetries(ctx, plan, item, 3, workerOptions)) {
+          prepared += 1;
+          continue;
+        }
+        console.warn('Pass 1 failed for Movie ' + item.id + '. Queuing for final retry pass.');
+        if (item.nonRetryableFailure) {
+          await markMovieRetryPending(ctx, item.id, item.failureReason);
+          await markSkipped(plan, item, persistQueued, item.failureCode || 'validation-failure');
+          if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
+        } else {
+          console.warn('Pass 1 failed for Movie ' + item.id + '. Queuing for final retry pass.');
+          failedQueue.push(item);
+        }
+      } catch (error) {
+        console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
         failedQueue.push(item);
       }
-    } catch (error) {
-      console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
-      console.warn(`âš ï¸ Pass 1 failed for Movie ${item.id}. Queuing for final retry pass.`);
-      failedQueue.push(item);
     }
   }
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= groups.length) return;
+      await prepareGroup(groups[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MEDIA_CONCURRENCY, groups.length) }, worker));
+  await persistTail;
   if (failedQueue.length) {
-    console.log(`Starting Second-Chance Retry Pass for ${failedQueue.length} skipped movies...`);
-    for (const item of failedQueue) {
-      try {
-        delete item.skipped;
-        delete item.skipReason;
-        const acquireItem = options.acquire || acquire;
-        await acquireItem(ctx, item, 4);
-        await persist(plan);
-        prepared += 1;
-      } catch (error) {
-        console.error(JSON.stringify({ event: 'movie-preparation-permanently-skipped', id: item.id, quality: item.quality, error: safeLogError(error) }));
-        console.error(`âŒ Permanently skipping Movie ${item.id} (Unresolvable dead stream).`);
-        if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
-        await markSkipped(plan, item, persist);
+    console.log('Starting Second-Chance Retry Pass for ' + failedQueue.length + ' skipped movies...');
+    console.log('Starting bounded second-chance retry pass for ' + failedQueue.length + ' quality item(s).');
+    let retryCursor = 0;
+    async function retryWorker() {
+      while (true) {
+        const index = retryCursor++;
+        if (index >= failedQueue.length) return;
+        const item = failedQueue[index];
+        try {
+          delete item.skipped;
+          delete item.skipReason;
+          await (options.acquire || acquire)(ctx, item, 4);
+          await persistQueued(plan);
+          prepared += 1;
+        } catch (error) {
+          const failureCode = item.mediaDiagnostics?.failureCode || mediaFailureCode(error);
+          item.failureCode = failureCode || item.failureCode || 'DOWNLOAD_FAILED';
+          console.error(JSON.stringify({ event: 'movie-preparation-permanently-skipped', id: item.id, quality: item.quality, failure_code: item.failureCode, error: safeLogError(error) }));
+          if (!permanentlyFailedIds.includes(item.id)) permanentlyFailedIds.push(item.id);
+          await markSkipped(plan, item, persistQueued, item.failureCode);
+        }
       }
     }
+    await Promise.all(Array.from({ length: Math.min(MEDIA_CONCURRENCY, failedQueue.length) }, retryWorker));
+    await persistTail;
   }
   const markedFailed = await markPermanentlyFailed(ctx, permanentlyFailedIds, plan);
   await persist(plan);
   return { prepared, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds, markedFailed };
-}
-export async function commitItem(ctx, item, options = {}) {
+}export async function commitItem(ctx, item, options = {}) {
   const transferToken = options.transferToken;
   if (typeof transferToken !== 'string' || transferToken.length < 16) throw new Error('TRANSFER_OWNER_REQUIRED');
+  qualityWorkflowEvent(item, 'r2-verify-start');
   const object = await ctx.head(item.key);
   if (!validVideo(object) || object.ContentLength !== item.bytes) throw new Error('R2 verification failed before D1 commit');
+  qualityWorkflowEvent(item, 'r2-verify-complete');
   const [row] = await ctx.query('SELECT download_sources_json, revision, ingest_status, transfer_token FROM movies WHERE id = ?', [item.id]);
   if (!row || row.transfer_token !== transferToken || row.ingest_status !== 'transferring') throw new Error('TRANSFER_OWNERSHIP_LOST');
   const sources = sourcesOf(row.download_sources_json);
@@ -940,6 +1078,7 @@ export async function commitItem(ctx, item, options = {}) {
   assertLegalTransition(row.ingest_status, nextStatus);
 const result = await ctx.query("UPDATE movies SET download_sources_json=?,r2_storage_key=?,r2_video_bytes=?,ingest_status=?,transfer_token=NULL,transfer_lease_until=NULL,transfer_error=NULL,revision=revision+1,updated_at=?" + metadataAssignments + " WHERE id=? AND revision=? AND publication_status IN ('draft','published') AND ingest_status='transferring' AND transfer_token=? RETURNING id", [JSON.stringify({ status: verifiedQualities > 0 ? 'available' : 'pending', sources: next }), primary.r2StorageKey, primary.r2Bytes, nextStatus, new Date().toISOString(), ...metadataFields.map((field) => metadata[field]), item.id, row.revision, transferToken]);
   if (!result.length) throw new Error('D1 changed or transfer ownership was lost; retry required');
+  qualityWorkflowEvent(item, 'd1-commit-complete', { committed_status: nextStatus, verified_qualities: verifiedQualities });
 }
 async function claimItem(ctx, item) {
   const attemptId = randomUUID();
@@ -953,8 +1092,13 @@ async function claimItem(ctx, item) {
 }
 async function processItem(ctx, item, sync) {
   const token = await claimItem(ctx, item);
+  let phase = 'r2_upload';
   try {
+    qualityWorkflowEvent(item, 'r2-upload-start');
     if (!item.verified) await sync(item);
+    qualityWorkflowEvent(item, 'r2-upload-complete');
+    phase = 'd1_commit';
+    qualityWorkflowEvent(item, 'd1-commit-start');
     await commitItem(ctx, item, { transferToken: token });
     item.verified = true;
     if (item.file && resolve(item.file).startsWith(mediaRoot + sep)) await rm(dirname(item.file), { recursive: true, force: true });
@@ -967,22 +1111,30 @@ async function processItem(ctx, item, sync) {
       const existing = rows[0] ? sourcesOf(rows[0].download_sources_json) : [];
       if (existing.some((source) => source.r2StorageKey && Number(source.r2Bytes) > 0)) nextState = 'half';
     } catch { /* Keep retry_pending when the diagnostic read fails. */ }
-    await releaseTransfer(ctx, { id: Number(item.id), token, nextState, error: classifyMediaError(error) }).catch((releaseError) => {
+    const failureCode = item.mediaDiagnostics?.failureCode || mediaFailureCode(error) || 'TRANSFER_FAILED';
+    qualityWorkflowEvent(item, 'transfer-failure', { phase, failure_code: failureCode, error: safeLogError(error) });
+    await releaseTransfer(ctx, { id: Number(item.id), token, nextState, error: failureCode + ': ' + safeLogError(error) }).catch((releaseError) => {
       console.error(JSON.stringify({ event: 'transfer-lease-release-failed', id: item.id, error: safeLogError(releaseError) }));
     });
     throw error;
   }
 }
 export async function drainCloudPlan(plan, sync, _options = {}) {
-  const ctx = await context();
+  const options = _options || {};
+  const ctx = options.context || await context();
+  const persist = options.saveManifest || saveManifest;
+  const enriched = new Set();
+  const enrichMovie = async (id) => {
+    if (typeof options.enrich !== 'function' || enriched.has(Number(id))) return;
+    enriched.add(Number(id));
+    try { await options.enrich(ctx, Number(id)); }
+    catch (error) { console.warn(JSON.stringify({ event: 'enrichment-failed', movie_id: Number(id), failure_code: 'ENRICHMENT_FAILED', error: safeLogError(error) })); }
+  };
   try {
-    const reconciled = new Set();
     let consecutiveFailures = 0;
     while (true) {
       try {
-        for (const item of plan.files) {
-          if (item.verified && !reconciled.has(item.key)) { await processItem(ctx, item, sync); reconciled.add(item.key); }
-        }
+        for (const item of plan.files.filter(f => f.verified)) await enrichMovie(item.id);
         const pending = plan.files.filter(f => !f.verified && !f.skipped);
         if (!pending.length) {
           const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
@@ -993,35 +1145,49 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
           console.log('[complete] cloud snapshot verified in R2 and D1');
           return;
         }
-        const item = pending.find(f => f.file) || await prepareOne(ctx, plan);
-        if (!item) continue;
-        await processItem(ctx, item, sync);
-        reconciled.add(item.key);
-        await saveManifest(plan);
-        console.log(JSON.stringify({ event: 'verified', id: item.id, quality: item.quality, remaining: plan.files.filter(f => !f.verified).length }));
+        const batch = [];
+        const movieIds = new Set();
+        for (const item of pending.filter(f => f.file)) {
+          if (movieIds.has(Number(item.id))) continue;
+          movieIds.add(Number(item.id));
+          batch.push(item);
+          if (batch.length >= MEDIA_CONCURRENCY) break;
+        }
+        if (!batch.length) {
+          const item = await prepareOne(ctx, plan, options.prepareOptions || {});
+          if (!item) continue;
+          batch.push(item);
+        }
+        const settled = await Promise.allSettled(batch.map(async (item) => {
+          await processItem(ctx, item, sync);
+          item.verified = true;
+          await enrichMovie(item.id);
+          console.log(JSON.stringify({ event: 'verified', id: item.id, quality: item.quality, remaining: plan.files.filter(f => !f.verified).length }));
+        }));
+        const failed = settled.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason;
         consecutiveFailures = 0;
       } catch (error) {
         consecutiveFailures += 1;
         const pending = plan.files.filter(f => !f.verified && !f.skipped);
         const pendingIds = [...new Set(pending.map(f => f.id))];
-        console.warn('Remaining batch failed (' + consecutiveFailures + '/' + MAX_RETRIES + '): ' + safeLogError(error));
+        const code = mediaFailureCode(error) || 'TRANSFER_FAILED';
+        console.warn(JSON.stringify({ event: 'cloud-plan-failure', failure_code: code, error: safeLogError(error), pending_movie_ids: pendingIds }));
         if (consecutiveFailures >= MAX_RETRIES) {
-          for (const item of pending) await markSkipped(plan, item, saveManifest);
+          for (const item of pending) await markSkipped(plan, item, persist, item.failureCode || code);
           const marked = await markPermanentlyFailed(ctx, pendingIds, plan);
-          await saveManifest(plan);
+          await persist(plan);
           console.error('MAX_RETRIES=' + MAX_RETRIES + ' reached. Marked Movie IDs as failed: ' + (pendingIds.join(', ') || 'none') + ' (D1 marked: ' + marked + ').');
           return;
         }
-        console.log('Retrying remaining batch (Attempt ' + (consecutiveFailures + 1) + '/' + MAX_RETRIES + ')...');
-        await pause(10_000);
+        await (options.pause || pause)(10 * 1000);
       }
     }
   } finally {
     try { await diagnoseTransferLocks(ctx); } catch (error) { console.error(JSON.stringify({ event: 'transfer-lease-diagnostic-failed', error: safeLogError(error) })); }
-    ctx.s3.destroy();
+    ctx.s3?.destroy?.();
   }
-}
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+}if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let ctx;
   let summary;
   let fatalError;
@@ -1033,18 +1199,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
     const result = await prepareAll(ctx, plan);
-    let artwork = { scanned: 0, updated: 0 };
-    const eligibleIds = [...new Set(plan.files.filter((item) => item.verified || item.file).map((item) => Number(item.id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
-    try {
-      const artworkResult = await syncAllArtwork(ctx, eligibleIds);
-      artwork = { scanned: artworkResult.scanned, updated: artworkResult.updated };
-      for (const item of plan.files) {
-        const updates = artworkResult.updatesByMovie[String(item.id)];
-        if (updates && (item.verified || item.file)) item.metadata = updates;
-      }
-      await saveManifest(plan);
-    } catch (error) { console.warn(JSON.stringify({ event: 'artwork-backfill-warning', error: safeLogError(error) })); }
-    summary = { event: 'prepared', maxMovies, artwork, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
+    summary = { event: 'prepared', maxMovies, artwork: { scanned: 0, updated: 0 }, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
   } catch (error) {
     fatalError = error;
   } finally {

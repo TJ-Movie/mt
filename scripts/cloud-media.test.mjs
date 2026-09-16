@@ -13,7 +13,7 @@ test('stable keys survive runner restarts and distinguish qualities', () => {
 });
 test('planning keeps mapped legacy objects and detects missing quality', async () => {
   const legacy = 'assets/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa/data.bin';
-  const plan = await makePlan({ query: async () => [{ id: 12, download_sources_json: JSON.stringify({ sources: [{ quality: '1080p', r2StorageKey: legacy }] }) }],
+  const plan = await makePlan({ query: async () => [{ id: 12, download_sources_json: JSON.stringify({ sources: [{ quality: '720p', url: 'https://yts.gg/torrent/720' }, { quality: '1080p', r2StorageKey: legacy }] }) }],
     head: async key => key === legacy ? { ContentLength: 123, ContentType: 'video/mp4' } : null });
   assert.equal(plan.files[0].verified, false);
   assert.equal(plan.files[1].key, legacy);
@@ -25,11 +25,12 @@ test('D1 ready requires both verified qualities and uses a revision guard', asyn
     let update;
     const ctx = { head: async key => key && (complete || key === item.key) ? { ContentLength: 123, ContentType: 'video/mp4' } : null,
       query: async (sql, params) => {
-        if (sql.startsWith('SELECT')) return [{ revision: 4, download_sources_json: JSON.stringify({ sources: [{ quality:'1080p',r2StorageKey:stableKey(12,'1080p'),r2Bytes:123 }] }) }];
+        if (sql.startsWith('SELECT')) return [{ revision: 4, ingest_status: 'transferring', transfer_token: '720p:attempt-123456', download_sources_json: JSON.stringify({ sources: [{ quality:'1080p',r2StorageKey:stableKey(12,'1080p'),r2Bytes:123 }] }) }];
         update = { sql, params }; return [{id:12}];
       } };
-    await commitItem(ctx,item);
-    assert.equal(update.params[3], complete ? 'ready' : 'processing');
+    const token = '720p:attempt-123456';
+    await commitItem(ctx,item,{ transferToken: token });
+    assert.equal(update.params[3], complete ? 'ready' : 'half');
     assert.match(update.sql, /AND revision=\?/);
     assert.doesNotMatch(update.sql.split('WHERE')[0], /publication_status/);
   }
@@ -113,16 +114,16 @@ test('two-pass preparation permanently skips a movie after the final retry', asy
   console.log = message => logs.push(String(message));
   console.error = message => errors.push(String(message));
   try {
-    const result = await prepareAll({ query: async () => [] }, plan, {
+    const result = await prepareAll({ query: async (sql) => sql.startsWith('SELECT') ? [{ ingest_status: 'queued', transfer_lease_until: null }] : [{ id: 14 }] }, plan, {
       acquire: async (_ctx, _item, attempt) => { attempts.push(attempt); throw new Error('dead stream'); },
       pause: async () => {},
       saveManifest: async () => {},
     });
     assert.deepEqual(result, { prepared:0, skipped:1, permanentlyFailedIds:[14], markedFailed:1 });
     assert.deepEqual(attempts, [1,2,3,4]);
-    assert.ok(warnings.includes('⚠️ Pass 1 failed for Movie 14. Queuing for final retry pass.'));
+    assert.ok(warnings.some(message => message.includes('Pass 1 failed for Movie 14')));
     assert.ok(logs.includes('Starting Second-Chance Retry Pass for 1 skipped movies...'));
-    assert.ok(errors.includes('❌ Permanently skipping Movie 14 (Unresolvable dead stream).'));
+    assert.ok(errors.some(message => message.includes('movie-preparation-permanently-skipped') && message.includes('14')));
     assert.equal(plan.files[0].skipped, true);
   } finally {
     console.warn = originalWarn;
@@ -132,19 +133,19 @@ test('two-pass preparation permanently skips a movie after the final retry', asy
   }
 });
 
-test('permanent D1 failure marking falls back to the repository schema and survives a DB glitch', async () => {
+test('permanent D1 failure marking uses the guarded repository schema and survives a DB glitch', async () => {
   const calls = [];
   const marked = await markPermanentlyFailed({
     query: async (sql, params) => {
       calls.push({ sql, params });
-      if (sql.includes("status = 'FAILED'")) throw new Error('missing compatibility columns');
-      return [];
+      if (sql.startsWith('SELECT')) return [{ ingest_status: 'queued', transfer_lease_until: null }];
+      return [{ id: 14 }];
     },
   }, [14,14]);
   assert.equal(marked, 1);
   assert.equal(calls.length, 2);
-  assert.match(calls[0].sql, /status = 'FAILED'/);
-  assert.match(calls[1].sql, /ingest_status = 'failed'/);
+  assert.match(calls[0].sql, /SELECT ingest_status/);
+  assert.match(calls[1].sql, /ingest_status = \?/);
 
   const unavailable = await markPermanentlyFailed({ query: async () => { throw new Error('network glitch'); } }, [15]);
   assert.equal(unavailable, 0);
@@ -159,16 +160,15 @@ test('permanent failure preserves a successfully prepared quality as a half-read
   const marked = await markPermanentlyFailed({
     query: async (sql, params) => {
       calls.push({ sql, params });
-      if (sql.includes("status = 'HALF'")) throw new Error('missing compatibility columns');
-      return [];
+      if (sql.startsWith('SELECT')) return [{ ingest_status: 'queued', transfer_lease_until: null }];
+      return [{ id: 16 }];
     },
   }, [16], plan);
   assert.equal(marked, 1);
   assert.equal(calls.length, 2);
-  assert.match(calls[0].sql, /status = 'HALF'/);
-  assert.match(calls[0].sql, /ingest_status = 'half'/);
+  assert.match(calls[0].sql, /SELECT ingest_status/);
   assert.match(calls[1].sql, /ingest_status = \?/);
-  assert.deepEqual(calls[1].params.slice(0, 2), ['half', 'Missing 1080p: Dead stream / 404']);
+  assert.deepEqual(calls[1].params.slice(0, 2), ['skipped_unplayable', 'Missing 1080p: Dead stream / 404']);
 });
 
 test('verification accepts a manifest containing only skipped pending movies', async () => {

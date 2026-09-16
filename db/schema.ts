@@ -43,6 +43,8 @@ export const moviesTable = sqliteTable('movies', {
   transferToken: text('transfer_token'),
   transferLeaseUntil: integer('transfer_lease_until'),
   transferError: text('transfer_error'),
+  enrichmentStatus: text('enrichment_status').notNull().default('pending'),
+  enrichmentError: text('enrichment_error'),
 }, (table) => [
   uniqueIndex('idx_movies_slug_unique').on(table.slug),
   index('idx_movies_publication_featured').on(table.publicationStatus, table.featured),
