@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { applyRightsStatusChange, initializeRightsForm, rightsDatesForVerification, RIGHTS_EXPIRY_WINDOW_DAYS } from '../lib/admin/rights-dates.ts';
+import { applyRightsStatusChange, initializeRightsForm, rightsDatesForVerification, RIGHTS_DEFAULT_EXPIRES_AT } from '../lib/admin/rights-dates.ts';
 
 const now = Date.parse('2026-09-17T12:34:56.789Z');
 
@@ -22,7 +22,7 @@ void test('blank verified selection receives current UTC verification and future
   assert.ok(Date.parse(expiresAt) > now);
   assert.ok(Date.parse(expiresAt) > Date.parse(verifiedAt));
   assert.equal(draft.publicationStatus, 'draft');
-  assert.equal(Date.parse(expiresAt) - now, RIGHTS_EXPIRY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  assert.equal(expiresAt, RIGHTS_DEFAULT_EXPIRES_AT);
 });
 
 void test('existing pending movie with blank dates receives form defaults without changing status or source data', () => {
@@ -36,6 +36,7 @@ void test('existing pending movie with blank dates receives form defaults withou
   assert.notEqual(form.rightsVerifiedAt, null);
   assert.notEqual(form.rightsExpiresAt, null);
   assert.ok(Date.parse(form.rightsVerifiedAt) <= now);
+  assert.equal(form.rightsExpiresAt, RIGHTS_DEFAULT_EXPIRES_AT);
   assert.ok(Date.parse(form.rightsExpiresAt) > Date.parse(form.rightsVerifiedAt));
   assert.deepEqual(source, {
     rightsStatus: 'pending', rightsVerifiedAt: null, rightsExpiresAt: null,
@@ -43,7 +44,7 @@ void test('existing pending movie with blank dates receives form defaults withou
   });
 });
 
-void test('existing valid stored dates are preserved exactly during form initialization', () => {
+void test('existing verification time is preserved while every expiry uses the fixed catalogue default', () => {
   const stored = {
     rightsStatus: 'pending',
     rightsVerifiedAt: '2026-09-16T04:05:06.007Z',
@@ -51,7 +52,7 @@ void test('existing valid stored dates are preserved exactly during form initial
   };
   const form = initializeRightsForm(stored, now);
   assert.equal(form.rightsVerifiedAt, stored.rightsVerifiedAt);
-  assert.equal(form.rightsExpiresAt, stored.rightsExpiresAt);
+  assert.equal(form.rightsExpiresAt, RIGHTS_DEFAULT_EXPIRES_AT);
   assert.equal(form.rightsStatus, 'pending');
 });
 
@@ -68,12 +69,15 @@ void test('generated ISO values satisfy the server validation time contract', ()
   assert.ok(Date.parse(dates.rightsExpiresAt) > Date.parse(dates.rightsVerifiedAt));
 });
 
-void test('valid manually supplied timestamps are preserved exactly', () => {
+void test('valid verification time is preserved while supplied expiry is normalized', () => {
   const manual = {
     rightsVerifiedAt: '2026-09-16T04:05:06.007Z',
     rightsExpiresAt: '2028-02-03T10:11:12.013Z',
   };
-  assert.deepEqual(rightsDatesForVerification(manual, now), manual);
+  assert.deepEqual(rightsDatesForVerification(manual, now), {
+    rightsVerifiedAt: manual.rightsVerifiedAt,
+    rightsExpiresAt: RIGHTS_DEFAULT_EXPIRES_AT,
+  });
 });
 
 void test('rights date defaults require an explicit Verified status change', () => {

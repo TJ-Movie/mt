@@ -1,6 +1,4 @@
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-export const RIGHTS_EXPIRY_WINDOW_DAYS = 365;
+export const RIGHTS_DEFAULT_EXPIRES_AT = '2034-08-31T12:00:00.000Z';
 
 type RightsDateFields = {
   rightsVerifiedAt?: string | null;
@@ -37,10 +35,7 @@ export function rightsDatesForVerification(
     ? current.rightsVerifiedAt!
     : new Date(verifiedMs).toISOString();
 
-  const existingExpiresMs = parsedTime(current.rightsExpiresAt);
-  const expiresAt = existingExpiresMs !== null && existingExpiresMs > nowMs && existingExpiresMs > verifiedMs
-    ? current.rightsExpiresAt!
-    : new Date(Math.max(nowMs, verifiedMs) + RIGHTS_EXPIRY_WINDOW_DAYS * DAY_MS).toISOString();
+  const expiresAt = RIGHTS_DEFAULT_EXPIRES_AT;
 
   return { rightsVerifiedAt: verifiedAt, rightsExpiresAt: expiresAt };
 }
