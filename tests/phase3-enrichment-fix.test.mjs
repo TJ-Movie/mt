@@ -191,7 +191,7 @@ test('normal poster enrichment reaches the expected R2 storage path', async () =
   await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch((url) => imageResponse('image/jpeg', url.pathname.includes('/poster') ? 'poster' : 'backdrop'), async () => {
     const result = await syncArtworkForMovie(ctx, artworkRow());
     assert.equal(result.enrichmentStatus, 'ready');
-    assert.equal(result.updates.poster, 'https://flixlyra.com/media/artworks/77/poster.jpg');
+    assert.match(result.updates.poster, /^https:\/\/flixlyra\.com\/media\/artworks\/77\/poster\.jpg\?v=[a-f0-9]{16}$/);
   }));
   assert.ok(uploads.some((upload) => upload.key === 'artworks/77/poster.jpg'));
 });
@@ -201,7 +201,7 @@ test('normal backdrop enrichment reaches the expected R2 storage path', async ()
   await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch((url) => imageResponse('image/jpeg', url.pathname.includes('/poster') ? 'poster' : 'backdrop'), async () => {
     const result = await syncArtworkForMovie(ctx, artworkRow());
     assert.equal(result.enrichmentStatus, 'ready');
-    assert.equal(result.updates.backdrop, 'https://flixlyra.com/media/artworks/77/backdrop.jpg');
+    assert.match(result.updates.backdrop, /^https:\/\/flixlyra\.com\/media\/artworks\/77\/backdrop\.jpg\?v=[a-f0-9]{16}$/);
   }));
   assert.ok(uploads.some((upload) => upload.key === 'artworks/77/backdrop.jpg'));
 });
