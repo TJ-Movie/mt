@@ -226,11 +226,14 @@ function isRecord(value) {
 
 const artworkUrl = (value) => approvedImageSource(value);
 
-function publicArtworkUrl(key) {
+function publicArtworkUrl(key, version = '') {
   const base = (process.env.R2_PUBLIC_BASE_URL || 'https://flixlyra.com/media').replace(/\/+$/, '');
-  return `${base}/${key}`;
+  return `${base}/${key}${version ? `?v=${encodeURIComponent(version)}` : ''}`;
 }
 
+export function artworkVersion(bytes) {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+}
 function artworkKey(movieId, kind) {
   if (!Number.isSafeInteger(Number(movieId)) || Number(movieId) < 1 || !['poster', 'backdrop'].includes(kind)) return null;
   return `artworks/${Number(movieId)}/${kind}.jpg`;
@@ -632,7 +635,7 @@ export async function syncArtworkForMovie(ctx, row) {
       }));
       const verified = await ctx.headArtwork(key);
       if (!verified || Number(verified.ContentLength) !== current.bytes.byteLength || !String(verified.ContentType || '').startsWith('image/')) throw new Error('ARTWORK_R2_VERIFY_FAILED');
-      updates[kind] = publicArtworkUrl(key);
+      updates[kind] = publicArtworkUrl(key, artworkVersion(current.bytes));
     } catch (error) {
       errors.push(kind.toUpperCase() + '_SYNC_FAILED');
       console.warn(JSON.stringify({ event: 'artwork-sync-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error), non_blocking: true }));

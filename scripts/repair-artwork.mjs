@@ -5,6 +5,7 @@ import {
   downloadValidatedArtworkCandidate,
   fetchArtworkMetadata,
   fetchTmdbArtwork,
+  artworkVersion,
 } from './prepare-cloud-media.mjs';
 import { chooseBestArtworkCandidate, inspectArtworkBytes } from '../lib/artwork-quality.mjs';
 
@@ -16,8 +17,8 @@ const execute = args.has('--execute');
 const idsArg = process.argv.find((value) => value.startsWith('--ids='))?.slice('--ids='.length) || '';
 const selectedIds = new Set(idsArg.split(',').map((value) => Number(value.trim())).filter((value) => Number.isSafeInteger(value) && value > 0));
 
-function publicArtworkUrl(id, kind) {
-  return `${publicBase}/artworks/${Number(id)}/${kind}.jpg`;
+function publicArtworkUrl(id, kind, version = '') {
+  return `${publicBase}/artworks/${Number(id)}/${kind}.jpg${version ? `?v=${encodeURIComponent(version)}` : ''}`;
 }
 
 function artworkKey(id, kind) {
@@ -62,6 +63,7 @@ async function fetchCurrentArtwork(row, kind) {
 }
 
 async function uploadAndVerify(ctx, row, kind, candidate) {
+  const reference = publicArtworkUrl(row.id, kind, artworkVersion(candidate.bytes));
   const key = artworkKey(row.id, kind);
   await ctx.s3.send(new PutObjectCommand({
     Bucket: ctx.bucket,
@@ -83,12 +85,13 @@ async function uploadAndVerify(ctx, row, kind, candidate) {
   if (!head || Number(head.ContentLength) !== candidate.bytes.byteLength || !String(head.ContentType || '').startsWith('image/')) {
     throw new Error(`R2_VERIFY_FAILED:${key}`);
   }
-  const publicResponse = await fetch(publicArtworkUrl(row.id, kind), { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+  const publicResponse = await fetch(reference, { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
   if (!publicResponse.ok) throw new Error(`PUBLIC_ARTWORK_VERIFY_FAILED:${publicResponse.status}`);
   const publicType = (publicResponse.headers.get('content-type') || '').split(';')[0].toLowerCase();
   const publicBytes = new Uint8Array(await publicResponse.arrayBuffer());
   const publicQuality = inspectArtworkBytes(publicBytes, publicType, kind);
   if (!publicQuality.valid || publicBytes.byteLength !== candidate.bytes.byteLength) throw new Error(`PUBLIC_ARTWORK_QUALITY_VERIFY_FAILED:${key}`);
+  return reference;
 }
 
 async function repairRow(ctx, row) {
@@ -123,8 +126,8 @@ async function repairRow(ctx, row) {
       changes.push({ kind, before: current, after: selected, uploaded: false });
       continue;
     }
-    await uploadAndVerify(ctx, row, kind, selected);
-    changes.push({ kind, before: current, after: selected, uploaded: true, reference: publicArtworkUrl(row.id, kind) });
+    const reference = await uploadAndVerify(ctx, row, kind, selected);
+    changes.push({ kind, before: current, after: selected, uploaded: true, reference });
   }
   if (execute && changes.length) {
     const assignments = changes.map((change) => `${change.kind}=?`);
