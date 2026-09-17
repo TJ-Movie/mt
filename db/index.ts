@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers';
 import { movies as starterMovies, type Movie, type PublicationStatus, type RightsStatus } from '../lib/movies.ts';
 import { allLanguages } from '../lib/catalogue-options.ts';
 import { requiresRightsReset, type AdminMovieInput } from '../lib/admin/movie-input.ts';
+import { RIGHTS_DEFAULT_REFERENCE, RIGHTS_DEFAULT_REVIEWER } from '../lib/admin/rights-dates.ts';
 import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
 import { assertLegalTransition } from '../scripts/ingest-state.mjs';
@@ -547,7 +548,7 @@ export async function upsertYtsIngestMovie(record: YtsIngestRecord, user: ChatGP
   }
   const values = [
     slugBase, title, tagline, synopsis, record.year, runtime, rating, 'movie', genre, director, JSON.stringify(cast), languages, poster, backdrop, 0,
-    'draft', 'pending', null, null, null, null, officialWatchUrl, null, null, null, downloadPayload, '[]', '[]', 1, user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
+    'draft', 'pending', null, null, RIGHTS_DEFAULT_REVIEWER, RIGHTS_DEFAULT_REFERENCE, officialWatchUrl, null, null, null, downloadPayload, '[]', '[]', 1, user.userId, user.userId, now, now, record.imdbId, record.storageKey, 'queued',
   ];
   const result = await database.prepare('INSERT INTO movies (slug, title, tagline, description, release_year, runtime, rating, content_type, genre, director, cast_json, languages_json, poster, backdrop, featured, publication_status, rights_status, rights_verified_at, rights_expires_at, rights_reviewer, rights_reference, official_watch_url, telegram_url, telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status) VALUES (' + Array.from({ length: 36 }, () => '?').join(', ') + ')').bind(...values).run();
   const movieId = Number(result.meta.last_row_id);

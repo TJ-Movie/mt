@@ -74,7 +74,8 @@ test('authenticated ingestion persists a draft and prefers 1080p, with 720p fall
   assert.equal(row.publication_status, 'draft');
   assert.equal(row.rights_status, 'pending');
   assert.equal(row.rights_verified_at ?? null, null);
-  assert.equal(row.rights_reviewer, null);
+  assert.equal(row.rights_reviewer, 'Tj@gmail.com');
+  assert.equal(row.rights_reference, 'Good');
   assert.equal(row.poster, '/og.png');
   assert.equal(row.backdrop, '/og.png');
   assert.equal(row.enrichment_status, 'pending');
@@ -108,7 +109,7 @@ test('Studio metadata save preserves verified per-quality R2 mappings', async ()
     body: JSON.stringify({ revision: movie.revision, movie: { ...movie, title: movie.title, description: movie.description + ' edited', languages: ['English'], downloadSources: [] } }),
   }), {}, { waitUntil() {} });
   assert.equal(patch.status, 200, await patch.clone().text());
-  const row = sqlite.prepare('SELECT download_sources_json, publication_status, rights_status, rights_verified_at, rights_reviewer, poster, backdrop, enrichment_status FROM movies WHERE id=?').get(movie.id);
+  const row = sqlite.prepare('SELECT download_sources_json, publication_status, rights_status, rights_verified_at, rights_reviewer, rights_reference, poster, backdrop, enrichment_status FROM movies WHERE id=?').get(movie.id);
   const sources = JSON.parse(row.download_sources_json).sources;
   for (const quality of ['720p', '1080p']) {
     const source = sources.find((item) => item.quality === quality);
@@ -119,7 +120,8 @@ test('Studio metadata save preserves verified per-quality R2 mappings', async ()
   assert.equal(row.publication_status, 'draft');
   assert.equal(row.rights_status, 'pending');
   assert.equal(row.rights_verified_at ?? null, null);
-  assert.equal(row.rights_reviewer, null);
+  assert.equal(row.rights_reviewer, 'Tj@gmail.com');
+  assert.equal(row.rights_reference, 'Good');
   assert.equal(row.poster, '/og.png');
   assert.equal(row.backdrop, '/og.png');
   assert.equal(row.enrichment_status, 'pending');

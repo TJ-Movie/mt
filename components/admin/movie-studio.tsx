@@ -73,7 +73,12 @@ import {
 } from '../ui/alert-dialog';
 import { EpisodeBuilder } from './episode-builder';
 import { CastBuilder } from './cast-builder';
-import { applyRightsStatusChange, initializeRightsForm } from '../../lib/admin/rights-dates';
+import {
+  applyRightsStatusChange,
+  initializeRightsForm,
+  RIGHTS_DEFAULT_REFERENCE,
+  RIGHTS_DEFAULT_REVIEWER,
+} from '../../lib/admin/rights-dates';
 
 type EditorContext = {
   contentType: 'movie' | 'series';
@@ -263,8 +268,8 @@ const emptyMovie: DraftMovie = {
   rightsStatus: 'pending',
   rightsVerifiedAt: undefined,
   rightsExpiresAt: undefined,
-  rightsReviewer: 'Tj@gmail.com',
-  rightsReference: 'good',
+  rightsReviewer: RIGHTS_DEFAULT_REVIEWER,
+  rightsReference: RIGHTS_DEFAULT_REFERENCE,
   officialWatchUrl: undefined,
   telegramUrl: undefined,
   telegramChannel: undefined,

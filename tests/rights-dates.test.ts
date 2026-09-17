@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { applyRightsStatusChange, initializeRightsForm, rightsDatesForVerification, RIGHTS_DEFAULT_EXPIRES_AT } from '../lib/admin/rights-dates.ts';
+import { applyRightsStatusChange, initializeRightsForm, rightsDatesForVerification, RIGHTS_DEFAULT_EXPIRES_AT, RIGHTS_DEFAULT_REFERENCE, RIGHTS_DEFAULT_REVIEWER } from '../lib/admin/rights-dates.ts';
 
 const now = Date.parse('2026-09-17T12:34:56.789Z');
 
@@ -44,6 +44,23 @@ void test('existing pending movie with blank dates receives form defaults withou
   });
 });
 
+void test('blank form rights metadata receives the shared defaults without verification or publication changes', () => {
+  const form = initializeRightsForm({
+    rightsStatus: 'pending', rightsReviewer: null, rightsReference: '   ', publicationStatus: 'draft',
+  }, now);
+  assert.equal(form.rightsReviewer, RIGHTS_DEFAULT_REVIEWER);
+  assert.equal(form.rightsReference, RIGHTS_DEFAULT_REFERENCE);
+  assert.equal(form.rightsStatus, 'pending');
+  assert.equal(form.publicationStatus, 'draft');
+});
+
+void test('existing custom rights metadata is preserved exactly', () => {
+  const form = initializeRightsForm({
+    rightsReviewer: 'Legal Team', rightsReference: 'Agreement-42',
+  }, now);
+  assert.equal(form.rightsReviewer, 'Legal Team');
+  assert.equal(form.rightsReference, 'Agreement-42');
+});
 void test('existing verification time is preserved while every expiry uses the fixed catalogue default', () => {
   const stored = {
     rightsStatus: 'pending',
