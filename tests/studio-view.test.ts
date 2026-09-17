@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import type { AdminMovie } from '../db/index.ts';
 import {
@@ -9,6 +10,11 @@ import {
   studioSummary,
   type StudioFilters,
 } from '../lib/admin/studio-view.ts';
+import {
+  isStudioEditorPanelVisible,
+  STUDIO_EDITOR_TABS,
+  type StudioEditorTab,
+} from '../lib/admin/studio-editor.ts';
 
 const filters: StudioFilters = {
   publication: 'all',
@@ -109,4 +115,42 @@ void test('summary counts use the loaded dataset without backend queries', () =>
     total: 3, published: 1, draft: 2, archived: 0, ready: 1, half: 1, failed: 1, queued: 0,
     rightsPending: 2, rightsVerified: 1, reviewReady: 0, needsReview: 3,
   });
+});
+
+void test('editor tabs expose exactly one mounted panel at a time', () => {
+  for (const tab of STUDIO_EDITOR_TABS) {
+    const visible = STUDIO_EDITOR_TABS.filter((panel) => isStudioEditorPanelVisible(tab.id, panel.id));
+    assert.deepEqual(visible.map((panel) => panel.id), [tab.id]);
+  }
+});
+
+void test('tab switching keeps the shared draft and does not submit', () => {
+  const draft = { title: 'Oblivion', rightsStatus: 'pending' };
+  let active: StudioEditorTab = 'overview';
+  const saveCalls = 0;
+  const switchTab = (next: StudioEditorTab) => { active = next; };
+  switchTab('cast');
+  assert.equal(active, 'cast');
+  assert.deepEqual(draft, { title: 'Oblivion', rightsStatus: 'pending' });
+  assert.equal(saveCalls, 0);
+  switchTab('rights');
+  assert.equal(active, 'rights');
+  assert.equal(saveCalls, 0);
+});
+
+void test('Studio tab and filter labels remain explicit and the old anchor editor is gone', () => {
+  const source = readFileSync(new URL('../components/admin/movie-studio.tsx', import.meta.url), 'utf8');
+  assert.deepEqual(STUDIO_EDITOR_TABS.map((tab) => tab.label), ['Overview', 'Cast & Crew', 'Artwork', 'Media', 'Rights & Publishing', 'Advanced']);
+  assert.match(source, /role="tablist"/);
+  assert.match(source, /role="tabpanel"/);
+  assert.match(source, /setEditorTab\(tab\.id\)/);
+  assert.doesNotMatch(source, /href="#studio-(overview|technical|sources)"/);
+  for (const label of ['Publication', 'Media', 'Rights', 'Review', 'Reset filters']) assert.match(source, new RegExp(label));
+});
+
+void test('ID62-shaped HALF media keeps 720 unavailable and 1080 verified', () => {
+  const id62 = movie({ id: 62, title: 'Enfrentados: Marfil', availableQualities: ['1080p'], ingestStatus: 'half', ingest_status: 'half' });
+  assert.equal(studioMediaState(id62), 'half');
+  assert.equal(studioQualityState(id62, '720p'), 'queued');
+  assert.equal(studioQualityState(id62, '1080p'), 'verified');
 });

@@ -74,6 +74,11 @@ import {
   type StudioFilters,
   type StudioSort,
 } from '../../lib/admin/studio-view';
+import {
+  STUDIO_EDITOR_TABS,
+  isStudioEditorPanelVisible,
+  type StudioEditorTab,
+} from '../../lib/admin/studio-editor';
 
 type EditorContext = {
   contentType: 'movie' | 'series';
@@ -302,6 +307,66 @@ function StatusChip({ label, tone = 'neutral' }: { label: string; tone?: 'neutra
   };
   return <span className={'rounded-full border px-2 py-1 text-[11px] font-medium tracking-wide ' + tones[tone]}>{label}</span>;
 }
+function QualityCard({
+  movie,
+  quality,
+}: {
+  movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status' | 'downloadSources'>;
+  quality: '720p' | '1080p';
+}) {
+  const state = studioQualityState(movie, quality);
+  const source = (movie.downloadSources ?? []).find((item) => String(item.quality ?? item.resolution).toLowerCase() === quality);
+  const sourceRecord = source as Record<string, unknown> | undefined;
+  const rawDiagnostic = [
+    sourceRecord?.errorCode,
+    sourceRecord?.error_code,
+    sourceRecord?.failureCode,
+    sourceRecord?.failure_code,
+    sourceRecord?.status,
+    source?.label,
+  ].find((value): value is string => typeof value === 'string' && /no_peers|download_stalled|source_invalid|failed|unavailable/i.test(value));
+  const label = state === 'verified'
+    ? 'VERIFIED'
+    : rawDiagnostic
+      ? String(rawDiagnostic).replaceAll('_', ' ').toUpperCase()
+      : state === 'failed'
+        ? 'FAILED'
+        : 'UNAVAILABLE';
+  const tone = state === 'verified' ? 'success' : state === 'failed' ? 'danger' : 'warning';
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/15 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-medium text-white">{quality}</p>
+        <StatusChip label={label} tone={tone} />
+      </div>
+      <p className="mt-2 text-xs leading-5 text-white/50">
+        {state === 'verified'
+          ? `${source?.r2Bytes ? source.r2Bytes.toLocaleString() + ' bytes in verified R2 storage.' : 'Verified R2 mapping present.'}`
+          : source?.size || source?.label || 'No verified R2 mapping is present for this quality.'}
+      </p>
+    </div>
+  );
+}
+
+function ArtworkPreview({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-white/10 bg-black/20">
+      <div className="aspect-[16/9] bg-black/30">
+        {value ? <img src={value} alt={`${label} preview`} className="size-full object-cover" /> : <div className="flex size-full items-center justify-center text-sm text-white/35">No image</div>}
+      </div>
+      <p className="px-3 py-2 text-xs font-semibold uppercase tracking-[.12em] text-white/45">{label}</p>
+    </div>
+  );
+}
+
+function AdvancedValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/8 bg-black/10 p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[.12em] text-white/35">{label}</p>
+      <p className="mt-1 break-all font-mono text-xs text-white/70">{value || '-'}</p>
+    </div>
+  );
+}
 export function MovieStudio({
   initialMovies,
   initialAuditEvents,
@@ -332,6 +397,7 @@ export function MovieStudio({
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<StudioFilters>(DEFAULT_STUDIO_FILTERS);
   const [sort, setSort] = useState<StudioSort>('newest');
+  const [editorTab, setEditorTab] = useState<StudioEditorTab>('overview');
   const snapshot = useMemo(() => draftFor(selected), [selected]);
   const visibleMovies = useMemo(
     () => filterAndSortStudioMovies(movies, search, filters, sort),
@@ -346,6 +412,7 @@ export function MovieStudio({
     setDraft(draftFor(source));
     setMessage(null);
     setErrors({});
+    setEditorTab('overview');
   }
 
   function update<K extends keyof DraftMovie>(key: K, value: DraftMovie[K]) {
@@ -550,7 +617,7 @@ export function MovieStudio({
             </TabsTrigger>
           </TabsList>
           <TabsContent value="catalogue" className="mt-6">
-            <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
+            <div className="grid gap-6 xl:grid-cols-[minmax(380px,400px)_minmax(0,1fr)]">
               <aside className="rounded-2xl border border-white/10 bg-white/[.035] p-4">
                 <Button
                   onClick={() => choose(null)}
@@ -561,44 +628,58 @@ export function MovieStudio({
                 <label htmlFor="studio-movie-search" className="mt-3 block">
                   <span className="sr-only">Search movies</span>
                   <Input id="studio-movie-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, slug, IMDb ID or D1 ID" aria-label="Search movies" />
-                </label>                <div className="mt-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
-                  <NativeSelect aria-label="Publication filter" value={filters.publication} onChange={(event) => setFilters((current) => ({ ...current, publication: event.target.value as StudioFilters['publication'] }))} className="w-full">
-                    <NativeSelectOption value="all">All publication</NativeSelectOption>
-                    <NativeSelectOption value="draft">Draft</NativeSelectOption>
-                    <NativeSelectOption value="published">Published</NativeSelectOption>
-                    <NativeSelectOption value="archived">Archived</NativeSelectOption>
-                  </NativeSelect>
-                  <NativeSelect aria-label="Media filter" value={filters.media} onChange={(event) => setFilters((current) => ({ ...current, media: event.target.value as StudioFilters['media'] }))} className="w-full">
-                    <NativeSelectOption value="all">All media</NativeSelectOption>
-                    <NativeSelectOption value="ready">Ready</NativeSelectOption>
-                    <NativeSelectOption value="half">Half</NativeSelectOption>
-                    <NativeSelectOption value="queued">Queued</NativeSelectOption>
-                    <NativeSelectOption value="failed">Failed / unavailable</NativeSelectOption>
-                  </NativeSelect>
-                  <NativeSelect aria-label="Rights filter" value={filters.rights} onChange={(event) => setFilters((current) => ({ ...current, rights: event.target.value as StudioFilters['rights'] }))} className="w-full">
-                    <NativeSelectOption value="all">All rights</NativeSelectOption>
-                    <NativeSelectOption value="pending">Rights pending</NativeSelectOption>
-                    <NativeSelectOption value="verified">Rights verified</NativeSelectOption>
-                  </NativeSelect>
-                  <NativeSelect aria-label="Review filter" value={filters.review} onChange={(event) => setFilters((current) => ({ ...current, review: event.target.value as StudioFilters['review'] }))} className="w-full">
-                    <NativeSelectOption value="all">All review</NativeSelectOption>
-                    <NativeSelectOption value="ready">Ready for review</NativeSelectOption>
-                    <NativeSelectOption value="needs-review">Needs review / incomplete</NativeSelectOption>
-                  </NativeSelect>
+                </label>                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="min-w-0">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[.12em] text-white/45">Publication</span>
+                    <NativeSelect aria-label="Publication filter" value={filters.publication} onChange={(event) => setFilters((current) => ({ ...current, publication: event.target.value as StudioFilters['publication'] }))} className="w-full min-w-0">
+                      <NativeSelectOption value="all">All</NativeSelectOption>
+                      <NativeSelectOption value="draft">Draft</NativeSelectOption>
+                      <NativeSelectOption value="published">Published</NativeSelectOption>
+                      <NativeSelectOption value="archived">Archived</NativeSelectOption>
+                    </NativeSelect>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[.12em] text-white/45">Media</span>
+                    <NativeSelect aria-label="Media filter" value={filters.media} onChange={(event) => setFilters((current) => ({ ...current, media: event.target.value as StudioFilters['media'] }))} className="w-full min-w-0">
+                      <NativeSelectOption value="all">All</NativeSelectOption>
+                      <NativeSelectOption value="ready">Ready</NativeSelectOption>
+                      <NativeSelectOption value="half">Half</NativeSelectOption>
+                      <NativeSelectOption value="queued">Queued</NativeSelectOption>
+                      <NativeSelectOption value="failed">Failed</NativeSelectOption>
+                    </NativeSelect>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[.12em] text-white/45">Rights</span>
+                    <NativeSelect aria-label="Rights filter" value={filters.rights} onChange={(event) => setFilters((current) => ({ ...current, rights: event.target.value as StudioFilters['rights'] }))} className="w-full min-w-0">
+                      <NativeSelectOption value="all">All</NativeSelectOption>
+                      <NativeSelectOption value="pending">Pending</NativeSelectOption>
+                      <NativeSelectOption value="verified">Verified</NativeSelectOption>
+                    </NativeSelect>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[.12em] text-white/45">Review</span>
+                    <NativeSelect aria-label="Review filter" value={filters.review} onChange={(event) => setFilters((current) => ({ ...current, review: event.target.value as StudioFilters['review'] }))} className="w-full min-w-0">
+                      <NativeSelectOption value="all">All</NativeSelectOption>
+                      <NativeSelectOption value="ready">Ready for review</NativeSelectOption>
+                      <NativeSelectOption value="needs-review">Needs review</NativeSelectOption>
+                    </NativeSelect>
+                  </div>
                 </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <NativeSelect aria-label="Movie sort" value={sort} onChange={(event) => setSort(event.target.value as StudioSort)} className="min-w-0 flex-1">
-                    <NativeSelectOption value="newest">Newest first</NativeSelectOption>
-                    <NativeSelectOption value="oldest">Oldest first</NativeSelectOption>
-                    <NativeSelectOption value="title-asc">Title A-Z</NativeSelectOption>
-                    <NativeSelectOption value="title-desc">Title Z-A</NativeSelectOption>
-                    <NativeSelectOption value="updated">Recently updated</NativeSelectOption>
-                  </NativeSelect>
-                  <Button type="button" variant="ghost" className="shrink-0 px-2 text-xs text-white/60" onClick={() => { setSearch(''); setFilters(DEFAULT_STUDIO_FILTERS); setSort('newest'); }}>
-                    Reset
-                  </Button>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-1.5 text-xs text-white/55" aria-label="Catalogue counts">
+                <div className="mt-4 block">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[.12em] text-white/45">Sort</span>
+                  <div className="flex items-center gap-2">
+                    <NativeSelect aria-label="Movie sort" value={sort} onChange={(event) => setSort(event.target.value as StudioSort)} className="min-w-0 flex-1">
+                      <NativeSelectOption value="newest">Newest first</NativeSelectOption>
+                      <NativeSelectOption value="oldest">Oldest first</NativeSelectOption>
+                      <NativeSelectOption value="title-asc">Title A-Z</NativeSelectOption>
+                      <NativeSelectOption value="title-desc">Title Z-A</NativeSelectOption>
+                      <NativeSelectOption value="updated">Recently updated</NativeSelectOption>
+                    </NativeSelect>
+                    <Button type="button" variant="ghost" className="shrink-0 px-2 text-xs text-white/60" onClick={() => { setSearch(''); setFilters(DEFAULT_STUDIO_FILTERS); setSort('newest'); }}>
+                      Reset filters
+                    </Button>
+                  </div>
+                </div>                <div className="mt-4 flex flex-wrap gap-1.5 text-xs text-white/55" aria-label="Catalogue counts">
                   <span>{summary.total} Movies</span>
                   <span>·</span><span>{summary.published} Published</span>
                   <span>·</span><span>{summary.draft} Draft</span>
@@ -737,445 +818,122 @@ export function MovieStudio({
                     )}
                   </div>
                 )}
-                <nav className="sticky top-[5.5rem] z-10 -mx-1 mb-4 flex gap-1 overflow-x-auto rounded-xl border border-white/8 bg-[#171916]/90 p-1 backdrop-blur" aria-label="Editor sections">
-                  <a href="#studio-overview" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Overview</a>
-                  <a href="#studio-rights-artwork" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Rights & artwork</a>
-                  <a href="#studio-technical" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Advanced / technical</a>
-                </nav>
-                <section id="studio-overview" className="scroll-mt-28">
-                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Overview & cast</h2>
-                <div className="mt-6 grid gap-5 md:grid-cols-2">
-                  <Field label="Title">
-                    <Input
-                      maxLength={160}
-                      value={draft.title}
-                      onChange={(e) => update('title', e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Slug">
-                    <Input
-                      maxLength={80}
-                      value={draft.slug}
-                      onChange={(e) =>
-                        update('slug', e.target.value.toLowerCase())
-                      }
-                    />
-                  </Field>
-                  <Field label="Tagline" wide>
-                    <Input
-                      maxLength={200}
-                      value={draft.tagline}
-                      onChange={(e) => update('tagline', e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Description" wide>
-                    <Textarea
-                      maxLength={2000}
-                      value={draft.description}
-                      onChange={(e) => update('description', e.target.value)}
-                      className="min-h-28"
-                    />
-                  </Field>
-                  <Field label="Release year">
-                    <Input
-                      type="number"
-                      min={1888}
-                      max={new Date().getUTCFullYear() + 5}
-                      value={draft.year}
-                      onChange={(e) => update('year', Number(e.target.value))}
-                    />
-                  </Field>
-                  <Field label="Rating (0-10)">
-                    <Input
-                      type="number"
-                      min={0}
-                      max={10}
-                      step="0.1"
-                      value={draft.rating}
-                      onChange={(e) => update('rating', Number(e.target.value))}
-                    />
-                  </Field>
-                  <Field label="Runtime">
-                    <Input
-                      maxLength={30}
-                      value={draft.runtime}
-                      onChange={(e) => update('runtime', e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Genre">
-                    <NativeSelect
-                      value={draft.genre}
-                      onChange={(e) => update('genre', e.target.value)}
-                      className="w-full"
-                    >
-                      {genres
-                        .filter((genre) => genre !== 'All')
-                        .map((genre) => (
-                          <NativeSelectOption key={genre} value={genre}>
-                            {genre}
-                          </NativeSelectOption>
-                        ))}
-                    </NativeSelect>
-                  </Field>
-                  <Field label="Director">
-                    <Input
-                      maxLength={160}
-                      value={draft.director}
-                      onChange={(e) => update('director', e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Cast (comma separated)">
-                    <Input
-                      value={draft.cast
-                        .map((member) =>
-                          typeof member === 'string' ? member : member.actor,
-                        )
-                        .join(', ')}
-                      onChange={(e) =>
-                        update(
-                          'cast',
-                          e.target.value
-                            .split(',')
-                            .map((value) => value.trim())
-                            .filter(Boolean),
-                        )
-                      }
-                    />
-                  </Field>
-                  <div id="studio-rights-artwork" className="md:col-span-2 border-t border-white/10 pt-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Rights & publishing</h3>
-                  </div>
-                  <Field label="Publication">
-                    <NativeSelect
-                      value={draft.publicationStatus}
-                      onChange={(e) =>
-                        update(
-                          'publicationStatus',
-                          e.target.value as DraftMovie['publicationStatus'],
-                        )
-                      }
-                      className="w-full"
-                    >
-                      <NativeSelectOption value="draft">
-                        Draft
-                      </NativeSelectOption>
-                      <NativeSelectOption value="published">
-                        Published
-                      </NativeSelectOption>
-                      <NativeSelectOption value="archived">
-                        Archived
-                      </NativeSelectOption>
-                    </NativeSelect>
-                  </Field>
-                  <Field label="Rights status">
-                    <NativeSelect
-                      aria-label="Rights status"
-                      value={draft.rightsStatus}
-                      onChange={e => {
-                        const nextStatus = e.target.value as DraftMovie['rightsStatus'];
-                        setDraft(current => applyRightsStatusChange(current, nextStatus));
-                      }}
-                      className="w-full"
-                    >
-                      <NativeSelectOption value="pending">Pending review</NativeSelectOption>
-                      <NativeSelectOption value="verified">Verified</NativeSelectOption>
-                      <NativeSelectOption value="blocked">Blocked</NativeSelectOption>
-                    </NativeSelect>
-                  </Field>
-                  <Field label="Rights reviewer">
-                    <Input aria-label="Rights reviewer" maxLength={120} value={draft.rightsReviewer ?? ''} onChange={e => update('rightsReviewer', e.target.value)} placeholder="Name or email of the person approving distribution" />
-                  </Field>
-                  <Field label="Rights evidence reference" wide>
-                    <Input aria-label="Rights evidence reference" maxLength={160} value={draft.rightsReference ?? ''} onChange={e => update('rightsReference', e.target.value)} placeholder="Your license, agreement or ownership evidence reference" />
-                  </Field>
-                  <Field label="Rights verified at (UTC)">
-                    <Input aria-label="Rights verified at (UTC)" type="datetime-local" step="1" value={draft.rightsVerifiedAt?.slice(0, 19) ?? ''} onChange={e => update('rightsVerifiedAt', e.target.value ? new Date(e.target.value + 'Z').toISOString() : undefined)} />
-                    <Button type="button" variant="outline" className="mt-2" onClick={() => update('rightsVerifiedAt', new Date().toISOString())}>Set verification time to now</Button>
-                  </Field>
-                  <Field label="Rights expires at (12:00 UTC)">
-                    <Input
-                      type="date"
-                      value={localDate(draft.rightsExpiresAt)}
-                      onChange={(e) =>
-                        update('rightsExpiresAt', isoDate(e.target.value))
-                      }
-                    />
-                  </Field>
-                  <p className="text-sm text-white/60 md:col-span-2">Only select Verified after reviewing distribution rights. Reviewer, evidence, verification time and future expiry are required. Changing an approved delivery source or evidence requires saving Pending first, then reviewing and verifying again.</p>
-                  <DownloadReadiness key={`${selectedId}-${draft.revision}`} id={draft.id} slug={selected.slug} />
-                  <Field label="Official YouTube URL" wide>
-                    <Input
-                      maxLength={500}
-                      value={draft.officialWatchUrl ?? ''}
-                      onChange={(e) =>
-                        update('officialWatchUrl', e.target.value)
-                      }
-                    />
-                  </Field>
-                  <Field label="Telegram URL">
-                    <Input
-                      maxLength={500}
-                      value={draft.telegramUrl ?? ''}
-                      onChange={(e) => update('telegramUrl', e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Telegram channel">
-                    <Input
-                      maxLength={32}
-                      value={draft.telegramChannel ?? ''}
-                      onChange={(e) =>
-                        update('telegramChannel', e.target.value)
-                      }
-                    />
-                  </Field>
-                  <div className="md:col-span-2 border-t border-white/10 pt-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Artwork</h3>
-                  </div>
-                  <div className="md:col-span-2 border-t border-white/10 pt-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Artwork</h3>
-                  </div>
-                  <UploadField
-                    label="Poster"
-                    value={draft.poster}
-                    accept="image/jpeg,image/png"
-                    onUpload={(file) => upload(file, 'poster')}
-                  />
-                  <UploadField
-                    label="Backdrop"
-                    value={draft.backdrop}
-                    accept="image/jpeg,image/png"
-                    onUpload={(file) => upload(file, 'backdrop')}
-                  />
-                  <UploadField
-                    label="Subtitle ZIP / 7Z / SRT / VTT"
-                    value={draft.subtitleUrl ?? ''}
-                    accept=".zip,.7z,.srt,.vtt,application/zip,application/x-7z-compressed,text/plain,text/vtt"
-                    onUpload={(file) => upload(file, 'subtitleUrl')}
-                  />
-                  <label className="flex items-center gap-3 text-sm text-white/65">
-                    <input
-                      type="checkbox"
-                      checked={draft.featured}
-                      onChange={(e) => update('featured', e.target.checked)}
-                      className="size-4 accent-[#ef796d]"
-                    />{' '}
-                    Featured content
-                  </label>
-                  <Field label="Subtitle languages" wide>
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {allLanguages.map((language) => (
-                        <label
-                          key={language}
-                          className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.languages.includes(language)}
-                            onChange={(e) =>
-                              update(
-                                'languages',
-                                e.target.checked
-                                  ? [...draft.languages, language]
-                                  : draft.languages.filter(
-                                      (item) => item !== language,
-                                    ),
-                              )
-                            }
-                            className="accent-[#ef796d]"
-                          />
-                          {language}
-                        </label>
-                      ))}
+                <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#171916] xl:h-[calc(100vh-8rem)]">
+                  <div className="shrink-0 border-b border-white/10 bg-[#171916]/95 px-5 pb-4 pt-5 backdrop-blur sm:px-7 sm:pt-6">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">
+                          {selectedId === 'new' ? 'New record' : 'Editing record'}
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <h1 className="truncate font-serif text-2xl sm:text-3xl">{draft.title || 'Untitled film'}</h1>
+                          <StatusChip label={draft.publicationStatus.toUpperCase()} tone={draft.publicationStatus === 'published' ? 'success' : draft.publicationStatus === 'archived' ? 'danger' : 'neutral'} />
+                          <StatusChip label={mediaLabel(draft)} tone={studioMediaState(draft) === 'ready' ? 'success' : studioMediaState(draft) === 'half' ? 'warning' : studioMediaState(draft) === 'failed' ? 'danger' : 'neutral'} />
+                          <StatusChip label={draft.rightsStatus === 'verified' ? 'RIGHTS VERIFIED' : 'RIGHTS PENDING'} tone={draft.rightsStatus === 'verified' ? 'success' : 'warning'} />
+                          {hasUnsavedChanges && <StatusChip label="UNSAVED CHANGES" tone="warning" />}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        {selectedId !== 'new' && draft.slug && (
+                          <a href={`/movie/${encodeURIComponent(draft.slug)}`} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center rounded-full border border-white/15 px-4 text-sm text-white/75 transition hover:border-white/30 hover:text-white">Preview</a>
+                        )}
+                        <Button disabled={busy} onClick={save} className="h-10 rounded-full bg-[#ef796d] px-5 text-white">
+                          {busy ? <Loader2 className="animate-spin" /> : <Save />} Save
+                        </Button>
+                        {selectedId !== 'new' && draft.publicationStatus !== 'archived' && (
+                          <AlertDialog>
+                            <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}>
+                              <Archive /> Archive
+                            </AlertDialogTrigger>
+                            <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Archive this movie?</AlertDialogTitle>
+                                <AlertDialogDescription>It will immediately disappear from the public catalogue. The audit record remains.</AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction onClick={archive} className="bg-[#b43a2e] text-white">Archive</AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                        {selectedId !== 'new' && draft.publicationStatus === 'archived' && (
+                          <AlertDialog>
+                            <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}><Trash2 /> Delete</AlertDialogTrigger>
+                            <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
+                              <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This cannot be undone. Archived records are the only records eligible for deletion.</AlertDialogDescription></AlertDialogHeader>
+                              <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={permanentlyDelete} className="bg-[#b43a2e] text-white">Delete permanently</AlertDialogAction></AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                      </div>
                     </div>
-                  </Field>
-                </div>
-                </section>
-                <section id="studio-technical" className="scroll-mt-28">
-                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Content & technical</h2>
-                <div className="mt-5 grid gap-5 border-t border-white/10 pt-5 md:grid-cols-2">
-                  <Field label="Content type">
-                    <NativeSelect
-                      value={draft.contentType ?? 'movie'}
-                      onChange={(e) =>
-                        update(
-                          'contentType',
-                          e.target.value as DraftMovie['contentType'],
-                        )
-                      }
-                      className="w-full"
-                    >
-                      {contentTypes.map((type) => (
-                        <NativeSelectOption key={type} value={type}>
-                          {type === 'series' ? 'TV Series' : 'Movie'}
-                        </NativeSelectOption>
-                      ))}
-                    </NativeSelect>
-                  </Field>
-                  <Field label="Multiple categories">
-                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {genres
-                        .filter((genre) => genre !== 'All')
-                        .map((genre) => {
-                          const selectedGenres = draft.genre
-                            .split(',')
-                            .map((item) => item.trim())
-                            .filter(Boolean);
-                          return (
-                            <label
-                              key={genre}
-                              className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedGenres.includes(genre)}
-                                onChange={(e) =>
-                                  update(
-                                    'genre',
-                                    e.target.checked
-                                      ? [
-                                          ...new Set([
-                                            ...selectedGenres,
-                                            genre,
-                                          ]),
-                                        ].join(', ')
-                                      : selectedGenres
-                                          .filter((item) => item !== genre)
-                                          .join(', '),
-                                  )
-                                }
-                                className="accent-[#ef796d]"
-                              />
-                              {genre}
-                            </label>
-                          );
-                        })}
-                    </div>
-                  </Field>
-                </div>
-                </section>
-                <section id="studio-sources" className="scroll-mt-28">
-                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Sources & diagnostics</h2>
-                <div className="mt-5 space-y-5 border-t border-white/10 pt-5">
-                  <Field
-                    label="Series episodes (one per line: S01E01 | Episode title | optional URL)"
-                    wide
-                  >
-                    <Textarea
-                      value={(draft.episodes ?? [])
-                        .map(
-                          (episode) =>
-                            `S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')} | ${episode.title} | ${episode.url ?? ''}`,
-                        )
-                        .join('\n')}
-                      onChange={(e) =>
-                        update(
-                          'episodes',
-                          e.target.value
-                            .split('\n')
-                            .map((line) => {
-                              const [code, title, url] = line
-                                .split('|')
-                                .map((item) => item.trim());
-                              const match = /^S(\d+)E(\d+)$/i.exec(code ?? '');
-                              return match && title
-                                ? {
-                                    season: Number(match[1]),
-                                    episode: Number(match[2]),
-                                    title,
-                                    url: url || undefined,
-                                  }
-                                : null;
-                            })
-                            .filter(Boolean) as DraftMovie['episodes'],
-                        )
-                      }
-                      placeholder={
-                        'S01E01 | Pilot | https://source.example/episode-1\nS01E02 | The second signal | https://source.example/episode-2'
-                      }
-                      className="min-h-32"
-                    />
-                  </Field>
-                  <Field
-                    label="Streaming servers (one per line: Label | Embed URL)"
-                    wide
-                  >
-                    <Textarea
-                      value={(draft.streamingSources ?? [])
-                        .map((source) => `${source.label} | ${source.url}`)
-                        .join('\n')}
-                      onChange={(e) =>
-                        update(
-                          'streamingSources',
-                          e.target.value
-                            .split('\n')
-                            .map((line) => {
-                              const [label, ...url] = line.split('|');
-                              return {
-                                label: (label ?? '').trim(),
-                                url: url.join('|').trim(),
-                              };
-                            })
-                            .filter((source) => source.label || source.url),
-                        )
-                      }
-                      placeholder="Server 1 | https://player.example.com/embed/123"
-                      className="min-h-24"
-                    />
-                  </Field>
-                  <Field
-                    label="Download options (URL alone, or Label | Quality | Resolution | Size | URL)"
-                    wide
-                  >
-                    <Textarea
-                      value={(draft.downloadSources ?? [])
-                        .map(
-                          (source) =>
-                            `${source.label} | ${source.quality} | ${source.resolution} | ${source.size} | ${source.url}`,
-                        )
-                        .join('\n')}
-                      onChange={(e) =>
-                        update(
-                          'downloadSources',
-                          e.target.value
-                            .split('\n')
-                            .map((line, index) => {
-                              const parts = line
-                                .split('|')
-                                .map((item) => item.trim());
-                              if (
-                                parts.length === 1 &&
-                                /^https:\/\//i.test(parts[0] ?? '')
-                              )
-                                return {
-                                  label: `Download ${index + 1}`,
-                                  quality: 'Standard',
-                                  resolution: 'Auto',
-                                  size: 'Unknown',
-                                  url: parts[0],
-                                };
-                              const [label, quality, resolution, size, ...url] =
-                                parts;
-                              return {
-                                label: label ?? '',
-                                quality: quality ?? '',
-                                resolution: resolution ?? '',
-                                size: size ?? '',
-                                url: url.join('|'),
-                              };
-                            })
-                            .filter((source) => source.url),
-                        )
-                      }
-                      placeholder={
-                        'https://pixeldrain.com/u/example\nDirect 2 | WEB-DL | 1080p | 2.4 GB | https://doodstream.com/d/example'
-                      }
-                      className="min-h-28"
-                    />
-                  </Field>
-                </div>
-                  </section>
-
-              </section>
+                    {message && (
+                      <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${message.tone === 'success' ? 'border-emerald-400/20 bg-emerald-400/8 text-emerald-200' : 'border-red-400/20 bg-red-400/8 text-red-200'}`}>
+                        <div className="flex items-center gap-2">{message.tone === 'success' ? <CheckCircle2 /> : <ShieldAlert />}{message.text}</div>
+                        {Object.keys(errors).length > 0 && <ul className="mt-3 list-disc space-y-1 pl-6 text-red-200/80">{Object.entries(errors).map(([field, error]) => <li key={field}><span className="font-semibold">{fieldLabel(field)}:</span> {error}</li>)}</ul>}
+                      </div>
+                    )}
+                  </div>
+                  <div role="tablist" aria-label="Movie editor sections" className="sticky top-0 z-10 shrink-0 flex gap-1 overflow-x-auto border-b border-white/10 bg-[#171916] px-5 py-2 sm:px-7">
+                    {STUDIO_EDITOR_TABS.map((tab) => {
+                      const active = isStudioEditorPanelVisible(editorTab, tab.id);
+                      return <button key={tab.id} type="button" role="tab" id={`studio-tab-${tab.id}`} aria-selected={active} aria-controls={`studio-panel-${tab.id}`} onClick={() => setEditorTab(tab.id)} className={`whitespace-nowrap rounded-lg border px-3 py-2 text-sm transition ${active ? 'border-[#ef796d]/60 bg-[#ef796d]/12 text-white' : 'border-transparent text-white/55 hover:border-white/10 hover:bg-white/[.04] hover:text-white'}`}>{tab.label}</button>;
+                    })}
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-7">
+                    {isStudioEditorPanelVisible(editorTab, 'overview') && (
+                      <div id="studio-panel-overview" role="tabpanel" aria-labelledby="studio-tab-overview" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5 flex items-end justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Overview</p><h2 className="mt-1 text-xl font-semibold text-white">Core catalogue details</h2></div><p className="text-right text-xs text-white/40">Edit the public-facing record without opening technical controls.</p></div>
+                        <div className="grid gap-5 md:grid-cols-2">
+                          <Field label="Title"><Input maxLength={160} value={draft.title} onChange={(e) => update('title', e.target.value)} /></Field>
+                          <Field label="Slug"><Input maxLength={80} value={draft.slug} onChange={(e) => update('slug', e.target.value.toLowerCase())} /></Field>
+                          <Field label="Tagline" wide><Input maxLength={200} value={draft.tagline} onChange={(e) => update('tagline', e.target.value)} /></Field>
+                          <Field label="Description" wide><Textarea maxLength={2000} value={draft.description} onChange={(e) => update('description', e.target.value)} className="min-h-28" /></Field>
+                          <Field label="Release year"><Input type="number" min={1888} max={new Date().getUTCFullYear() + 5} value={draft.year} onChange={(e) => update('year', Number(e.target.value))} /></Field>
+                          <Field label="Rating (0-10)"><Input type="number" min={0} max={10} step="0.1" value={draft.rating} onChange={(e) => update('rating', Number(e.target.value))} /></Field>
+                          <Field label="Runtime"><Input maxLength={30} value={draft.runtime} onChange={(e) => update('runtime', e.target.value)} /></Field>
+                          <Field label="Content type"><NativeSelect value={draft.contentType ?? 'movie'} onChange={(e) => update('contentType', e.target.value as DraftMovie['contentType'])} className="w-full">{contentTypes.map((type) => <NativeSelectOption key={type} value={type}>{type === 'series' ? 'TV Series' : 'Movie'}</NativeSelectOption>)}</NativeSelect></Field>
+                          <Field label="Genre"><NativeSelect value={draft.genre} onChange={(e) => update('genre', e.target.value)} className="w-full">{genres.filter((genre) => genre !== 'All').map((genre) => <NativeSelectOption key={genre} value={genre}>{genre}</NativeSelectOption>)}</NativeSelect></Field>
+                          <Field label="Categories" wide><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{genres.filter((genre) => genre !== 'All').map((genre) => { const selectedGenres = draft.genre.split(',').map((item) => item.trim()).filter(Boolean); return <label key={genre} className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"><input type="checkbox" checked={selectedGenres.includes(genre)} onChange={(e) => update('genre', e.target.checked ? [...new Set([...selectedGenres, genre])].join(', ') : selectedGenres.filter((item) => item !== genre).join(', '))} className="accent-[#ef796d]" />{genre}</label>; })}</div></Field>
+                        </div>
+                      </div>
+                    )}
+                    {isStudioEditorPanelVisible(editorTab, 'cast') && (
+                      <div id="studio-panel-cast" role="tabpanel" aria-labelledby="studio-tab-cast" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5"><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Cast & Crew</p><h2 className="mt-1 text-xl font-semibold text-white">People and roles</h2></div>
+                        <div className="grid gap-5 md:grid-cols-2"><Field label="Director"><Input maxLength={160} value={draft.director} onChange={(e) => update('director', e.target.value)} /></Field><div className="md:col-span-2"><Field label="Cast"><div /></Field></div></div>
+                      </div>
+                    )}
+                    {isStudioEditorPanelVisible(editorTab, 'artwork') && (
+                      <div id="studio-panel-artwork" role="tabpanel" aria-labelledby="studio-tab-artwork" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5"><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Artwork</p><h2 className="mt-1 text-xl font-semibold text-white">Poster, backdrop and supporting assets</h2></div>
+                        <div className="grid gap-5 md:grid-cols-2"><div><ArtworkPreview label="Poster" value={draft.poster} /><div className="mt-3"><UploadField label="Poster" value={draft.poster} accept="image/jpeg,image/png" onUpload={(file) => upload(file, 'poster')} /></div></div><div><ArtworkPreview label="Backdrop" value={draft.backdrop} /><div className="mt-3"><UploadField label="Backdrop" value={draft.backdrop} accept="image/jpeg,image/png" onUpload={(file) => upload(file, 'backdrop')} /></div></div></div>
+                        <div className="mt-5 grid gap-5 md:grid-cols-2"><UploadField label="Subtitle ZIP / 7Z / SRT / VTT" value={draft.subtitleUrl ?? ''} accept=".zip,.7z,.srt,.vtt,application/zip,application/x-7z-compressed,text/plain,text/vtt" onUpload={(file) => upload(file, 'subtitleUrl')} /><label className="flex items-center gap-3 self-end pb-2 text-sm text-white/65"><input type="checkbox" checked={draft.featured} onChange={(e) => update('featured', e.target.checked)} className="size-4 accent-[#ef796d]" /> Featured content</label><Field label="Subtitle languages" wide><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{allLanguages.map((language) => <label key={language} className="flex items-center gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm text-white/60"><input type="checkbox" checked={draft.languages.includes(language)} onChange={(e) => update('languages', e.target.checked ? [...draft.languages, language] : draft.languages.filter((item) => item !== language))} className="accent-[#ef796d]" />{language}</label>)}</div></Field></div>
+                      </div>
+                    )}
+                    {isStudioEditorPanelVisible(editorTab, 'media') && (
+                      <div id="studio-panel-media" role="tabpanel" aria-labelledby="studio-tab-media" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5 flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Media</p><h2 className="mt-1 text-xl font-semibold text-white">Operational readiness</h2></div><StatusChip label={`Overall: ${mediaLabel(draft)}`} tone={studioMediaState(draft) === 'ready' ? 'success' : studioMediaState(draft) === 'half' ? 'warning' : studioMediaState(draft) === 'failed' ? 'danger' : 'neutral'} /></div>
+                        <div className="grid gap-4 md:grid-cols-2"><QualityCard movie={draft} quality="720p" /><QualityCard movie={draft} quality="1080p" /></div>
+                        <div className="mt-5 grid gap-5"><DownloadReadiness key={`${selectedId}-${draft.revision}`} id={draft.id} slug={selected.slug} /><Field label="Series episodes (one per line: S01E01 | Episode title | optional URL)" wide><Textarea value={(draft.episodes ?? []).map((episode) => `S${String(episode.season).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')} | ${episode.title} | ${episode.url ?? ''}`).join('\n')} onChange={(e) => update('episodes', e.target.value.split('\n').map((line) => { const [code, title, url] = line.split('|').map((item) => item.trim()); const match = /^S(\d+)E(\d+)$/i.exec(code ?? ''); return match && title ? { season: Number(match[1]), episode: Number(match[2]), title, url: url || undefined } : null; }).filter(Boolean) as DraftMovie['episodes'])} placeholder={'S01E01 | Pilot | https://source.example/episode-1\nS01E02 | The second signal | https://source.example/episode-2'} className="min-h-32" /></Field><Field label="Streaming servers (one per line: Label | Embed URL)" wide><Textarea value={(draft.streamingSources ?? []).map((source) => `${source.label} | ${source.url}`).join('\n')} onChange={(e) => update('streamingSources', e.target.value.split('\n').map((line) => { const [label, ...url] = line.split('|'); return { label: (label ?? '').trim(), url: url.join('|').trim() }; }).filter((source) => source.label || source.url))} placeholder="Server 1 | https://player.example.com/embed/123" className="min-h-24" /></Field><Field label="Download options (URL alone, or Label | Quality | Resolution | Size | URL)" wide><Textarea value={(draft.downloadSources ?? []).map((source) => `${source.label} | ${source.quality} | ${source.resolution} | ${source.size} | ${source.url}`).join('\n')} onChange={(e) => update('downloadSources', e.target.value.split('\n').map((line, index) => { const parts = line.split('|').map((item) => item.trim()); if (parts.length === 1 && /^https:\/\//i.test(parts[0] ?? '')) return { label: `Download ${index + 1}`, quality: 'Standard', resolution: 'Auto', size: 'Unknown', url: parts[0] }; const [label, quality, resolution, size, ...url] = parts; return { label: label ?? '', quality: quality ?? '', resolution: resolution ?? '', size: size ?? '', url: url.join('|') }; }).filter((source) => source.url))} placeholder={'https://pixeldrain.com/u/example\nDirect 2 | WEB-DL | 1080p | 2.4 GB | https://doodstream.com/d/example'} className="min-h-28" /></Field></div>
+                      </div>
+                    )}
+                    {isStudioEditorPanelVisible(editorTab, 'rights') && (
+                      <div id="studio-panel-rights" role="tabpanel" aria-labelledby="studio-tab-rights" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5"><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Rights & Publishing</p><h2 className="mt-1 text-xl font-semibold text-white">Distribution controls</h2></div>
+                        <div className="grid gap-5 md:grid-cols-2"><Field label="Publication"><NativeSelect value={draft.publicationStatus} onChange={(e) => update('publicationStatus', e.target.value as DraftMovie['publicationStatus'])} className="w-full"><NativeSelectOption value="draft">Draft</NativeSelectOption><NativeSelectOption value="published">Published</NativeSelectOption><NativeSelectOption value="archived">Archived</NativeSelectOption></NativeSelect></Field><Field label="Rights status"><NativeSelect aria-label="Rights status" value={draft.rightsStatus} onChange={(e) => { const nextStatus = e.target.value as DraftMovie['rightsStatus']; setDraft((current) => applyRightsStatusChange(current, nextStatus)); }} className="w-full"><NativeSelectOption value="pending">Pending review</NativeSelectOption><NativeSelectOption value="verified">Verified</NativeSelectOption><NativeSelectOption value="blocked">Blocked</NativeSelectOption></NativeSelect></Field><Field label="Rights reviewer"><Input aria-label="Rights reviewer" maxLength={120} value={draft.rightsReviewer ?? ''} onChange={(e) => update('rightsReviewer', e.target.value)} placeholder="Name or email of the person approving distribution" /></Field><Field label="Rights evidence reference"><Input aria-label="Rights evidence reference" maxLength={160} value={draft.rightsReference ?? ''} onChange={(e) => update('rightsReference', e.target.value)} placeholder="Your license, agreement or ownership evidence reference" /></Field><Field label="Rights verified at (UTC)"><Input aria-label="Rights verified at (UTC)" type="datetime-local" step="1" value={draft.rightsVerifiedAt?.slice(0, 19) ?? ''} onChange={(e) => update('rightsVerifiedAt', e.target.value ? new Date(e.target.value + 'Z').toISOString() : undefined)} /><Button type="button" variant="outline" className="mt-2" onClick={() => update('rightsVerifiedAt', new Date().toISOString())}>Set verification time to now</Button></Field><Field label="Rights expires at (12:00 UTC)"><Input type="date" value={localDate(draft.rightsExpiresAt)} onChange={(e) => update('rightsExpiresAt', isoDate(e.target.value))} /></Field><p className="text-sm text-white/60 md:col-span-2">Only select Verified after reviewing distribution rights. Reviewer, evidence, verification time and future expiry are required. Changing an approved delivery source or evidence requires saving Pending first, then reviewing and verifying again.</p><Field label="Official YouTube URL" wide><Input maxLength={500} value={draft.officialWatchUrl ?? ''} onChange={(e) => update('officialWatchUrl', e.target.value)} /></Field><Field label="Telegram URL"><Input maxLength={500} value={draft.telegramUrl ?? ''} onChange={(e) => update('telegramUrl', e.target.value)} /></Field><Field label="Telegram channel"><Input maxLength={32} value={draft.telegramChannel ?? ''} onChange={(e) => update('telegramChannel', e.target.value)} /></Field></div>
+                      </div>
+                    )}
+                    {isStudioEditorPanelVisible(editorTab, 'advanced') && (
+                      <div id="studio-panel-advanced" role="tabpanel" aria-labelledby="studio-tab-advanced" className="animate-in fade-in-0 duration-150">
+                        <div className="mb-5"><p className="text-xs font-semibold uppercase tracking-[.16em] text-[#ef796d]">Advanced</p><h2 className="mt-1 text-xl font-semibold text-white">Technical record</h2><p className="mt-2 text-sm text-white/50">Read-only operational values are kept here so normal editing stays focused.</p></div>
+                        <div className="grid gap-3 md:grid-cols-2"><AdvancedValue label="D1 movie ID" value={String(draft.id ?? '')} /><AdvancedValue label="IMDb ID" value={draft.imdbId ?? ''} /><AdvancedValue label="Revision" value={String(draft.revision ?? '')} /><AdvancedValue label="Provider / storage key" value={draft.storageKey ?? ''} /><AdvancedValue label="720p R2 key" value={draft.r2_720p_key ?? ''} /><AdvancedValue label="1080p R2 key" value={draft.r2_1080p_key ?? ''} /><AdvancedValue label="Ingest status" value={draft.ingestStatus ?? draft.ingest_status ?? ''} /><AdvancedValue label="Enrichment status" value={draft.enrichmentStatus ?? ''} /></div>
+                        <details className="mt-5 rounded-xl border border-white/10 bg-black/10 p-4"><summary className="cursor-pointer text-sm font-medium text-white/75">Raw diagnostics and source metadata</summary><div className="mt-4 space-y-4"><AdvancedValue label="Enrichment error" value={draft.enrichmentError ?? ''} /><pre className="max-h-80 overflow-auto rounded-lg bg-black/25 p-3 text-xs leading-5 text-white/55">{JSON.stringify({ downloadSources: draft.downloadSources ?? [], streamingSources: draft.streamingSources ?? [], episodes: draft.episodes ?? [] }, null, 2)}</pre></div></details>
+                      </div>
+                    )}
+                  </div>
+                </section>              </section>
             </div>
           </TabsContent>
           <TabsContent value="ingestion" className="mt-6">
