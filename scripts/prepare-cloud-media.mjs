@@ -16,7 +16,9 @@ import { approvedImageSource } from '../lib/image-source-policy.mjs';
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
 const MAX_RETRIES = 5;
-const DEFAULT_MAX_MOVIES = 30;
+export const MAX_BATCH_MOVIES = 20;
+export const MOVIE_TIME_BUDGET_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_MOVIES = MAX_BATCH_MOVIES;
 const DEFAULT_METADATA_TIMEOUT_MS = 90_000;
 const DEFAULT_NO_PROGRESS_TIMEOUT_MS = 120_000;
 const FILTER_MOVIE_IDS = new Set((process.env.TRANSFER_MOVIE_IDS || '').split(',').map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0));
@@ -187,7 +189,7 @@ export function isInfrastructureFailure(error) {
 }
 
 function mediaFailureCode(error) {
-  if (error?.code && /^(METADATA_TIMEOUT|NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID)$/.test(error.code)) return error.code;
+  if (error?.code && /^(METADATA_TIMEOUT|NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID|MOVIE_TIME_BUDGET_EXCEEDED)$/.test(error.code)) return error.code;
   const message = safeLogError(error);
   if (/metadata.*timeout|torrent.*metadata/i.test(message)) return 'METADATA_TIMEOUT';
   if (/no peers|no seed/i.test(message)) return 'NO_PEERS';
@@ -603,7 +605,7 @@ export function maxMoviesFromArgs(argv = process.argv) {
   const raw = argv.find(value => value.startsWith('--max-movies='))?.slice('--max-movies='.length);
   if (raw === undefined || raw === '') return DEFAULT_MAX_MOVIES;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1 || value > 30) throw new Error('--max-movies must be an integer from 1 to 30');
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_BATCH_MOVIES) throw new Error(`--max-movies must be an integer from 1 to ${MAX_BATCH_MOVIES}`);
   return value;
 }
 
@@ -612,7 +614,30 @@ export function isNonRetryableValidationError(error) {
 }
 
 export function isNonRetryableAcquisitionError(error) {
-  return Boolean(error?.code && /^(NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID|METADATA_TIMEOUT)$/.test(error.code));
+  return Boolean(error?.code && /^(NO_PEERS|ZERO_BYTE_STALL|DOWNLOAD_STALLED|SOURCE_INVALID|METADATA_TIMEOUT|MOVIE_TIME_BUDGET_EXCEEDED)$/.test(error.code));
+}
+
+function movieBudgetError(id) {
+  return new MediaAcquisitionError('MOVIE_TIME_BUDGET_EXCEEDED', `Movie ${id} exceeded its 30-minute processing budget`);
+}
+
+function assertMovieDeadline(deadlineAt, id) {
+  if (Number.isSafeInteger(deadlineAt) && Date.now() >= deadlineAt) throw movieBudgetError(id);
+}
+
+async function withMovieDeadline(operation, deadlineAt, id) {
+  if (!Number.isSafeInteger(deadlineAt)) return operation();
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw movieBudgetError(id);
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(movieBudgetError(id)), remaining); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function readProbeWindow(filePath, position, length) {
@@ -813,7 +838,7 @@ export async function diagnoseTransferLocks(ctx) {
 }
 export async function makePlan(ctx, options = {}) {
   const maxMovies = options.maxMovies ?? DEFAULT_MAX_MOVIES;
-  if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > 30) throw new Error('Invalid maxMovies');
+  if (!Number.isSafeInteger(maxMovies) || maxMovies < 1 || maxMovies > MAX_BATCH_MOVIES) throw new Error('Invalid maxMovies');
   const configuredIds = options.movieIds ?? (FILTER_MOVIE_IDS.size ? [...FILTER_MOVIE_IDS] : []);
   const targetIds = [...new Set(configuredIds.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))];
   if (targetIds.length > 20) throw new Error('Too many targeted movie IDs');
@@ -849,18 +874,25 @@ export async function makePlan(ctx, options = {}) {
   return plan;
 }
 export async function acquire(ctx, item, attempt = 1, runtime = {}) {
+  const deadlineAt = Number.isSafeInteger(runtime.deadlineAt) ? runtime.deadlineAt : null;
+  assertMovieDeadline(deadlineAt, item.id);
   const [row] = await ctx.query('SELECT download_sources_json FROM movies WHERE id = ?', [item.id]);
   if (!row) throw new MediaAcquisitionError('SOURCE_INVALID', 'Movie no longer exists');
+  assertMovieDeadline(deadlineAt, item.id);
   const source = sourcesOf(row.download_sources_json).find(s => (s.quality || s.resolution)?.toLowerCase() === item.quality);
   let descriptor;
+  assertMovieDeadline(deadlineAt, item.id);
   if (attempt > 1 || !source) descriptor = await alternativeDescriptor(item.imdbId, item.quality, source?.url);
+  assertMovieDeadline(deadlineAt, item.id);
   if (!descriptor) descriptor = sourceMagnet(row.download_sources_json, item.quality);
   if (!descriptor && /^(?:assets|descriptors)\/[\w.-]+\.(?:torrent|bin)$/.test(source?.descriptorKey || '')) {
     const object = await sendWithRetry(ctx.s3, new GetObjectCommand({ Bucket: ctx.bucket, Key: source.descriptorKey }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) });
     if (!object.ContentLength || object.ContentLength > 2097152) { object.Body?.destroy(); throw new MediaAcquisitionError('SOURCE_INVALID', 'Invalid descriptor size'); }
     descriptor = Buffer.from(await object.Body.transformToByteArray());
+    assertMovieDeadline(deadlineAt, item.id);
   }
   if (!descriptor) descriptor = await remoteDescriptor(row.download_sources_json, item.quality);
+  assertMovieDeadline(deadlineAt, item.id);
   if (!descriptor) throw new MediaAcquisitionError('SOURCE_INVALID', 'No usable torrent source');
 
   const work = resolve(mediaRoot, `${item.id}-${item.quality}`);
@@ -914,6 +946,9 @@ export async function acquire(ctx, item, attempt = 1, runtime = {}) {
     rejectMetadata?.(reason);
   };
   controller.signal.addEventListener('abort', onAbort, { once: true });
+  if (deadlineAt !== null) {
+    trackTimer(setTimeout(() => abort(movieBudgetError(item.id)), Math.max(1, deadlineAt - Date.now())));
+  }
   try {
     acquisitionEvent(item, state, 'acquisition-start');
     acquisitionPhase = 'metadata';
@@ -1112,7 +1147,9 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
   const wait = options.pause || pause;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await acquireItem(ctx, item, attempt);
+      assertMovieDeadline(options.deadlineAt, item.id);
+      await withMovieDeadline(() => acquireItem(ctx, item, attempt, { deadlineAt: options.deadlineAt }), options.deadlineAt, item.id);
+      assertMovieDeadline(options.deadlineAt, item.id);
       await persistPlan(plan, persist);
       return true;
     } catch (error) {
@@ -1129,13 +1166,37 @@ async function acquireWithRetries(ctx, plan, item, maxAttempts, options) {
       console.warn(JSON.stringify({ event: 'acquisition-retry', id: item.id, quality: item.quality, attempt, error: message }));
       if (attempt < maxAttempts) {
         console.warn(`ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â [Movie ID: ${item.id}] Retrying acquisition (Attempt ${attempt + 1}/${maxAttempts})...`);
-        await wait(5000 * 2 ** (attempt - 1));
+        const delay = 5000 * 2 ** (attempt - 1);
+        assertMovieDeadline(options.deadlineAt, item.id);
+        if (Number.isSafeInteger(options.deadlineAt) && Date.now() + delay >= options.deadlineAt) throw movieBudgetError(item.id);
+        await wait(delay);
       }
     }
   }
   return false;
 }
 export async function prepareOne(ctx, plan, options = {}) {
+  if (options.onlyItem) {
+    const item = options.onlyItem;
+    const persist = options.saveManifest || saveManifest;
+    if (item.verified || item.skipped || item.file) return item.file ? item : null;
+    try {
+      if (await acquireWithRetries(ctx, plan, item, 3, options)) return item;
+      if (!item.nonRetryableFailure) console.warn('Pass 1 failed for Movie ' + item.id + '. Queuing for final retry pass.');
+      await markSkipped(plan, item, persist, item.failureCode || (item.nonRetryableFailure ? 'validation-failure' : 'download-failure'));
+    } catch (error) {
+      if (error?.code === 'MOVIE_TIME_BUDGET_EXCEEDED') {
+        item.failureCode = 'MOVIE_TIME_BUDGET_EXCEEDED';
+        item.failureStage = 'time_budget';
+        await markSkipped(plan, item, persist, item.failureCode);
+        return null;
+      }
+      if (isInfrastructureFailure(error)) throw error;
+      console.error(JSON.stringify({ event: 'movie-preparation-failed', id: item.id, quality: item.quality, error: safeLogError(error) }));
+      await markSkipped(plan, item, persist, 'download-failure');
+    }
+    return null;
+  }
   const persist = options.saveManifest || saveManifest;
   for (const item of plan.files.filter(f => !f.verified && !f.skipped && !f.file)) {
     try {
@@ -1297,22 +1358,25 @@ async function cleanupStagedItem(item) {
   item.bytes = null;
 }
 
-async function processItem(ctx, item, sync) {
-  const token = await claimItem(ctx, item);
+async function processItem(ctx, item, sync, deadlineAt) {
+  assertMovieDeadline(deadlineAt, item.id);
+  const token = await withMovieDeadline(() => claimItem(ctx, item), deadlineAt, item.id);
   activeTransferOwners.set(token, { ctx, id: Number(item.id) });
   let phase = 'r2_upload';
   try {
     qualityWorkflowEvent(item, 'r2-upload-start');
-    if (!item.verified) await sync(item);
+    if (!item.verified) await withMovieDeadline(() => sync(item, { deadlineAt }), deadlineAt, item.id);
     qualityWorkflowEvent(item, 'r2-upload-complete');
     phase = 'd1_commit';
     qualityWorkflowEvent(item, 'd1-commit-start');
-    await commitItem(ctx, item, { transferToken: token });
+    await withMovieDeadline(() => commitItem(ctx, item, { transferToken: token }), deadlineAt, item.id);
     item.verified = true;
     await cleanupStagedItem(item);
     return true;
   } catch (error) {
-    const fatalError = isInfrastructureFailure(error)
+    const fatalError = error?.code === 'MOVIE_TIME_BUDGET_EXCEEDED'
+      ? error
+      : isInfrastructureFailure(error)
       ? error
       : new MediaInfrastructureError(phase === 'r2_upload' ? 'R2_UPLOAD_FAILED' : 'D1_COMMIT_FAILED', phase === 'r2_upload' ? 'R2 upload operation failed' : 'Guarded D1 commit operation failed', { cause: safeLogError(error) });
     let nextState = 'retry_pending';
@@ -1352,11 +1416,72 @@ async function processItem(ctx, item, sync) {
     activeTransferOwners.delete(token);
   }
 }
+async function markMovieBudgetExceeded(plan, items, persist) {
+  for (const item of items.filter(current => !current.verified && !current.skipped)) {
+    item.failureCode = 'MOVIE_TIME_BUDGET_EXCEEDED';
+    item.failureStage = 'time_budget';
+    await markSkipped(plan, item, persist, item.failureCode);
+  }
+}
+
+async function processMovieGroup(ctx, plan, items, sync, options, persist, enrichMovie) {
+  const id = Number(items[0]?.id);
+  const budgetMs = Number.isSafeInteger(options.movieTimeBudgetMs) && options.movieTimeBudgetMs > 0
+    ? options.movieTimeBudgetMs
+    : MOVIE_TIME_BUDGET_MS;
+  const deadlineAt = Date.now() + budgetMs;
+  const ordered = [...items].sort((left, right) => (left.quality === '720p' ? 0 : 1) - (right.quality === '720p' ? 0 : 1));
+
+  for (const item of ordered) {
+    if (item.verified || item.skipped) continue;
+    if (Date.now() >= deadlineAt) {
+      await markMovieBudgetExceeded(plan, ordered, persist);
+      break;
+    }
+    try {
+      const prepared = item.file
+        ? item
+        : await prepareOne(ctx, plan, { ...options.prepareOptions, onlyItem: item, deadlineAt, saveManifest: persist });
+      if (!prepared) continue;
+      await processItem(ctx, item, sync, deadlineAt);
+      item.verified = true;
+      await persistPlan(plan, persist);
+      console.log(JSON.stringify({ event: 'verified', id: item.id, quality: item.quality, remaining: plan.files.filter(file => !file.verified && !file.skipped).length }));
+    } catch (error) {
+      if (error?.code === 'MOVIE_TIME_BUDGET_EXCEEDED') {
+        await markMovieBudgetExceeded(plan, ordered, persist);
+        console.warn(JSON.stringify({ event: 'movie-time-budget-exceeded', movie_id: id, failure_code: error.code }));
+        break;
+      }
+      if (isInfrastructureFailure(error)) throw error;
+      const failureCode = mediaFailureCode(error) || error?.code || 'TRANSFER_FAILED';
+      item.failureCode = failureCode;
+      if (failureCode === 'MOVIE_TIME_BUDGET_EXCEEDED') item.failureStage = 'time_budget';
+      await markSkipped(plan, item, persist, failureCode);
+      console.warn(JSON.stringify({ event: 'movie-quality-failed', movie_id: id, quality: item.quality, failure_code: failureCode, error: safeLogError(error) }));
+    }
+  }
+
+  if (ordered.some(item => item.skipped)) {
+    try { await markPermanentlyFailed(ctx, [id], plan); }
+    catch (error) { console.error(JSON.stringify({ event: 'movie-final-state-failed', movie_id: id, failure_code: error?.code || 'D1_STATE_UPDATE_FAILED', error: safeLogError(error) })); }
+  }
+  if (ordered.some(item => item.verified)) await enrichMovie(id);
+}
+
 export async function drainCloudPlan(plan, sync, _options = {}) {
   const options = _options || {};
   const ctx = options.context || await context();
   const persist = options.saveManifest || saveManifest;
   const enriched = new Set();
+  const groups = [...new Map(plan.files.map(item => [Number(item.id), item])).keys()]
+    .map(id => plan.files.filter(item => Number(item.id) === id));
+  let persistTail = Promise.resolve();
+  const persistQueued = nextPlan => {
+    const next = persistTail.then(() => persist(nextPlan));
+    persistTail = next.catch(() => {});
+    return next;
+  };
   activeContext = ctx;
   const enrichMovie = async (id) => {
     if (typeof options.enrich !== 'function' || enriched.has(Number(id))) return;
@@ -1368,60 +1493,24 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
     }
   };
   try {
-    let consecutiveFailures = 0;
-    while (true) {
-      try {
-        for (const item of plan.files.filter(f => f.verified)) await enrichMovie(item.id);
-        const pending = plan.files.filter(f => !f.verified && !f.skipped);
-        if (!pending.length) {
-          const skippedIds = [...new Set(plan.files.filter(f => f.skipped).map(f => f.id))];
-          if (skippedIds.length) {
-            const marked = await markPermanentlyFailed(ctx, skippedIds, plan);
-            if (marked !== skippedIds.length) throw new MediaInfrastructureError('D1_STATE_UPDATE_FAILED', 'Could not persist all permanent media failure states');
-          }
-          await persistPlan(plan, persist);
-          console.log('[complete] cloud snapshot verified in R2 and D1');
-          return;
+    let cursor = 0;
+    async function worker() {
+      while (true) {
+        const index = cursor++;
+        if (index >= groups.length) return;
+        const items = groups[index];
+        try {
+          await processMovieGroup(ctx, plan, items, sync, options, persistQueued, enrichMovie);
+        } catch (error) {
+          if (isInfrastructureFailure(error)) throw error;
+          console.error(JSON.stringify({ event: 'movie-worker-failed', movie_id: Number(items[0]?.id), failure_code: error?.code || 'MOVIE_PROCESSING_FAILED', error: safeLogError(error) }));
+          await markMovieBudgetExceeded(plan, items, persistQueued);
         }
-        const batch = [];
-        const movieIds = new Set();
-        for (const item of pending.filter(f => f.file)) {
-          if (movieIds.has(Number(item.id))) continue;
-          movieIds.add(Number(item.id));
-          batch.push(item);
-          if (batch.length >= MEDIA_CONCURRENCY) break;
-        }
-        if (!batch.length) {
-          const item = await prepareOne(ctx, plan, options.prepareOptions || {});
-          if (!item) continue;
-          batch.push(item);
-        }
-        const settled = await Promise.allSettled(batch.map(async (item) => {
-          await processItem(ctx, item, sync);
-          item.verified = true;
-          await enrichMovie(item.id);
-          console.log(JSON.stringify({ event: 'verified', id: item.id, quality: item.quality, remaining: plan.files.filter(f => !f.verified).length }));
-        }));
-        const failed = settled.find(result => result.status === 'rejected');
-        if (failed) throw failed.reason;
-        consecutiveFailures = 0;
-      } catch (error) {
-        if (isInfrastructureFailure(error)) throw error;
-        consecutiveFailures += 1;
-        const pending = plan.files.filter(f => !f.verified && !f.skipped);
-        const pendingIds = [...new Set(pending.map(f => f.id))];
-        const code = mediaFailureCode(error) || 'TRANSFER_FAILED';
-        console.warn(JSON.stringify({ event: 'cloud-plan-failure', failure_code: code, error: safeLogError(error), pending_movie_ids: pendingIds }));
-        if (consecutiveFailures >= MAX_RETRIES) {
-          for (const item of pending) await markSkipped(plan, item, persist, item.failureCode || code);
-          const marked = await markPermanentlyFailed(ctx, pendingIds, plan);
-          await persistPlan(plan, persist);
-          console.error('MAX_RETRIES=' + MAX_RETRIES + ' reached. Marked Movie IDs as failed: ' + (pendingIds.join(', ') || 'none') + ' (D1 marked: ' + marked + ').');
-          return;
-        }
-        await (options.pause || pause)(10 * 1000);
       }
     }
+    await Promise.all(Array.from({ length: Math.min(MEDIA_CONCURRENCY, groups.length) }, worker));
+    await persistTail;
+    console.log('[complete] cloud snapshot verified in R2 and D1');
   } finally {
     let finalFailure = null;
     try { await diagnoseTransferLocks(ctx); }
@@ -1442,8 +1531,12 @@ export async function drainCloudPlan(plan, sync, _options = {}) {
     const maxMovies = maxMoviesFromArgs();
     const plan = await makePlan(ctx, { maxMovies });
     await saveManifest(plan);
-    const result = await prepareAll(ctx, plan);
-    summary = { event: 'prepared', maxMovies, artwork: { scanned: 0, updated: 0 }, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
+    if (process.argv.includes('--descriptor-only')) {
+      summary = { event: 'prepared', maxMovies, mode: 'lazy-quality-transfer', artwork: { scanned: 0, updated: 0 }, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, prepared: 0, skipped: plan.files.filter(f => f.skipped).length, permanentlyFailedIds: [], markedFailed: 0 };
+    } else {
+      const result = await prepareAll(ctx, plan);
+      summary = { event: 'prepared', maxMovies, artwork: { scanned: 0, updated: 0 }, failedMovies: plan.failures.length, total: plan.files.length, verified: plan.files.filter(f => f.verified).length, ...result };
+    }
   } catch (error) {
     fatalError = error;
   } finally {

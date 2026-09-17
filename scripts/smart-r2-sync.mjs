@@ -104,7 +104,15 @@ async function head(client, bucket, key) {
   catch (error) { if (error?.$metadata?.httpStatusCode === 404 || error?.name === 'NotFound' || error?.name === 'NoSuchKey') return null; throw error; }
 }
 
-async function syncOne(client, bucket, item, dryRun) {
+async function syncOne(client, bucket, item, dryRun, deadlineAt) {
+  const ensureDeadline = () => {
+    if (Number.isSafeInteger(deadlineAt) && Date.now() >= deadlineAt) {
+      const error = new Error('Movie processing budget exceeded');
+      error.code = 'MOVIE_TIME_BUDGET_EXCEEDED';
+      throw error;
+    }
+  };
+  ensureDeadline();
   const local = await stat(item.file);
   if (!local.isFile() || local.size <= 0) throw new Error('local file is missing or empty');
   const existing = await head(client, bucket, item.key);
@@ -114,8 +122,22 @@ async function syncOne(client, bucket, item, dryRun) {
   const body = createReadStream(item.file);
   const upload = new Upload({ client, queueSize: 2, partSize: 8 * 1024 * 1024, leavePartsOnError: false,
     params: { Bucket: bucket, Key: item.key, Body: body, ContentLength: local.size, ContentType: contentType(item.file), CacheControl: item.key.endsWith('.mp4') ? 'private, max-age=0' : 'public, max-age=31536000, immutable' } });
-  const timer = setTimeout(() => { void upload.abort(); body.destroy(new Error('Upload timeout')); }, 30 * 60000);
-  try { await upload.done(); } finally { clearTimeout(timer); body.destroy(); }
+  const uploadBudgetMs = Number.isSafeInteger(deadlineAt) ? Math.min(30 * 60000, Math.max(1, deadlineAt - Date.now())) : 30 * 60000;
+  let budgetError = null;
+  const timer = setTimeout(() => {
+    budgetError = new Error('Movie processing budget exceeded');
+    budgetError.code = 'MOVIE_TIME_BUDGET_EXCEEDED';
+    void upload.abort();
+    body.destroy(budgetError);
+  }, uploadBudgetMs);
+  try {
+    await upload.done();
+    ensureDeadline();
+  } catch (error) {
+    if (budgetError) throw budgetError;
+    throw error;
+  } finally { clearTimeout(timer); body.destroy(); }
+  ensureDeadline();
   const verified = await head(client, bucket, item.key);
   if (!verified || Number(verified.ContentLength) !== local.size) {
     const error = new Error(`post-upload HEAD size mismatch (local ${local.size}, R2 ${verified?.ContentLength ?? 'missing'})`);
@@ -163,7 +185,7 @@ async function findPending(items, failedKeys = new Set()) {
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, scanner));
   return pending;
 }
-async function uploadBatch(items) {
+async function uploadBatch(items, deadlineAt) {
   const counts = { planned: 0, uploaded: 0, skipped: 0, failed: 0 };
   const failedItems = [];
   let cursor = 0;
@@ -174,8 +196,9 @@ async function uploadBatch(items) {
     const item = items[index];
     let result;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      try { result = await syncOne(client, bucket, item, dryRun); break; }
+      try { result = await syncOne(client, bucket, item, dryRun, deadlineAt); break; }
       catch (error) {
+        if (error?.code === 'MOVIE_TIME_BUDGET_EXCEEDED') { result = { state: 'failed', error: safeLogError(error) }; break; }
         if (attempt === MAX_ATTEMPTS) { result = { state: 'failed', error: safeLogError(error) }; break; }
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
         console.log(`[retry] ${index + 1}/${items.length} ${item.key} attempt ${attempt}/${MAX_ATTEMPTS}; waiting ${delay / 1000}s`);
@@ -224,9 +247,16 @@ if (cloudPlan?.schema === 'flixlyra-cloud-v1') {
   if (dryRun) { console.log(JSON.stringify({ status: 'dry-run', remaining: cloudPlan.files.filter(f => !f.verified).length })); process.exitCode = 2; }
   else {
     const { drainCloudPlan, syncAllArtwork, MediaInfrastructureError } = await import('./prepare-cloud-media.mjs');
-    await drainCloudPlan(cloudPlan, async item => {
-      const counts = await uploadBatch([item]);
-      if (counts.failed) throw new MediaInfrastructureError('R2_UPLOAD_FAILED', 'One or more staged media uploads failed');
+    await drainCloudPlan(cloudPlan, async (item, { deadlineAt } = {}) => {
+      const counts = await uploadBatch([item], deadlineAt);
+      if (counts.failed) {
+        if (Number.isSafeInteger(deadlineAt) && Date.now() >= deadlineAt) {
+          const error = new Error('Movie processing budget exceeded');
+          error.code = 'MOVIE_TIME_BUDGET_EXCEEDED';
+          throw error;
+        }
+        throw new MediaInfrastructureError('R2_UPLOAD_FAILED', 'One or more staged media uploads failed');
+      }
     }, { enrich: async (ctx, id) => { await syncAllArtwork(ctx, [id]); } });
   }
 } else {

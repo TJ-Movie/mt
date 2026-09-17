@@ -51,6 +51,15 @@ test('manifest accepts completed snapshots but rejects missing or corrupt staged
   } finally { await rm(root,{recursive:true,force:true}); }
 });
 
+test('descriptor-only manifests are valid before lazy per-quality acquisition', async () => {
+  const root = await mkdtemp(join(tmpdir(),'cloud-media-descriptor-test-'));
+  try {
+    const plan = { schema:'flixlyra-cloud-v1', files:[{ id:2, quality:'720p', key:stableKey(2,'720p'), bytes:null, file:null, verified:false }] };
+    assert.deepEqual(await verifyPlan(plan,root,{ allowDescriptorOnly:true }), { total:1, staged:0, verified:0, skipped:0 });
+    await assert.rejects(verifyPlan(plan,root),/staged video/);
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
 test('two-pass preparation retries queued movies after the primary batch', async () => {
   const root = await mkdtemp(join(tmpdir(),'cloud-media-prepare-test-'));
   const plan = { schema:'flixlyra-cloud-v1', files: [

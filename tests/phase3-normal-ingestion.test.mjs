@@ -59,15 +59,17 @@ function dbHarness() {
       return [];
     },
   };
-  return { ctx, state, sources, updates };
+  return { ctx, state, sources, tokens, updates };
 }
-function optionsFor(modes, events = []) {
+function optionsFor(modes, events = [], acquireDelayMs = 0) {
   return {
     pause: async () => {},
     saveManifest: async () => {},
     prepareOptions: {
       acquire: async (_ctx, current) => {
         events.push(current.quality);
+        const delay = typeof acquireDelayMs === 'function' ? acquireDelayMs(current) : acquireDelayMs;
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
         const mode = modes[current.quality] || 'success';
         if (mode !== 'success') throw Object.assign(new Error(mode), { code: mode });
         current.bytes = VIDEO_BYTES;
@@ -81,7 +83,7 @@ async function runMovie(modes, extra = {}) {
   const events = [];
   const plan = { files: [item(100, '720p'), item(100, '1080p')], failures: [] };
   const enrichment = [];
-  await drainCloudPlan(plan, async () => {}, { context: db.ctx, pause: async () => {}, saveManifest: async () => {}, ...optionsFor(modes, events), enrich: async (_ctx, id) => {
+  await drainCloudPlan(plan, async () => {}, { context: db.ctx, pause: async () => {}, saveManifest: async () => {}, movieTimeBudgetMs: extra.movieTimeBudgetMs, ...optionsFor(modes, events, extra.acquireDelayMs || 0), enrich: async (_ctx, id) => {
     enrichment.push(id);
     if (extra.enrichmentError) throw new Error('provider unavailable');
   } });
@@ -93,6 +95,57 @@ test('both qualities verified then enrichment runs and media is READY', async ()
   assert.equal(result.plan.files.filter(x => x.verified).length, 2);
   assert.deepEqual(result.db.updates.filter(x => x.kind === 'commit').map(x => x.state), ['half', 'ready']);
   assert.deepEqual(result.enrichment, [100]);
+});
+
+test('sequential quality acquisition completes under one bounded outer preparation budget', async () => {
+  const qualityWorkMs = 75;
+  const outerBudgetMs = qualityWorkMs * 2 + 1_000;
+  let timer;
+  const result = await Promise.race([
+    runMovie({ '720p': 'success', '1080p': 'success' }, { acquireDelayMs: qualityWorkMs }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('synthetic outer preparation budget expired')), outerBudgetMs); }),
+  ]);
+  clearTimeout(timer);
+  assert.deepEqual(result.events, ['720p', '1080p']);
+  assert.deepEqual(result.db.updates.filter(x => x.kind === 'commit').map(x => x.state), ['half', 'ready']);
+  assert.deepEqual(result.enrichment, [100]);
+});
+
+test('movie deadline preserves a durable 720p quality when 1080p times out', async () => {
+  const result = await runMovie({ '720p': 'success', '1080p': 'success' }, {
+    movieTimeBudgetMs: 25,
+    acquireDelayMs: current => current.quality === '1080p' ? 100 : 0,
+  });
+  assert.equal(result.plan.files[0].verified, true);
+  assert.equal(result.plan.files[1].skipped, true);
+  assert.equal(result.plan.files[1].failureCode, 'MOVIE_TIME_BUDGET_EXCEEDED');
+  assert.equal(result.db.state.get(100), 'half');
+  assert.equal(result.db.tokens.size, 0);
+});
+
+test('a timed-out movie releases its worker so the next movie and sibling worker continue', async () => {
+  const db = dbHarness();
+  const plan = { files: [200, 201, 202].flatMap(id => [item(id, '720p'), item(id, '1080p')]), failures: [] };
+  let active = 0;
+  let maximum = 0;
+  await drainCloudPlan(plan, async () => {}, {
+    context: db.ctx,
+    pause: async () => {},
+    saveManifest: async () => {},
+    movieTimeBudgetMs: 25,
+    prepareOptions: {
+      acquire: async (_ctx, current) => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        if (current.id === 200 && current.quality === '720p') await new Promise(resolve => setTimeout(resolve, 100));
+        active -= 1;
+        current.bytes = VIDEO_BYTES;
+      },
+    },
+  });
+  assert.equal(maximum, MEDIA_CONCURRENCY);
+  assert.equal(plan.files.filter(file => file.id === 202 && file.verified).length, 2);
+  assert.equal(db.tokens.size, 0);
 });
 
 test('720p failure is isolated and 1080p continues to HALF and enrichment', async () => {

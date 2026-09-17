@@ -2,8 +2,9 @@ import { readFile, realpath, stat, open } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function verifyPlan(plan, root = 'tmp/media') {
+export async function verifyPlan(plan, root = 'tmp/media', options = {}) {
   if (plan?.schema !== 'flixlyra-cloud-v1' || !Array.isArray(plan.files)) throw new Error('Invalid cloud manifest');
+  const allowDescriptorOnly = options.allowDescriptorOnly === true;
   const base = await realpath(root);
   const identities = new Set();
   const keys = new Set();
@@ -27,9 +28,9 @@ export async function verifyPlan(plan, root = 'tmp/media') {
       staged++;
     }
   }
-  if (plan.files.some(f => !f.verified && !f.skipped) && staged === 0) throw new Error('Pending assets require a staged video');
+  if (plan.files.some(f => !f.verified && !f.skipped) && staged === 0 && !allowDescriptorOnly) throw new Error('Pending assets require a staged video');
   return { total: plan.files.length, staged, verified: plan.files.filter(f => f.verified).length, skipped: plan.files.filter(f => f.skipped).length };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  console.log(await verifyPlan(JSON.parse(await readFile('tmp/r2-video-manifest.json', 'utf8'))));
+  console.log(await verifyPlan(JSON.parse(await readFile('tmp/r2-video-manifest.json', 'utf8')), 'tmp/media', { allowDescriptorOnly: process.argv.includes('--descriptor-only') }));
 }

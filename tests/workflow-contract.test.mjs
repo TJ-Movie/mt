@@ -25,11 +25,12 @@ function executedSteps(exits = {}, purge = false) {
 
 test('canonical r2-sync workflow preserves READY, HALF, FAILED and fatal gating semantics', () => {
   assert.ok(prepare && verify && sync);
-  assert.equal(workflow.jobs['sync-media']['timeout-minutes'], 60);
-  assert.match(prepare.run, /node scripts\/prepare-cloud-media\.mjs --max-movies=1/);
+  assert.equal(workflow.jobs['sync-media']['timeout-minutes'], 360);
+  assert.match(prepare.run, /node scripts\/prepare-cloud-media\.mjs --max-movies=20 --descriptor-only/);
   assert.equal(prepare.env.TRANSFER_MOVIE_IDS, '${{ inputs.movie_ids }}');
   assert.equal(prepare.env.TRANSFER_QUALITY, '${{ inputs.quality }}');
   assert.match(verify.run, /node scripts\/verify-cloud-media\.mjs/);
+  assert.match(verify.run, /--descriptor-only/);
   assert.match(sync.run, /node scripts\/smart-r2-sync\.mjs/);
   assert.match(sync.run, /--quality=720p,1080p/);
   assert.match(sync.run, /--concurrency=2/);
@@ -54,4 +55,17 @@ test('canonical r2-sync workflow preserves READY, HALF, FAILED and fatal gating 
   const purge = executedSteps({ [prepare.name]: 0, [verify.name]: 0, [sync.name]: 0 }, true);
   assert.equal(purge.executed.includes('Clean up orphaned R2 objects'), true);
   assert.equal(executedSteps({ [prepare.name]: 0, [verify.name]: 0, [sync.name]: 0 }).executed.includes('Clean up orphaned R2 objects'), false);
+});
+
+test('canonical workflow gives sequential per-movie preparation one bounded outer budget', () => {
+  const jobTimeoutMinutes = workflow.jobs['sync-media']['timeout-minutes'];
+  const movieBudgetMinutes = 30;
+  const batchMovies = 20;
+  const movieConcurrency = 2;
+  const finalizationOverheadMinutes = 60;
+  const requiredOuterBudgetMinutes = Math.ceil(batchMovies / movieConcurrency) * movieBudgetMinutes + finalizationOverheadMinutes;
+
+  assert.equal(Object.hasOwn(prepare, 'timeout-minutes'), false, 'stale prepare-step timeout must not shadow the job budget');
+  assert.equal(Object.hasOwn(sync, 'timeout-minutes'), false, 'the whole multi-movie sync cannot retain a short step timeout');
+  assert.ok(jobTimeoutMinutes >= requiredOuterBudgetMinutes, `job budget ${jobTimeoutMinutes}m is shorter than ${requiredOuterBudgetMinutes}m`);
 });

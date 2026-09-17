@@ -30,7 +30,9 @@ jobs:
   sync-media:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 20 movies at two workers and a 30-minute per-movie budget require
+    # 10 waves (300 minutes), plus bounded setup/finalization headroom.
+    timeout-minutes: 360
     steps:
       - name: Check out repository
         timeout-minutes: 15
@@ -112,7 +114,6 @@ jobs:
         run: node scripts/force-backfill-artworks.mjs --execute
 
       - name: Prepare Media & Manifest
-        timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -127,14 +128,13 @@ jobs:
           TMDB_API_TOKEN: ${{ secrets.TMDB_API_TOKEN }}
           TRANSFER_MOVIE_IDS: ${{ inputs.movie_ids }}
           TRANSFER_QUALITY: ${{ inputs.quality }}
-        run: node scripts/prepare-cloud-media.mjs --max-movies=1
+        run: node scripts/prepare-cloud-media.mjs --max-movies=20 --descriptor-only
 
       - name: Verify Prepared Media Inputs
         timeout-minutes: 15
-        run: node scripts/verify-cloud-media.mjs
+        run: node scripts/verify-cloud-media.mjs --descriptor-only
 
       - name: Run Continuous Smart R2 Sync
-        timeout-minutes: 15
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -170,9 +170,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_D1_TOKEN: ${{ secrets.CLOUDFLARE_D1_TOKEN }}
           CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
           PUBLIC_SITE_ORIGIN: ${{ vars.PUBLIC_SITE_ORIGIN || 'https://flixlyra.com' }}
         run: node scripts/full-system-audit.mjs
