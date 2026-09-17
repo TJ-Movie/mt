@@ -55,6 +55,7 @@ type MovieRow = {
   imdb_id: string | null;
   storage_key: string | null;
   ingest_status: string;
+  transfer_error: string | null;
   r2_720p_key: string | null;
   r2_1080p_key: string | null;
   enrichment_status: string;
@@ -71,6 +72,7 @@ export type AdminMovie = Movie & {
   storageKey?: string;
   ingestStatus?: string;
   ingest_status?: string | null;
+  transferError?: string | null;
   r2_720p_key?: string | null;
   r2_1080p_key?: string | null;
   enrichmentStatus?: string;
@@ -272,6 +274,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     storageKey: row.storage_key ?? undefined,
     ingestStatus: row.ingest_status,
     ingest_status: row.ingest_status,
+    transferError: row.transfer_error,
     // Keep the snake_case fields present in JSON even when a quality is absent.
     // `undefined` would be omitted by JSON serialization, making the UI unable
     // to distinguish an absent quality from an incomplete API payload.
@@ -287,7 +290,7 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status, enrichment_status, enrichment_error`;
+  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status, transfer_error, enrichment_status, enrichment_error`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {

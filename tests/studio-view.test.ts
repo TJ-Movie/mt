@@ -7,6 +7,7 @@ import {
   isNewStudioMovie,
   studioMediaState,
   studioQualityState,
+  studioQualityDiagnostic,
   studioSummary,
   type StudioFilters,
 } from '../lib/admin/studio-view.ts';
@@ -149,8 +150,9 @@ void test('Studio tab and filter labels remain explicit and the old anchor edito
 });
 
 void test('ID62-shaped HALF media keeps 720 unavailable and 1080 verified', () => {
-  const id62 = movie({ id: 62, title: 'Enfrentados: Marfil', availableQualities: ['1080p'], ingestStatus: 'half', ingest_status: 'half' });
+  const id62 = movie({ id: 62, title: 'Enfrentados: Marfil', availableQualities: ['1080p'], ingestStatus: 'half', ingest_status: 'half', transferError: JSON.stringify({ qualities: [{ quality: '720p', failure_code: 'NO_PEERS' }] }) });
   assert.equal(studioMediaState(id62), 'half');
   assert.equal(studioQualityState(id62, '720p'), 'queued');
+  assert.equal(studioQualityDiagnostic(id62, '720p'), 'NO PEERS');
   assert.equal(studioQualityState(id62, '1080p'), 'verified');
 });

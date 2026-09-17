@@ -70,6 +70,7 @@ import {
   isNewStudioMovie,
   studioMediaState,
   studioQualityState,
+  studioQualityDiagnostic,
   studioSummary,
   type StudioFilters,
   type StudioSort,
@@ -311,19 +312,18 @@ function QualityCard({
   movie,
   quality,
 }: {
-  movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status' | 'downloadSources'>;
+  movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status' | 'downloadSources' | 'transferError'>;
   quality: '720p' | '1080p';
 }) {
   const state = studioQualityState(movie, quality);
   const source = (movie.downloadSources ?? []).find((item) => String(item.quality ?? item.resolution).toLowerCase() === quality);
   const sourceRecord = source as Record<string, unknown> | undefined;
-  const rawDiagnostic = [
+  const rawDiagnostic = studioQualityDiagnostic(movie, quality) ?? [
     sourceRecord?.errorCode,
     sourceRecord?.error_code,
     sourceRecord?.failureCode,
     sourceRecord?.failure_code,
     sourceRecord?.status,
-    source?.label,
   ].find((value): value is string => typeof value === 'string' && /no_peers|download_stalled|source_invalid|failed|unavailable/i.test(value));
   const label = state === 'verified'
     ? 'VERIFIED'

@@ -30,6 +30,30 @@ export function studioMediaState(
   return 'queued';
 }
 
+export function studioQualityDiagnostic(
+  movie: Pick<AdminMovie, 'downloadSources' | 'transferError'>,
+  quality: '720p' | '1080p',
+): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = movie.transferError ? JSON.parse(movie.transferError) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const qualities = (parsed as { qualities?: unknown }).qualities;
+    if (Array.isArray(qualities)) {
+      const item = qualities.find((candidate) => candidate && typeof candidate === 'object' && (candidate as { quality?: unknown }).quality === quality);
+      const code = item && typeof item === 'object' ? (item as { failure_code?: unknown; failureCode?: unknown }).failure_code ?? (item as { failureCode?: unknown }).failureCode : undefined;
+      if (typeof code === 'string' && code.trim()) return code.trim().replaceAll('_', ' ').toUpperCase();
+    }
+  }
+  const source = (movie.downloadSources ?? []).find((item) => String(item.quality ?? item.resolution).toLowerCase() === quality);
+  const label = source?.label;
+  return typeof label === 'string' && /no_peers|download_stalled|source_invalid|failed|unavailable/i.test(label)
+    ? label.replaceAll('_', ' ').toUpperCase()
+    : undefined;
+}
 export function studioQualityState(
   movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status'>,
   quality: '720p' | '1080p',
