@@ -12,8 +12,12 @@ assert.match(html, /Flixlyra/);
 const catalogue = await get('/api/movies?limit=24');
 assert.equal(catalogue.status, 200);
 const data = await catalogue.json();
-assert.equal(data.pagination.total, 11);
-console.log('Homepage and catalogue: OK (11 entries)');
+assert.ok(Array.isArray(data.results));
+assert.ok(data.results.length <= 24);
+assert.equal(data.pagination.page, 1);
+assert.equal(data.pagination.limit, 24);
+assert.equal(typeof data.pagination.hasNextPage, 'boolean');
+console.log("Homepage and bounded catalogue: OK");
 
 for (const path of ['/studio', '/api/admin/movies', '/api/admin/domains', '/api/admin/ingest/yts']) {
   const response = await get(path, path.endsWith('/yts') ? { method: 'POST' } : {});

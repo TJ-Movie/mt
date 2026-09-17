@@ -1,13 +1,13 @@
 import { toPublicMovie } from '../../../lib/public-movie';
 import { logSecurityEvent } from '../../../lib/security/security-events';
-import { listPublishedMovies } from '../../../db';
+import { listPublishedMoviesPage } from '../../../db';
 import { contentTypes } from '../../../lib/catalogue-options';
 import { enforcePublicRateLimit } from '../../../lib/security/public-rate-limit';
 import { availableQualitiesFromD1 } from '../../../lib/r2-download';
 
 const MAX_QUERY_LENGTH = 80;
 const MAX_FILTER_LENGTH = 30;
-const DEFAULT_PAGE_SIZE = 12;
+const DEFAULT_PAGE_SIZE = 24;
 const MAX_PAGE_SIZE = 24;
 const MAX_PAGE_NUMBER = 1_000;
 
@@ -56,34 +56,26 @@ export async function GET(request: Request) {
   const rate = await enforcePublicRateLimit(request, 'catalogue', 120, 60);
   if (!rate.allowed) return Response.json({ error: 'Try again later' }, { status: 429, headers: { ...ERROR_HEADERS, ...rate.headers } });
 
-  const movies = await listPublishedMovies();
-  const filtered = movies.filter((movie) => {
-    const cast = movie.cast.map((member) => typeof member === 'string'
-      ? member
-      : `${member.actor} ${member.character ?? ''}`).join(' ');
-    const text = `${movie.title} ${movie.director} ${cast}`.toLowerCase();
-    const movieGenres = movie.genre.toLowerCase().split(',').map((item) => item.trim());
-    return (!query || text.includes(query)) && (!genre || genre === 'all' || movieGenres.includes(genre)) && (!language || language === 'all languages' || movie.languages.some((item) => item.toLowerCase() === language)) && (!type || type === 'all' || movie.contentType === type);
+  const pageResult = await listPublishedMoviesPage({
+    query,
+    genre,
+    language,
+    contentType: type,
+    page,
+    limit,
   });
-  const start = (page - 1) * limit;
-  // The D1 row carries qualities that were persisted only after R2 HEAD/size
-  // verification. Do not perform two R2 HEAD requests per movie here: a
-  // public limit of 24 must remain comfortably below Worker subrequest caps.
-  const results = filtered.slice(start, start + limit).map((movie) => ({
+  const results = pageResult.movies.map((movie) => ({
     ...toPublicMovie(movie),
     available_qualities: availableQualitiesFromD1(movie),
   }));
-  const totalPages = Math.max(1, Math.ceil(filtered.length / limit));
 
   return Response.json({
     results,
     count: results.length,
     pagination: {
-      page,
-      limit,
-      total: filtered.length,
-      totalPages,
-      hasNextPage: page < totalPages,
+      page: pageResult.page,
+      limit: pageResult.limit,
+      hasNextPage: pageResult.hasNextPage,
     },
   }, { headers: { ...SUCCESS_HEADERS, ...rate.headers } });
 }

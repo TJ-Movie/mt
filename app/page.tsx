@@ -3,10 +3,13 @@ import { headers } from 'next/headers';
 import { toPublicMovie } from '../lib/public-movie';
 import { serializeJsonLd } from '../lib/security/json-ld';
 import { getRuntimeControls } from '../lib/security/runtime-controls';
-import { listPublishedMovies } from '../db';
+import { listPublishedMoviesPage } from '../db';
+
+const HOMEPAGE_MOVIE_LIMIT = 12;
 
 export default async function Home() {
-  const publicMovies = (await listPublishedMovies()).map(toPublicMovie);
+  const page = await listPublishedMoviesPage({ page: 1, limit: HOMEPAGE_MOVIE_LIMIT });
+  const publicMovies = page.movies.map(toPublicMovie);
   const nonce = (await headers()).get('x-csp-nonce') ?? undefined;
   const { adsEnabled } = getRuntimeControls();
   const catalogueSchema = {
@@ -31,7 +34,7 @@ export default async function Home() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(catalogueSchema) }}
       />
-      <MovieBrowser movies={publicMovies} adsEnabled={adsEnabled} />
+      <MovieBrowser movies={publicMovies} adsEnabled={adsEnabled} showFilters={false} viewAllHref="/movies" />
     </>
   );
 }

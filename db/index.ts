@@ -256,7 +256,7 @@ export async function listPublishedMovies(): Promise<Movie[]> {
     const database = getDatabase();
     const [setting, records] = await database.batch([
       database.prepare("SELECT value FROM app_settings WHERE key = 'catalogue_initialized' LIMIT 1"),
-      database.prepare(`SELECT ${MOVIE_COLUMNS} FROM movies WHERE publication_status = 'published' ORDER BY featured DESC, updated_at DESC LIMIT 500`),
+      database.prepare(`SELECT ${MOVIE_COLUMNS} FROM movies WHERE publication_status = 'published' ORDER BY featured DESC, updated_at DESC, created_at DESC, id DESC LIMIT 500`),
     ]);
     const initialized = (setting.results[0] as { value?: string } | undefined)?.value === '1';
     if (!initialized) return starterMovies.filter((movie) => movie.publicationStatus === 'published');
@@ -275,53 +275,87 @@ function escapeSqlLike(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&');
 }
 
-type PublishedMoviePageFilters = {
-  query: string;
-  genre: string;
-  language: string;
-  contentType: string;
-  page: number;
-  limit: number;
+export type PublishedMovieFilters = {
+  query?: string;
+  genre?: string;
+  language?: string;
+  contentType?: string;
 };
 
-export async function searchPublishedMovies(filters: PublishedMoviePageFilters): Promise<{ movies: Movie[]; total: number } | undefined> {
+export type PublishedMoviePage = {
+  movies: Movie[];
+  page: number;
+  limit: number;
+  hasNextPage: boolean;
+};
+
+const PUBLIC_PAGE_LIMIT = 24;
+
+function publishedMoviePredicate(filters: PublishedMovieFilters): { sql: string; params: string[] } {
+  const where = ["publication_status = 'published'"];
+  const params: string[] = [];
+  const query = filters.query?.trim().toLowerCase() ?? '';
+  const genre = filters.genre?.trim().toLowerCase() ?? '';
+  const language = filters.language?.trim().toLowerCase() ?? '';
+  const contentType = filters.contentType?.trim().toLowerCase() ?? '';
+  if (query) {
+    const needle = '%' + escapeSqlLike(query) + '%';
+    where.push('(lower(title) LIKE ? ESCAPE char(92) OR lower(director) LIKE ? ESCAPE char(92) OR lower(cast_json) LIKE ? ESCAPE char(92))');
+    params.push(needle, needle, needle);
+  }
+  if (genre && genre !== 'all') {
+    where.push("(',' || lower(replace(genre, ' ', '')) || ',') LIKE ? ESCAPE char(92)");
+    params.push('%,' + escapeSqlLike(genre.replaceAll(' ', '')) + ',%');
+  }
+  if (language && language !== 'all languages') {
+    where.push("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(languages_json) AND json_type(languages_json) = 'array' THEN languages_json ELSE '[]' END) AS language WHERE lower(language.value) = ?)");
+    params.push(language);
+  }
+  if (contentType && contentType !== 'all') {
+    where.push('content_type = ?');
+    params.push(contentType);
+  }
+  return { sql: where.join(' AND '), params };
+}
+
+function starterMoviePage(filters: PublishedMovieFilters, page: number, limit: number): PublishedMoviePage {
+  const query = filters.query?.trim().toLowerCase() ?? '';
+  const genre = filters.genre?.trim().toLowerCase() ?? '';
+  const language = filters.language?.trim().toLowerCase() ?? '';
+  const contentType = filters.contentType?.trim().toLowerCase() ?? '';
+  const filtered = starterMovies
+    .filter((movie) => {
+      const cast = movie.cast.map((member) => typeof member === 'string' ? member : String(member.actor) + ' ' + (member.character ?? '')).join(' ').toLowerCase();
+      const text = String(movie.title) + ' ' + movie.director + ' ' + cast;
+      const movieGenres = movie.genre.toLowerCase().split(',').map((item) => item.trim());
+      return movie.publicationStatus === 'published'
+        && (!query || text.toLowerCase().includes(query))
+        && (!genre || genre === 'all' || movieGenres.includes(genre))
+        && (!language || language === 'all languages' || movie.languages.some((item) => item.toLowerCase() === language))
+        && (!contentType || contentType === 'all' || movie.contentType === contentType);
+    });
+  const start = (page - 1) * limit;
+  return { movies: filtered.slice(start, start + limit), page, limit, hasNextPage: start + limit < filtered.length };
+}
+
+export async function listPublishedMoviesPage({ page = 1, limit = PUBLIC_PAGE_LIMIT, ...filters }: PublishedMovieFilters & { page?: number; limit?: number } = {}): Promise<PublishedMoviePage> {
+  const safePage = Number.isSafeInteger(page) && page >= 1 ? Math.min(page, 1000) : 1;
+  const safeLimit = Number.isSafeInteger(limit) && limit >= 1 ? Math.min(limit, PUBLIC_PAGE_LIMIT) : PUBLIC_PAGE_LIMIT;
   try {
     const database = getDatabase();
     const setting = await database.prepare("SELECT value FROM app_settings WHERE key = 'catalogue_initialized' LIMIT 1").first<{ value?: string }>();
-    if (setting?.value !== '1') return undefined;
-
-    const where = ["publication_status = 'published'"];
-    const params: Array<string | number> = [];
-    if (filters.query) {
-      const needle = `%${escapeSqlLike(filters.query)}%`;
-      where.push('(lower(title) LIKE ? ESCAPE char(92) OR lower(director) LIKE ? ESCAPE char(92) OR lower(cast_json) LIKE ? ESCAPE char(92))');
-      params.push(needle, needle, needle);
-    }
-    if (filters.genre && filters.genre !== 'all') {
-      where.push("(',' || lower(replace(genre, ' ', '')) || ',') LIKE ? ESCAPE char(92)");
-      params.push(`%,${escapeSqlLike(filters.genre.replaceAll(' ', ''))},%`);
-    }
-    if (filters.language && filters.language !== 'all languages') {
-      where.push("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(languages_json) = 'array' THEN languages_json ELSE '[]' END) AS language WHERE lower(language.value) = ?)");
-      params.push(filters.language);
-    }
-    if (filters.contentType && filters.contentType !== 'all') {
-      where.push('content_type = ?');
-      params.push(filters.contentType);
-    }
-    const predicate = where.join(' AND ');
-    const offset = (filters.page - 1) * filters.limit;
-    const [count, rows] = await database.batch([
-      database.prepare(`SELECT COUNT(*) AS total FROM movies WHERE ${predicate}`).bind(...params),
-      database.prepare(`SELECT ${MOVIE_COLUMNS} FROM movies WHERE ${predicate} ORDER BY featured DESC, updated_at DESC LIMIT ? OFFSET ?`).bind(...params, filters.limit, offset),
-    ]);
-    return {
-      movies: (rows.results as unknown as MovieRow[]).map(rowToMovie),
-      total: Number((count.results[0] as { total?: number } | undefined)?.total ?? 0),
-    };
+    if (setting?.value !== '1') return starterMoviePage(filters, safePage, safeLimit);
+    const predicate = publishedMoviePredicate(filters);
+    const offset = (safePage - 1) * safeLimit;
+    const statement = 'SELECT ' + MOVIE_COLUMNS + ' FROM movies WHERE ' + predicate.sql + ' ORDER BY featured DESC, updated_at DESC, created_at DESC, id DESC LIMIT ? OFFSET ?';
+    const rows = await database.prepare(statement).bind(...predicate.params, safeLimit + 1, offset).all<MovieRow>();
+    const movies = rows.results.map(rowToMovie);
+    return { movies: movies.slice(0, safeLimit), page: safePage, limit: safeLimit, hasNextPage: movies.length > safeLimit };
   } catch {
     logSecurityEvent('catalogue_database_unavailable', 'error');
-    return undefined;
+    return process.env.NODE_ENV === 'production'
+      ? { movies: [], page: safePage, limit: safeLimit, hasNextPage: false }
+      : starterMoviePage(filters, safePage, safeLimit);
   }
 }
 export async function getPublishedMovie(slug: string): Promise<Movie | undefined> {

@@ -20,9 +20,13 @@ import { allLanguages, contentTypes, genres } from '../lib/catalogue-options';
 export function MovieBrowser({
   movies,
   adsEnabled,
+  showFilters = true,
+  viewAllHref,
 }: {
   movies: PublicMovie[];
   adsEnabled: boolean;
+  showFilters?: boolean;
+  viewAllHref?: string;
 }) {
   const [query, setQuery] = useState('');
   const [genre, setGenre] = useState('All');
@@ -397,6 +401,7 @@ export function MovieBrowser({
         </div>
       </section>
 
+{showFilters ? (<>
       <section
         id="discover"
         className="mx-auto my-2 max-w-[1480px] px-4 py-1 sm:my-10 sm:px-8 sm:py-20 lg:px-12"
@@ -450,6 +455,8 @@ export function MovieBrowser({
           />
         </div>
       </div>
+
+      </>) : null}
 
       <section
         id="movie-grid"
@@ -528,6 +535,14 @@ export function MovieBrowser({
           </div>
         )}
       </section>
+
+      {viewAllHref ? (
+        <div className="mx-auto -mt-8 max-w-[1480px] px-4 pb-12 text-center sm:-mt-12 sm:px-8 sm:pb-20 lg:px-12">
+          <a href={viewAllHref} className="inline-flex min-h-11 items-center gap-2 rounded-full border border-black/20 px-5 py-3 text-sm font-semibold text-[#b43a2e] transition hover:border-black/40">
+            View All Movies <ArrowRight size={16} />
+          </a>
+        </div>
+      ) : null}
 
       <section id="languages" className="bg-[#1a1b18] text-white">
         <div className="mx-auto grid max-w-[1480px] gap-8 px-4 py-14 sm:gap-10 sm:px-8 sm:py-20 lg:grid-cols-[.8fr_1.2fr] lg:px-12">
