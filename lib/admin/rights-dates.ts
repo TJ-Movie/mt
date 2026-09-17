@@ -45,6 +45,15 @@ export function rightsDatesForVerification(
   return { rightsVerifiedAt: verifiedAt, rightsExpiresAt: expiresAt };
 }
 
+export function initializeRightsForm<T extends RightsDateFields>(
+  current: T,
+  now: number | Date = Date.now(),
+): Omit<T, 'rightsVerifiedAt' | 'rightsExpiresAt'> & {
+  rightsVerifiedAt: string;
+  rightsExpiresAt: string;
+} {
+  return { ...current, ...rightsDatesForVerification(current, now) };
+}
 export function applyRightsStatusChange<T extends RightsStatusDraft>(
   current: T,
   nextStatus: T['rightsStatus'],

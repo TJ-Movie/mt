@@ -73,7 +73,7 @@ import {
 } from '../ui/alert-dialog';
 import { EpisodeBuilder } from './episode-builder';
 import { CastBuilder } from './cast-builder';
-import { applyRightsStatusChange } from '../../lib/admin/rights-dates';
+import { applyRightsStatusChange, initializeRightsForm } from '../../lib/admin/rights-dates';
 
 type EditorContext = {
   contentType: 'movie' | 'series';
@@ -271,6 +271,14 @@ const emptyMovie: DraftMovie = {
   subtitleUrl: undefined,
   downloadStatus: 'pending',
 };
+function draftFor(source: DraftMovie): DraftMovie {
+  const initialized = initializeRightsForm(source);
+  return {
+    ...initialized,
+    cast: [...initialized.cast],
+    languages: [...initialized.languages],
+  };
+}
 
 function localDate(value?: string): string {
   return value ? value.slice(0, 10) : '';
@@ -303,11 +311,7 @@ export function MovieStudio({
         : (movies.find((movie) => movie.id === selectedId) ?? emptyMovie),
     [movies, selectedId],
   );
-  const [draft, setDraft] = useState<DraftMovie>({
-    ...selected,
-    cast: [...selected.cast],
-    languages: [...selected.languages],
-  });
+  const [draft, setDraft] = useState<DraftMovie>(() => draftFor(selected));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{
     tone: 'success' | 'error';
@@ -320,11 +324,7 @@ export function MovieStudio({
   function choose(movie: AdminMovie | null) {
     setSelectedId(movie?.id ?? 'new');
     const source = movie ?? emptyMovie;
-    setDraft({
-      ...source,
-      cast: [...source.cast],
-      languages: [...source.languages],
-    });
+    setDraft(draftFor(source));
     setMessage(null);
     setErrors({});
   }
