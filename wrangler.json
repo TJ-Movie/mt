@@ -6,6 +6,7 @@
   "compatibility_date": "2026-08-31",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "cache": { "enabled": true },
   "preview_urls": false,
   "routes": [{ "pattern": "flixlyra.com", "custom_domain": true }],
   "d1_databases": [{

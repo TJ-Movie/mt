@@ -212,19 +212,27 @@ function safeEpisodes(json: string): StoredEpisode[] {
   } catch { return []; }
 }
 
-function availableQualities(row: MovieRow): ('720p' | '1080p')[] {
-  const sources = safeSources(row.download_sources_json);
-  const qualities = (['720p', '1080p'] as const).filter((quality) => sources.some((source) =>
-    String(source.quality ?? source.resolution).toLowerCase() === quality &&
+function sourceQuality(source: StoredDownloadSource): string {
+  return String(source.quality ?? source.resolution).toLowerCase();
+}
+
+function availableQualitiesFromSources(sources: StoredDownloadSource[]): ('720p' | '1080p')[] {
+  return (['720p', '1080p'] as const).filter((quality) => sources.some((source) =>
+    sourceQuality(source) === quality &&
     typeof source.r2StorageKey === 'string' &&
     typeof source.r2Bytes === 'number' &&
     Number.isSafeInteger(source.r2Bytes) &&
     source.r2Bytes > 0));
-  return qualities;
+}
+
+function r2KeyForQuality(sources: StoredDownloadSource[], quality: '720p' | '1080p'): string | null {
+  const source = sources.find((item) => sourceQuality(item) === quality);
+  return typeof source?.r2StorageKey === 'string' ? source.r2StorageKey : null;
 }
 
 function rowToMovie(row: MovieRow): AdminMovie {
   const castResult = parseCastJson(row.cast_json);
+  const sources = safeSources(row.download_sources_json);
   return {
     id: row.id,
     slug: row.slug,
@@ -253,7 +261,7 @@ function rowToMovie(row: MovieRow): AdminMovie {
     telegramUrl: row.telegram_url ?? undefined,
     telegramChannel: row.telegram_channel ?? undefined,
     subtitleUrl: row.subtitle_url ?? undefined,
-    downloadSources: safeSources(row.download_sources_json),
+    downloadSources: sources,
     downloadStatus: (() => { try { const parsed: unknown = JSON.parse(row.download_sources_json); return isRecord(parsed) && parsed.status === 'pending' ? 'pending' : 'available'; } catch { return 'pending'; } })(),
     streamingSources: safeStreamingSources(row.streaming_sources_json),
     episodes: safeEpisodes(row.episodes_json),
@@ -267,11 +275,11 @@ function rowToMovie(row: MovieRow): AdminMovie {
     // Keep the snake_case fields present in JSON even when a quality is absent.
     // `undefined` would be omitted by JSON serialization, making the UI unable
     // to distinguish an absent quality from an incomplete API payload.
-    r2_720p_key: row.r2_720p_key ?? null,
-    r2_1080p_key: row.r2_1080p_key ?? null,
+    r2_720p_key: r2KeyForQuality(sources, '720p'),
+    r2_1080p_key: r2KeyForQuality(sources, '1080p'),
     enrichmentStatus: row.enrichment_status,
     enrichmentError: row.enrichment_error,
-    availableQualities: availableQualities(row),
+    availableQualities: availableQualitiesFromSources(sources),
   };
 }
 
@@ -279,13 +287,7 @@ const MOVIE_COLUMNS = `id, slug, title, tagline, description, release_year, runt
   genre, director, cast_json, languages_json, poster, backdrop, featured,
   publication_status, rights_status, rights_verified_at, rights_expires_at,
   rights_reviewer, rights_reference, official_watch_url, telegram_url,
-  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status, enrichment_status, enrichment_error,
-  (SELECT COALESCE(json_extract(source.value, '$.r2StorageKey'), json_extract(source.value, '$.r2_storage_key'))
-   FROM json_each(CASE WHEN json_type(download_sources_json) = 'array' THEN download_sources_json ELSE COALESCE(json_extract(download_sources_json, '$.sources'), '[]') END) AS source
-   WHERE lower(COALESCE(json_extract(source.value, '$.quality'), json_extract(source.value, '$.resolution'), '')) = '720p' LIMIT 1) AS r2_720p_key,
-  (SELECT COALESCE(json_extract(source.value, '$.r2StorageKey'), json_extract(source.value, '$.r2_storage_key'))
-   FROM json_each(CASE WHEN json_type(download_sources_json) = 'array' THEN download_sources_json ELSE COALESCE(json_extract(download_sources_json, '$.sources'), '[]') END) AS source
-   WHERE lower(COALESCE(json_extract(source.value, '$.quality'), json_extract(source.value, '$.resolution'), '')) = '1080p' LIMIT 1) AS r2_1080p_key`;
+  telegram_channel, subtitle_url, download_sources_json, streaming_sources_json, episodes_json, revision, created_by, updated_by, created_at, updated_at, imdb_id, storage_key, ingest_status, enrichment_status, enrichment_error`;
 
 export async function listPublishedMovies(): Promise<Movie[]> {
   try {

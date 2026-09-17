@@ -5,6 +5,12 @@ type RouteBindings = { DB?: D1Database };
 
 const SITE_ORIGIN = 'https://flixlyra.com';
 
+function isPublicPageRequest(request: NextRequest): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  const pathname = request.nextUrl.pathname;
+  return pathname === '/' || /^\/(?:movies|movie|series)(?:\/[^/]+)?\/?$/i.test(pathname);
+}
+
 function sanitizePathname(pathname: string): string {
   const segments = pathname.split('/');
   const safeSegments: string[] = [];
@@ -104,6 +110,10 @@ export async function proxy(request: NextRequest) {
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('Cross-Origin-Resource-Policy', 'same-origin');
   response.headers.set('Referrer-Policy', 'no-referrer');
+  const publicPage = isPublicPageRequest(request);
+  if (publicPage) {
+    response.headers.set('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=60');
+  }
   const requestOrigin = request.headers.get('origin');
   if (requestOrigin && requestOrigin !== 'https://flixlyra.com') {
     return new NextResponse('Forbidden', { status: 403, headers: {
@@ -117,7 +127,7 @@ export async function proxy(request: NextRequest) {
     response.headers.append('Vary', 'Origin');
   }
   const existingCsrf = request.cookies.get('__Host-flixlyra-csrf')?.value;
-  if (!existingCsrf || !/^[a-f0-9-]{36}$/.test(existingCsrf)) {
+  if (!publicPage && (!existingCsrf || !/^[a-f0-9-]{36}$/.test(existingCsrf))) {
     response.cookies.set('__Host-flixlyra-csrf', crypto.randomUUID(), {
       httpOnly: false,
       secure: true,
