@@ -8,7 +8,7 @@ import {
   Loader2,
   Plus,
   Save,
-  Search,
+
   ShieldAlert,
   Trash2,
   UploadCloud,
@@ -19,11 +19,7 @@ function mediaLabel(movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus
   if (count === 2 || movie.ingestStatus === 'ready') return 'READY';
   if (count === 1 || movie.ingestStatus?.toLowerCase() === 'half' || movie.ingest_status === 'half') return 'HALF';
   if (movie.ingest_status === 'flagged_for_review' || movie.ingest_status === 'skipped_unplayable') return 'FAILED';
-  return 'PROCESSING';
-}
-
-function qualityMark(movie: Pick<AdminMovie, 'availableQualities'>, quality: '720p' | '1080p'): string {
-  return movie.availableQualities?.includes(quality) ? 'verified' : 'missing';
+  return 'QUEUED';
 }
 
 import type { RuntimeControls } from '../../lib/security/runtime-controls';
@@ -46,20 +42,10 @@ import {
   TableRow,
 } from '../ui/table';
 
-function hasDualQualityAssets(movie: Pick<AdminMovie, 'availableQualities'>): boolean {
-  return qualityAssetCount(movie) === 2;
-}
-
 function qualityAssetCount(movie: Pick<AdminMovie, 'availableQualities'>): number {
   return new Set(movie.availableQualities ?? []).size;
 }
 
-function isHalfMovie(movie: Pick<AdminMovie, 'availableQualities' | 'ingestStatus' | 'ingest_status'>): boolean {
-  const { ingestStatus, ingest_status } = movie;
-  const isHalf = ingestStatus === 'HALF' || ingest_status === 'half' ||
-    ingestStatus?.toLowerCase() === 'half';
-  return isHalf || qualityAssetCount(movie) === 1;
-}
 import {
   AlertDialog,
   AlertDialogAction,
@@ -79,6 +65,15 @@ import {
   RIGHTS_DEFAULT_REFERENCE,
   RIGHTS_DEFAULT_REVIEWER,
 } from '../../lib/admin/rights-dates';
+import {
+  filterAndSortStudioMovies,
+  isNewStudioMovie,
+  studioMediaState,
+  studioQualityState,
+  studioSummary,
+  type StudioFilters,
+  type StudioSort,
+} from '../../lib/admin/studio-view';
 
 type EditorContext = {
   contentType: 'movie' | 'series';
@@ -296,6 +291,17 @@ function nullable(value: string): string | null {
   return trimmed || null;
 }
 
+const DEFAULT_STUDIO_FILTERS: StudioFilters = { publication: 'all', media: 'all', rights: 'all', review: 'all' };
+
+function StatusChip({ label, tone = 'neutral' }: { label: string; tone?: 'neutral' | 'success' | 'warning' | 'danger' }) {
+  const tones = {
+    neutral: 'border-white/12 bg-white/[.06] text-white/70',
+    success: 'border-emerald-300/20 bg-emerald-400/10 text-emerald-200',
+    warning: 'border-amber-300/20 bg-amber-400/10 text-amber-200',
+    danger: 'border-red-300/20 bg-red-400/10 text-red-200',
+  };
+  return <span className={'rounded-full border px-2 py-1 text-[11px] font-medium tracking-wide ' + tones[tone]}>{label}</span>;
+}
 export function MovieStudio({
   initialMovies,
   initialAuditEvents,
@@ -323,8 +329,16 @@ export function MovieStudio({
     text: string;
   } | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
-  const [catalogueView, setCatalogueView] = useState<'active' | 'archived'>('active');
   const [search, setSearch] = useState('');
+  const [filters, setFilters] = useState<StudioFilters>(DEFAULT_STUDIO_FILTERS);
+  const [sort, setSort] = useState<StudioSort>('newest');
+  const snapshot = useMemo(() => draftFor(selected), [selected]);
+  const visibleMovies = useMemo(
+    () => filterAndSortStudioMovies(movies, search, filters, sort),
+    [movies, search, filters, sort],
+  );
+  const summary = useMemo(() => studioSummary(movies), [movies]);
+  const hasUnsavedChanges = JSON.stringify(draft) !== JSON.stringify(snapshot);
 
   function choose(movie: AdminMovie | null) {
     setSelectedId(movie?.id ?? 'new');
@@ -544,62 +558,103 @@ export function MovieStudio({
                 >
                   <Plus /> Add movie
                 </Button>
-                <div className="mt-4 flex gap-2" role="tablist" aria-label="Catalogue status">
-                  {(['active', 'archived'] as const).map((view) => <Button key={view} type="button" variant={catalogueView === view ? 'secondary' : 'ghost'} className="flex-1 capitalize" onClick={() => setCatalogueView(view)}>{view}</Button>)}
+                <label htmlFor="studio-movie-search" className="mt-3 block">
+                  <span className="sr-only">Search movies</span>
+                  <Input id="studio-movie-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, slug, IMDb ID or D1 ID" aria-label="Search movies" />
+                </label>                <div className="mt-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
+                  <NativeSelect aria-label="Publication filter" value={filters.publication} onChange={(event) => setFilters((current) => ({ ...current, publication: event.target.value as StudioFilters['publication'] }))} className="w-full">
+                    <NativeSelectOption value="all">All publication</NativeSelectOption>
+                    <NativeSelectOption value="draft">Draft</NativeSelectOption>
+                    <NativeSelectOption value="published">Published</NativeSelectOption>
+                    <NativeSelectOption value="archived">Archived</NativeSelectOption>
+                  </NativeSelect>
+                  <NativeSelect aria-label="Media filter" value={filters.media} onChange={(event) => setFilters((current) => ({ ...current, media: event.target.value as StudioFilters['media'] }))} className="w-full">
+                    <NativeSelectOption value="all">All media</NativeSelectOption>
+                    <NativeSelectOption value="ready">Ready</NativeSelectOption>
+                    <NativeSelectOption value="half">Half</NativeSelectOption>
+                    <NativeSelectOption value="queued">Queued</NativeSelectOption>
+                    <NativeSelectOption value="failed">Failed / unavailable</NativeSelectOption>
+                  </NativeSelect>
+                  <NativeSelect aria-label="Rights filter" value={filters.rights} onChange={(event) => setFilters((current) => ({ ...current, rights: event.target.value as StudioFilters['rights'] }))} className="w-full">
+                    <NativeSelectOption value="all">All rights</NativeSelectOption>
+                    <NativeSelectOption value="pending">Rights pending</NativeSelectOption>
+                    <NativeSelectOption value="verified">Rights verified</NativeSelectOption>
+                  </NativeSelect>
+                  <NativeSelect aria-label="Review filter" value={filters.review} onChange={(event) => setFilters((current) => ({ ...current, review: event.target.value as StudioFilters['review'] }))} className="w-full">
+                    <NativeSelectOption value="all">All review</NativeSelectOption>
+                    <NativeSelectOption value="ready">Ready for review</NativeSelectOption>
+                    <NativeSelectOption value="needs-review">Needs review / incomplete</NativeSelectOption>
+                  </NativeSelect>
                 </div>
-                {/* oxlint-disable-next-line jsx-a11y/label-has-associated-control -- wraps the search control. */}
-                <label className="relative mt-3 block">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/35" />
-                  <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title or slug" aria-label="Search movies" className="pl-9" />
-                </label>
-                <div className="mt-4 max-h-[72vh] space-y-2 overflow-y-auto scroll-smooth">
-                  {movies.filter((movie) => (catalogueView === 'archived' ? movie.publicationStatus === 'archived' : movie.publicationStatus !== 'archived') && `${movie.title} ${movie.slug}`.toLowerCase().includes(search.trim().toLowerCase())).map((movie) => (
+                <div className="mt-3 flex items-center gap-2">
+                  <NativeSelect aria-label="Movie sort" value={sort} onChange={(event) => setSort(event.target.value as StudioSort)} className="min-w-0 flex-1">
+                    <NativeSelectOption value="newest">Newest first</NativeSelectOption>
+                    <NativeSelectOption value="oldest">Oldest first</NativeSelectOption>
+                    <NativeSelectOption value="title-asc">Title A-Z</NativeSelectOption>
+                    <NativeSelectOption value="title-desc">Title Z-A</NativeSelectOption>
+                    <NativeSelectOption value="updated">Recently updated</NativeSelectOption>
+                  </NativeSelect>
+                  <Button type="button" variant="ghost" className="shrink-0 px-2 text-xs text-white/60" onClick={() => { setSearch(''); setFilters(DEFAULT_STUDIO_FILTERS); setSort('newest'); }}>
+                    Reset
+                  </Button>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-1.5 text-xs text-white/55" aria-label="Catalogue counts">
+                  <span>{summary.total} Movies</span>
+                  <span>·</span><span>{summary.published} Published</span>
+                  <span>·</span><span>{summary.draft} Draft</span>
+                  <span>·</span><span>{summary.ready} Ready</span>
+                  <span>·</span><span>{summary.half} Half</span>
+                  <span>·</span><span>{summary.failed} Failed</span>
+                </div>
+                <p className="mt-2 text-xs text-white/40" aria-live="polite">
+                  {visibleMovies.length === movies.length ? 'Showing all movies' : ('Showing ' + visibleMovies.length + ' of ' + movies.length + ' movies')}
+                </p>
+                <div className="mt-3 max-h-[calc(100vh-20rem)] space-y-2 overflow-y-auto pr-1">
+                  {visibleMovies.map((movie) => (
                     <button
+                      type="button"
                       key={movie.id}
                       onClick={() => choose(movie)}
-                      className={`w-full rounded-xl border p-4 text-left transition ${selectedId === movie.id ? 'border-[#ef796d]/70 bg-[#ef796d]/10' : 'border-white/8 bg-black/10 hover:border-white/20'}`}
+                      className={'w-full rounded-xl border p-4 text-left transition ' + (selectedId === movie.id ? 'border-[#ef796d]/70 bg-[#ef796d]/10' : 'border-white/8 bg-black/10 hover:border-white/20')}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-serif text-lg">{movie.title}</p>
-                          <p className="mt-1 text-xs text-white/40">
-                            {movie.slug}
+                        <div className="min-w-0">
+                          <p className="truncate font-serif text-lg">{movie.title}</p>
+                          <p className="mt-1 truncate text-xs text-white/40">
+                            {movie.year || '—'} · ID {movie.id} · {movie.imdbId ?? 'IMDb unavailable'}
                           </p>
                         </div>
-                        <div className="flex flex-wrap justify-end gap-1.5">
-                          <span
-                            className={`rounded-full px-2 py-1 text-[11px] ${movie.publicationStatus === 'published' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-white/8 text-white/45'}`}
-                          >
-                            {movie.publicationStatus}
-                          </span>
-                          {isHalfMovie(movie) && (
-                            <span className="rounded-full border border-amber-300/20 bg-amber-400/15 px-2 py-1 text-[11px] font-medium text-amber-200">
-                              half
-                            </span>
-                          )}
-                          {movie.ingestStatus === 'ready' && hasDualQualityAssets(movie) && (
-                            <span className="rounded-full bg-sky-400/10 px-2 py-1 text-[11px] text-sky-200">
-                              Ready for Review
-                            </span>
-                          )}
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                          {isNewStudioMovie(movie) && <StatusChip label="NEW" tone="success" />}
+                          <StatusChip label={movie.publicationStatus.toUpperCase()} tone={movie.publicationStatus === 'published' ? 'success' : movie.publicationStatus === 'archived' ? 'danger' : 'neutral'} />
                         </div>
                       </div>
-                      <p className="mt-3 text-xs text-white/35">
-                        Media: {mediaLabel(movie)} Â· 720p {qualityMark(movie, '720p')} Â· 1080p {qualityMark(movie, '1080p')} Â· Enrichment: {movie.enrichmentStatus ?? 'pending'} Â· Rights: {movie.rightsStatus} Â· rev {movie.revision}
-                      </p>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        <StatusChip label={mediaLabel(movie)} tone={studioMediaState(movie) === 'ready' ? 'success' : studioMediaState(movie) === 'half' ? 'warning' : studioMediaState(movie) === 'failed' ? 'danger' : 'neutral'} />
+                        <StatusChip label={movie.rightsStatus === 'verified' ? 'RIGHTS VERIFIED' : 'RIGHTS PENDING'} tone={movie.rightsStatus === 'verified' ? 'success' : 'warning'} />
+                        <StatusChip label={'720 ' + (studioQualityState(movie, '720p') === 'verified' ? '✓' : '✕')} tone={studioQualityState(movie, '720p') === 'verified' ? 'success' : 'neutral'} />
+                        <StatusChip label={'1080 ' + (studioQualityState(movie, '1080p') === 'verified' ? '✓' : '✕')} tone={studioQualityState(movie, '1080p') === 'verified' ? 'success' : 'neutral'} />
+                      </div>
+                      <p className="mt-3 truncate text-xs text-white/35">{movie.slug}</p>
                     </button>
                   ))}
+                  {visibleMovies.length === 0 && <p className="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-white/45">No movies match these filters.</p>}
                 </div>
               </aside>
-              <section className="rounded-2xl border border-white/10 bg-[#171916] p-5 sm:p-7">
-                <div className="flex flex-col gap-4 border-b border-white/10 pb-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
+              <section className="rounded-2xl border border-white/10 bg-[#171916] p-5 sm:p-7 xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto">
+                <div className="sticky top-0 z-20 -mx-5 -mt-5 flex flex-col gap-4 border-b border-white/10 bg-[#171916]/95 px-5 pb-5 pt-5 backdrop-blur sm:-mx-7 sm:-mt-7 sm:flex-row sm:items-center sm:justify-between sm:px-7 sm:pt-7">
+                  <div className="min-w-0">
                     <p className="text-xs uppercase tracking-[.2em] text-[#ef796d]">
                       {selectedId === 'new' ? 'New record' : 'Editing record'}
                     </p>
-                    <h1 className="mt-2 font-serif text-3xl">
-                      {draft.title || 'Untitled film'}
-                    </h1>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <h1 className="truncate font-serif text-3xl">
+                        {draft.title || 'Untitled film'}
+                      </h1>
+                      <StatusChip label={mediaLabel(draft)} tone={studioMediaState(draft) === 'ready' ? 'success' : studioMediaState(draft) === 'half' ? 'warning' : studioMediaState(draft) === 'failed' ? 'danger' : 'neutral'} />
+                      <StatusChip label={draft.rightsStatus === 'verified' ? 'RIGHTS VERIFIED' : 'RIGHTS PENDING'} tone={draft.rightsStatus === 'verified' ? 'success' : 'warning'} />
+                      {hasUnsavedChanges && <StatusChip label="UNSAVED CHANGES" tone="warning" />}
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <Button
@@ -645,7 +700,7 @@ export function MovieStudio({
                         </AlertDialogContent>
                       </AlertDialog>
                     )}
-                    {selectedId !== 'new' && draft.publicationStatus === 'archived' && catalogueView === 'archived' && (
+                    {selectedId !== 'new' && draft.publicationStatus === 'archived' && (
                       <AlertDialog>
                         <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}><Trash2 /> Delete</AlertDialogTrigger>
                         <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
@@ -682,6 +737,13 @@ export function MovieStudio({
                     )}
                   </div>
                 )}
+                <nav className="sticky top-[5.5rem] z-10 -mx-1 mb-4 flex gap-1 overflow-x-auto rounded-xl border border-white/8 bg-[#171916]/90 p-1 backdrop-blur" aria-label="Editor sections">
+                  <a href="#studio-overview" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Overview</a>
+                  <a href="#studio-rights-artwork" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Rights & artwork</a>
+                  <a href="#studio-technical" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-white/65 hover:bg-white/8 hover:text-white">Advanced / technical</a>
+                </nav>
+                <section id="studio-overview" className="scroll-mt-28">
+                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Overview & cast</h2>
                 <div className="mt-6 grid gap-5 md:grid-cols-2">
                   <Field label="Title">
                     <Input
@@ -780,6 +842,9 @@ export function MovieStudio({
                       }
                     />
                   </Field>
+                  <div id="studio-rights-artwork" className="md:col-span-2 border-t border-white/10 pt-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Rights & publishing</h3>
+                  </div>
                   <Field label="Publication">
                     <NativeSelect
                       value={draft.publicationStatus}
@@ -863,6 +928,12 @@ export function MovieStudio({
                       }
                     />
                   </Field>
+                  <div className="md:col-span-2 border-t border-white/10 pt-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Artwork</h3>
+                  </div>
+                  <div className="md:col-span-2 border-t border-white/10 pt-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-[.16em] text-white/45">Artwork</h3>
+                  </div>
                   <UploadField
                     label="Poster"
                     value={draft.poster}
@@ -918,6 +989,9 @@ export function MovieStudio({
                     </div>
                   </Field>
                 </div>
+                </section>
+                <section id="studio-technical" className="scroll-mt-28">
+                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Content & technical</h2>
                 <div className="mt-5 grid gap-5 border-t border-white/10 pt-5 md:grid-cols-2">
                   <Field label="Content type">
                     <NativeSelect
@@ -978,6 +1052,9 @@ export function MovieStudio({
                     </div>
                   </Field>
                 </div>
+                </section>
+                <section id="studio-sources" className="scroll-mt-28">
+                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-[.16em] text-white/45">Sources & diagnostics</h2>
                 <div className="mt-5 space-y-5 border-t border-white/10 pt-5">
                   <Field
                     label="Series episodes (one per line: S01E01 | Episode title | optional URL)"
@@ -1096,6 +1173,8 @@ export function MovieStudio({
                     />
                   </Field>
                 </div>
+                  </section>
+
               </section>
             </div>
           </TabsContent>
