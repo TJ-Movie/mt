@@ -12,6 +12,7 @@ import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 import { claimTransfer, diagnoseStaleTransfers, releaseTransfer, assertLegalTransition } from './ingest-state.mjs';
 import { approvedImageSource } from '../lib/image-source-policy.mjs';
+import { chooseBestArtworkCandidate, inspectArtworkBytes, qualityFromDimensions } from '../lib/artwork-quality.mjs';
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
@@ -273,7 +274,7 @@ export async function downloadArtwork(url) {
   throw new Error('ARTWORK_REDIRECT_LIMIT');
 }
 
-async function fetchArtworkMetadata(imdbId) {
+export async function fetchArtworkMetadata(imdbId) {
   if (!/^tt\d{7,10}$/.test(String(imdbId || ''))) return null;
   const query = new URLSearchParams({ imdb_id: String(imdbId), with_images: 'true', with_cast: 'true' });
   let lastError;
@@ -291,6 +292,33 @@ async function fetchArtworkMetadata(imdbId) {
   }
   console.warn(JSON.stringify({ event: 'artwork-metadata-warning', imdbId, error: safeLogError(lastError || new Error('YTS_ARTWORK_UNAVAILABLE')) }));
   return null;
+}
+
+export async function fetchTmdbArtwork(row) {
+  const token = process.env.TMDB_API_TOKEN?.trim();
+  const apiKey = process.env.TMDB_API_KEY?.trim();
+  const imdbId = metadataText(row.imdb_id, 16);
+  if ((!token && !apiKey) || !/^tt\d{7,10}$/.test(imdbId)) return null;
+  try {
+    const query = new URLSearchParams({ external_source: 'imdb_id', language: 'en-US' });
+    const headers = { accept: 'application/json' };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    else query.set('api_key', apiKey);
+    const response = await fetchWithRetry('https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId) + '?' + query, { headers, signal: AbortSignal.timeout(20_000) });
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => null);
+    const result = Array.isArray(payload?.movie_results) ? payload.movie_results.find((entry) => entry?.backdrop_path || entry?.poster_path) : null;
+    if (!result) return null;
+    return {
+      provider: 'tmdb',
+      tmdbId: Number(result.id) || null,
+      poster: result.poster_path ? `https://image.tmdb.org/t/p/original${metadataText(result.poster_path, 240)}` : '',
+      backdrop: result.backdrop_path ? `https://image.tmdb.org/t/p/original${metadataText(result.backdrop_path, 240)}` : '',
+    };
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'tmdb-artwork-warning', movie_id: row.id, imdbId, error: safeLogError(error) }));
+    return null;
+  }
 }
 
 function metadataText(value, maximum) {
@@ -453,6 +481,64 @@ const METADATA_COLUMNS = [
   'cast_json', 'languages_json', 'official_watch_url', 'poster', 'backdrop',
 ];
 
+export function artworkSourceCandidates(kind, row, yts, tmdb) {
+  const entries = [];
+  const add = (provider, value) => {
+    const url = artworkUrl(value);
+    if (url && !entries.some((entry) => entry.url === url)) entries.push({ provider, url });
+  };
+  add('current', row[kind]);
+  if (kind === 'poster') {
+    add('yts', yts?.large_cover_image);
+    add('yts', yts?.medium_cover_image);
+    add('tmdb', tmdb?.poster);
+  } else {
+    add('yts', yts?.background_image_original);
+    add('yts', yts?.background_image);
+    add('tmdb', tmdb?.backdrop);
+  }
+  return entries;
+}
+
+export async function downloadValidatedArtworkCandidate(candidate, kind) {
+  const downloaded = await downloadArtwork(candidate.url);
+  const quality = inspectArtworkBytes(downloaded.bytes, downloaded.contentType, kind);
+  if (!quality.valid) throw new Error('ARTWORK_QUALITY_REJECTED');
+  return { ...candidate, ...downloaded, quality };
+}
+
+function existingArtworkCandidate(kind, key, head) {
+  const metadata = head?.Metadata || {};
+  const width = metadata.artworkwidth || metadata.artworkWidth;
+  const height = metadata.artworkheight || metadata.artworkHeight;
+  if (!width || !height) return null;
+  const quality = qualityFromDimensions(kind, width, height, metadata.artworkcontenttype || metadata.artworkContentType || head.ContentType, head.ContentLength);
+  return quality.valid ? { provider: 'existing-r2', url: publicArtworkUrl(key), quality } : null;
+}
+
+function isSufficientExistingArtwork(kind, candidate) {
+  const minimumWidth = kind === 'backdrop' ? 1920 : 500;
+  return Boolean(candidate?.quality?.valid && candidate.quality.width >= minimumWidth);
+}
+
+async function inspectExistingArtwork(ctx, kind, key, head) {
+  const fromMetadata = existingArtworkCandidate(kind, key, head);
+  if (fromMetadata) return fromMetadata;
+  if (!ctx?.getArtwork) return undefined;
+  try {
+    const object = await ctx.getArtwork(key);
+    if (!object?.Body) return null;
+    const bytes = typeof object.Body.transformToByteArray === 'function'
+      ? new Uint8Array(await object.Body.transformToByteArray())
+      : new Uint8Array(await new Response(object.Body).arrayBuffer());
+    const quality = inspectArtworkBytes(bytes, object.ContentType || head?.ContentType, kind);
+    return quality.valid ? { provider: 'existing-r2', url: publicArtworkUrl(key), quality } : null;
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'existing-artwork-inspection-warning', key, error: safeLogError(error) }));
+    return undefined;
+  }
+}
+
 export async function syncArtworkForMovie(ctx, row) {
   const updates = {};
   let metadata;
@@ -474,38 +560,79 @@ export async function syncArtworkForMovie(ctx, row) {
   }
   catch (error) { errors.push('METADATA_UNAVAILABLE'); }
 
+  let ytsArtwork = null;
+  let ytsArtworkLoaded = false;
+  const getYtsArtwork = async () => {
+    if (!ytsArtworkLoaded) {
+      ytsArtworkLoaded = true;
+      try { ytsArtwork = await getMetadata(); }
+      catch (error) { errors.push('YTS_ARTWORK_UNAVAILABLE'); }
+    }
+    return ytsArtwork;
+  };
+  let tmdbArtwork = null;
+  let tmdbArtworkLoaded = false;
+  const getTmdbArtwork = async () => {
+    if (!tmdbArtworkLoaded) {
+      tmdbArtworkLoaded = true;
+      try { tmdbArtwork = await fetchTmdbArtwork(row); }
+      catch (error) { errors.push('TMDB_ARTWORK_UNAVAILABLE'); }
+    }
+    return tmdbArtwork;
+  };
+
   for (const kind of ['poster', 'backdrop']) {
     const key = artworkKey(row.id, kind);
     if (!key) continue;
     try {
       const existing = await ctx.headArtwork(key);
-      if (existing && Number(existing.ContentLength) > 0 && String(existing.ContentType || '').startsWith('image/')) {
+      const existingIsValid = existing && Number(existing.ContentLength) > 0 && String(existing.ContentType || '').startsWith('image/');
+      const stored = existingIsValid ? await inspectExistingArtwork(ctx, kind, key, existing) : null;
+      if (existingIsValid && stored === undefined) {
         if (!isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
         continue;
       }
-      const current = artworkUrl(row[kind]);
-      const fields = kind === 'poster' ? ['large_cover_image', 'medium_cover_image'] : ['background_image_original', 'background_image'];
-      const sources = [];
-      if (current) sources.push(current);
-      const yts = current ? null : await getMetadata();
-      for (const field of fields) {
-        const source = artworkUrl(yts?.[field]);
-        if (source && !sources.includes(source)) sources.push(source);
+      if (existingIsValid && isSufficientExistingArtwork(kind, stored)) {
+        if (!isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
+        continue;
       }
-      let uploaded = false;
-      for (const source of sources) {
-        try {
-          const downloaded = await downloadArtwork(source);
-          if (!downloaded) continue;
-          await sendWithRetry(ctx.s3, new PutObjectCommand({ Bucket: ctx.bucket, Key: key, Body: downloaded.bytes, ContentType: downloaded.contentType, CacheControl: 'public, max-age=31536000, immutable', Metadata: { source: 'yts-artwork', movieId: String(row.id), kind } }));
-          const verified = await ctx.headArtwork(key);
-          if (!verified || Number(verified.ContentLength) !== downloaded.bytes.byteLength) throw new Error('ARTWORK_R2_VERIFY_FAILED');
-          updates[kind] = publicArtworkUrl(key);
-          uploaded = true;
-          break;
-        } catch (error) { console.warn(JSON.stringify({ event: 'artwork-upload-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error) })); }
+      const candidates = [];
+      const ytsArtwork = await getYtsArtwork();
+      const tmdbArtwork = await getTmdbArtwork();
+      if (stored) candidates.push(stored);
+      for (const source of artworkSourceCandidates(kind, row, ytsArtwork, tmdbArtwork)) {
+        try { candidates.push(await downloadValidatedArtworkCandidate(source, kind)); }
+        catch (error) { console.warn(JSON.stringify({ event: 'artwork-candidate-rejected', id: row.id, imdbId: row.imdb_id, kind, provider: source.provider, error: safeLogError(error) })); }
       }
-      if (!uploaded && !isManagedArtworkUrl(row[kind], row.id, kind)) errors.push(kind.toUpperCase() + '_UNAVAILABLE');
+      const current = chooseBestArtworkCandidate(kind, candidates.filter((candidate) => candidate.provider !== 'existing-r2'), stored);
+      if (!current) {
+        if (existingIsValid && !isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
+        else if (!existingIsValid && !isManagedArtworkUrl(row[kind], row.id, kind)) errors.push(kind.toUpperCase() + '_UNAVAILABLE');
+        continue;
+      }
+      if (current.provider === 'existing-r2') {
+        if (!isManagedArtworkUrl(row[kind], row.id, kind)) updates[kind] = publicArtworkUrl(key);
+        continue;
+      }
+      await sendWithRetry(ctx.s3, new PutObjectCommand({
+        Bucket: ctx.bucket,
+        Key: key,
+        Body: current.bytes,
+        ContentType: current.contentType,
+        CacheControl: 'public, max-age=31536000, immutable',
+        Metadata: {
+          source: current.provider + '-artwork',
+          movieId: String(row.id),
+          kind,
+          artworkWidth: String(current.quality.width),
+          artworkHeight: String(current.quality.height),
+          artworkQualityScore: String(current.quality.score),
+          artworkContentType: current.contentType,
+        },
+      }));
+      const verified = await ctx.headArtwork(key);
+      if (!verified || Number(verified.ContentLength) !== current.bytes.byteLength || !String(verified.ContentType || '').startsWith('image/')) throw new Error('ARTWORK_R2_VERIFY_FAILED');
+      updates[kind] = publicArtworkUrl(key);
     } catch (error) {
       errors.push(kind.toUpperCase() + '_SYNC_FAILED');
       console.warn(JSON.stringify({ event: 'artwork-sync-warning', id: row.id, imdbId: row.imdb_id, kind, error: safeLogError(error), non_blocking: true }));
@@ -750,7 +877,12 @@ export async function context() {
     try { return await sendWithRetry(s3, new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) }); }
     catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
   }
-  return { s3, bucket, query, head, headArtwork };
+  async function getArtwork(key) {
+    if (!/^(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|cast\/tt\d{7,10}-[1-6]\.jpg)$/.test(key || '')) return null;
+    try { return await sendWithRetry(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(requestTimeoutMs) }); }
+    catch (e) { if (e.$metadata?.httpStatusCode === 404) return null; throw e; }
+  }
+  return { s3, bucket, query, head, headArtwork, getArtwork };
 }
 
 async function cliContext() {

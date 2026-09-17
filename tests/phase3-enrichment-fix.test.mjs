@@ -5,13 +5,15 @@ import { approvedImageSource } from '../lib/image-source-policy.mjs';
 import { auditMovie } from '../scripts/full-system-audit.mjs';
 import { downloadArtwork, drainCloudPlan, syncArtworkForMovie } from '../scripts/prepare-cloud-media.mjs';
 
-const IMAGE_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
+// Minimal JPEG header fixtures; artwork validation reads the encoded dimensions.
+const IMAGE_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x04, 0x38, 0x07, 0x80, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xd9]);
+const POSTER_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x02, 0xee, 0x01, 0xf4, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xd9]);
 const VIDEO_BYTES = 10 * 1024 * 1024;
 
-function imageResponse(type = 'image/jpeg') {
-  return new Response(IMAGE_BYTES, { status: 200, headers: { 'content-type': type, 'content-length': String(IMAGE_BYTES.byteLength) } });
+function imageResponse(type = 'image/jpeg', kind = 'backdrop') {
+  const bytes = kind === 'poster' ? POSTER_BYTES : IMAGE_BYTES;
+  return new Response(bytes, { status: 200, headers: { 'content-type': type, 'content-length': String(bytes.byteLength) } });
 }
-
 function jsonResponse(value) {
   return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
 }
@@ -186,7 +188,7 @@ test('normal enrichment has no duplicate inline YTS artwork allowlist', () => {
 
 test('normal poster enrichment reaches the expected R2 storage path', async () => {
   const { ctx, uploads } = artworkContext();
-  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch(() => imageResponse(), async () => {
+  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch((url) => imageResponse('image/jpeg', url.pathname.includes('/poster') ? 'poster' : 'backdrop'), async () => {
     const result = await syncArtworkForMovie(ctx, artworkRow());
     assert.equal(result.enrichmentStatus, 'ready');
     assert.equal(result.updates.poster, 'https://flixlyra.com/media/artworks/77/poster.jpg');
@@ -196,7 +198,7 @@ test('normal poster enrichment reaches the expected R2 storage path', async () =
 
 test('normal backdrop enrichment reaches the expected R2 storage path', async () => {
   const { ctx, uploads } = artworkContext();
-  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch(() => imageResponse(), async () => {
+  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch((url) => imageResponse('image/jpeg', url.pathname.includes('/poster') ? 'poster' : 'backdrop'), async () => {
     const result = await syncArtworkForMovie(ctx, artworkRow());
     assert.equal(result.enrichmentStatus, 'ready');
     assert.equal(result.updates.backdrop, 'https://flixlyra.com/media/artworks/77/backdrop.jpg');
@@ -207,7 +209,7 @@ test('normal backdrop enrichment reaches the expected R2 storage path', async ()
 test('normal cast profile enrichment writes and persists profileR2Key', async () => {
   const { ctx, uploads } = artworkContext();
   let result;
-  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch(() => imageResponse(), async () => {
+  await withEnv({ R2_PUBLIC_BASE_URL: 'https://flixlyra.com/media' }, () => withFetch((url) => imageResponse('image/jpeg', url.pathname.includes('/poster') ? 'poster' : 'backdrop'), async () => {
     result = await syncArtworkForMovie(ctx, artworkRow());
   }));
   const cast = JSON.parse(result.updates.cast_json);
