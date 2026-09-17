@@ -29,6 +29,7 @@ function row(overrides = {}) {
   const sources = overrides.sources || [source('720p'), source('1080p')];
   return {
     id: 54,
+    imdb_id: 'tt1234567',
     slug: 'bikini-model-academy-2015',
     title: 'Bikini Model Academy',
     director: 'Test Director',
@@ -131,4 +132,43 @@ test('FAILED state with an active transfer lease fails', async () => {
   const result = await auditMovie(row({ ingest_status: 'skipped_unplayable', sources: [source('720p', false), source('1080p', false)], transfer_error: diagnostics(), transfer_token: 'stuck-token' }), checks());
   assert.equal(result.Final_State, 'FAIL');
   assert.ok(result.reasons.includes('active_transfer_lease_or_token'));
+});
+
+test('valid normal-ingestion profileR2Key passes and is verified', async () => {
+  const requested = [];
+  const result = await auditMovie(row({ cast_json: JSON.stringify([{ actor: 'Test Actor', profileR2Key: 'cast/tt1234567-1.jpg' }]) }), checks({
+    headR2Object: async (key) => {
+      requested.push(key);
+      return key.startsWith('cast/')
+        ? { exists: true, contentLength: 64, contentType: 'image/jpeg' }
+        : { exists: true, contentLength: VIDEO_BYTES, contentType: 'video/mp4' };
+    },
+  }));
+  assert.equal(result.Cast_Profile_Photos, 'PASS');
+  assert.equal(result.Final_State, 'PASS');
+  assert.ok(requested.includes('cast/tt1234567-1.jpg'));
+});
+
+test('invalid profileR2Key path fails the audit', async () => {
+  const result = await auditMovie(row({ cast_json: JSON.stringify([{ actor: 'Test Actor', profileR2Key: 'other/test.jpg' }]) }), checks());
+  assert.equal(result.Final_State, 'FAIL');
+  assert.ok(result.reasons.includes('cast_0_profile_r2_invalid_path'));
+});
+
+test('missing or broken profileR2Key object fails the audit', async () => {
+  const missing = await auditMovie(row({ cast_json: JSON.stringify([{ actor: 'Test Actor', profileR2Key: 'cast/tt1234567-1.jpg' }]) }), checks({
+    headR2Object: async (key) => key.startsWith('cast/')
+      ? { exists: false, reason: 'r2_object_missing' }
+      : { exists: true, contentLength: VIDEO_BYTES, contentType: 'video/mp4' },
+  }));
+  assert.equal(missing.Final_State, 'FAIL');
+  assert.ok(missing.reasons.includes('cast_0_profile_r2_object_missing'));
+
+  const broken = await auditMovie(row({ cast_json: JSON.stringify([{ actor: 'Test Actor', profileR2Key: 'cast/tt1234567-1.jpg' }]) }), checks({
+    headR2Object: async (key) => key.startsWith('cast/')
+      ? { exists: true, contentLength: 4, contentType: 'text/plain' }
+      : { exists: true, contentLength: VIDEO_BYTES, contentType: 'video/mp4' },
+  }));
+  assert.equal(broken.Final_State, 'FAIL');
+  assert.ok(broken.reasons.includes('cast_0_profile_r2_content_type_invalid'));
 });

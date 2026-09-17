@@ -11,6 +11,7 @@ import { S3Client, HeadObjectCommand, GetObjectCommand, PutObjectCommand } from 
 import { loadGuardedWebTorrent } from './webtorrent-guard.mjs';
 import { primaryMp4, sourceMagnet, remoteDescriptor, alternativeDescriptor } from './magnet-to-r2.mjs';
 import { claimTransfer, diagnoseStaleTransfers, releaseTransfer, assertLegalTransition } from './ingest-state.mjs';
+import { approvedImageSource } from '../lib/image-source-policy.mjs';
 
 export const manifestPath = 'tmp/r2-video-manifest.json';
 const mediaRoot = resolve('tmp/media');
@@ -220,17 +221,7 @@ function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function artworkUrl(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  try {
-    const url = new URL(value.trim());
-    const hostname = url.hostname.toLowerCase();
-    const allowedHost = hostname === 'image.tmdb.org' || hostname === 'yts.mx' || hostname.endsWith('.yts.mx') ||
-      hostname === 'yts.lt' || hostname.endsWith('.yts.lt') || hostname === 'yts.am' || hostname.endsWith('.yts.am') ||
-      hostname === 'yts.rs' || hostname.endsWith('.yts.rs') || hostname === 'yts.pm' || hostname.endsWith('.yts.pm');
-    return url.protocol === 'https:' && !url.username && !url.password && !url.port && allowedHost ? url.toString() : null;
-  } catch { return null; }
-}
+const artworkUrl = (value) => approvedImageSource(value);
 
 function publicArtworkUrl(key) {
   const base = (process.env.R2_PUBLIC_BASE_URL || 'https://flixlyra.com/media').replace(/\/+$/, '');
@@ -254,18 +245,30 @@ function isManagedArtworkUrl(value, movieId, kind) {
   } catch { return false; }
 }
 
-async function downloadArtwork(url) {
-  const source = artworkUrl(url);
-  if (!source) return null;
-  const response = await fetchWithRetry(source, { redirect: 'error', signal: AbortSignal.timeout(30_000) });
-  if (!response.ok || !response.body) throw new Error(`ARTWORK_${response.status}`);
-  const contentType = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
-  if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(contentType)) throw new Error('ARTWORK_UNSUPPORTED_CONTENT_TYPE');
-  const declaredLength = Number(response.headers.get('content-length') || 0);
-  if (declaredLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_TOO_LARGE');
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.byteLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_EMPTY_OR_TOO_LARGE');
-  return { bytes, contentType };
+export async function downloadArtwork(url) {
+  let current = artworkUrl(url);
+  if (!current) return null;
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    const response = await fetchWithRetry(current, { redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+    if (response.status >= 300 && response.status < 400) {
+      if (redirects === 3) throw new Error('ARTWORK_TOO_MANY_REDIRECTS');
+      const location = response.headers.get('location');
+      await response.body?.cancel().catch(() => {});
+      const next = location ? artworkUrl(new URL(location, current).toString()) : null;
+      if (!next) throw new Error('ARTWORK_REDIRECT_NOT_ALLOWED');
+      current = next;
+      continue;
+    }
+    if (!response.ok || !response.body) throw new Error('ARTWORK_' + response.status);
+    const contentType = (response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+    if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(contentType)) throw new Error('ARTWORK_UNSUPPORTED_CONTENT_TYPE');
+    const declaredLength = Number(response.headers.get('content-length') || 0);
+    if (declaredLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_TOO_LARGE');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.byteLength > MAX_ARTWORK_BYTES) throw new Error('ARTWORK_EMPTY_OR_TOO_LARGE');
+    return { bytes, contentType };
+  }
+  throw new Error('ARTWORK_REDIRECT_LIMIT');
 }
 
 async function fetchArtworkMetadata(imdbId) {
@@ -309,6 +312,66 @@ function metadataDirector(value) {
   if (!Array.isArray(value)) return '';
   return value.map((entry) => isRecord(entry) ? entry.name || entry.director : entry)
     .map((entry) => metadataText(entry, 160)).filter(Boolean).slice(0, 3).join(', ');
+}
+
+function validDirector(value) {
+  const candidate = metadataText(value, 160);
+  return candidate.length >= 3 && !/^(?:pending editorial review|me|mee)$/i.test(candidate);
+}
+
+async function fetchOmdbDirector(row) {
+  const apiKey = process.env.OMDB_API_KEY?.trim();
+  const imdbId = metadataText(row.imdb_id, 16);
+  if (!apiKey || !/^tt\d{7,10}$/.test(imdbId)) return '';
+  try {
+    const query = new URLSearchParams({ apikey: apiKey, i: imdbId, plot: 'short' });
+    const response = await fetchWithRetry('https://www.omdbapi.com/?' + query, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.Response !== 'True' || payload.imdbID !== imdbId) return '';
+    const director = metadataText(payload.Director, 160).replace(/^N\/A$/i, '');
+    return validDirector(director) ? director : '';
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'director-fallback-warning', movie_id: row.id, source: 'omdb', error: safeLogError(error) }));
+    return '';
+  }
+}
+
+async function fetchTmdbDirector(row) {
+  const token = process.env.TMDB_API_TOKEN?.trim();
+  const apiKey = process.env.TMDB_API_KEY?.trim();
+  const imdbId = metadataText(row.imdb_id, 16);
+  if ((!token && !apiKey) || !/^tt\d{7,10}$/.test(imdbId)) return '';
+  try {
+    const findQuery = new URLSearchParams({ external_source: 'imdb_id', language: 'en-US' });
+    const headers = { accept: 'application/json' };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    else findQuery.set('api_key', apiKey);
+    const foundResponse = await fetchWithRetry('https://api.themoviedb.org/3/find/' + encodeURIComponent(imdbId) + '?' + findQuery, { headers, signal: AbortSignal.timeout(20_000) });
+    if (!foundResponse.ok) return '';
+    const found = await foundResponse.json().catch(() => null);
+    const tmdbId = found?.movie_results?.[0]?.id;
+    if (!tmdbId) return '';
+    const creditsQuery = new URLSearchParams({ language: 'en-US' });
+    if (!token) creditsQuery.set('api_key', apiKey);
+    const creditsResponse = await fetchWithRetry('https://api.themoviedb.org/3/movie/' + encodeURIComponent(tmdbId) + '/credits?' + creditsQuery, { headers, signal: AbortSignal.timeout(20_000) });
+    if (!creditsResponse.ok) return '';
+    const credits = await creditsResponse.json().catch(() => null);
+    const director = (credits?.crew || [])
+      .filter((person) => person?.job === 'Director')
+      .map((person) => metadataText(person.name, 160))
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(', ');
+    return validDirector(director) ? director : '';
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'director-fallback-warning', movie_id: row.id, source: 'tmdb', error: safeLogError(error) }));
+    return '';
+  }
+}
+
+async function fallbackDirector(row) {
+  const omdb = await fetchOmdbDirector(row);
+  return omdb || await fetchTmdbDirector(row);
 }
 
 function metadataGenres(value) {
@@ -388,7 +451,7 @@ const METADATA_COLUMNS = [
   'cast_json', 'languages_json', 'official_watch_url', 'poster', 'backdrop',
 ];
 
-async function syncArtworkForMovie(ctx, row) {
+export async function syncArtworkForMovie(ctx, row) {
   const updates = {};
   let metadata;
   let metadataLoaded = false;
@@ -400,7 +463,13 @@ async function syncArtworkForMovie(ctx, row) {
     }
     return metadata;
   };
-  try { Object.assign(updates, metadataUpdatesForMovie(row, needsMovieMetadata(row) ? await getMetadata() : null)); }
+  try {
+    Object.assign(updates, metadataUpdatesForMovie(row, needsMovieMetadata(row) ? await getMetadata() : null));
+    if (!validDirector(row.director) && !validDirector(updates.director)) {
+      const director = await fallbackDirector(row);
+      if (director) updates.director = director;
+    }
+  }
   catch (error) { errors.push('METADATA_UNAVAILABLE'); }
 
   for (const kind of ['poster', 'backdrop']) {

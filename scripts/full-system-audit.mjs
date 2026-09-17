@@ -307,13 +307,43 @@ function castProfileUrl(entry) {
   }
 }
 
+function castProfileR2Key(entry) {
+  const value = entry?.profileR2Key || entry?.profile_r2_key;
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function validCastProfileR2Key(row, index, value) {
+  return typeof value === 'string' && value === 'cast/' + row.imdb_id + '-' + (index + 1) + '.jpg' && /^tt\d{7,10}$/.test(String(row.imdb_id || '')) && index < 6;
+}
+
 async function auditCast(row, options = {}) {
   const auditImageFn = options.auditImage || auditImage;
+  const headR2ObjectFn = options.headR2Object || headR2Object;
   const cast = castEntries(row.cast_json);
   if (!cast.length) return { ok: false, reason: "cast_empty" };
   const failures = [];
   for (const [index, entry] of cast.entries()) {
     const name = entry?.name || entry?.actor;
+    const label = 'cast_' + index;
+    const r2Key = castProfileR2Key(entry);
+    if (r2Key) {
+      if (!validCastProfileR2Key(row, index, r2Key)) {
+        failures.push(label + '_profile_r2_invalid_path');
+        continue;
+      }
+      try {
+        const object = await headR2ObjectFn(r2Key);
+        const exists = object?.exists ?? object?.Exists;
+        const bytes = Number(object?.contentLength ?? object?.ContentLength);
+        const type = String(object?.contentType ?? object?.ContentType ?? '').split(';')[0].trim().toLowerCase();
+        if (!exists) failures.push(label + '_profile_r2_object_missing');
+        else if (!Number.isFinite(bytes) || bytes <= 0) failures.push(label + '_profile_r2_object_empty');
+        else if (!type.startsWith('image/')) failures.push(label + '_profile_r2_content_type_invalid');
+      } catch {
+        failures.push(label + '_profile_r2_head_failed');
+      }
+      continue;
+    }
     const profile = castProfileUrl(entry);
     if (typeof name !== "string" || name.trim().length < 2) failures.push("cast_" + index + "_name");
     if (!profile) { failures.push("cast_" + index + "_profile_missing"); continue; }
@@ -396,7 +426,7 @@ export async function auditMovie(row, options = {}) {
   let artworkStatus = "NOT_EXPECTED";
   let trailerStatus = "NOT_EXPECTED";
   if (enrichmentExpected) {
-    const cast = await auditCast(row, { auditImage: auditImageFn });
+    const cast = await auditCast(row, { auditImage: auditImageFn, headR2Object: headObject });
     if (!cast.ok) reasons.push(cast.reason);
     castStatus = cast.ok ? "PASS" : "FAIL";
     const poster = await auditImageFn(SITE_ORIGIN + "/media/artworks/" + row.id + "/poster.jpg", "poster");
