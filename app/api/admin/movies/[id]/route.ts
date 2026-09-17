@@ -50,12 +50,24 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   const revision = body && typeof body === 'object' && !Array.isArray(body) ? validRevision((body as Record<string, unknown>).revision) : null;
   if (!id || !revision) return Response.json({ error: 'Invalid archive/delete request.' }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   try {
-    const changed = action === 'delete'
-      ? await deleteArchivedAdminMovie(id, revision, authorization.user)
-      : await archiveAdminMovie(id, revision, authorization.user);
-    if (!changed) return Response.json({ error: action === 'delete' ? 'Only archived movies can be permanently deleted.' : 'This record changed in another session. Refresh and try again.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
-    return Response.json(action === 'delete' ? { deleted: true } : { archived: true }, { headers: ADMIN_NO_STORE_HEADERS });
+    if (action === 'delete') {
+      const outcome = await deleteArchivedAdminMovie(id, revision, authorization.user);
+      if (outcome.ok) return Response.json({ deleted: true }, { headers: ADMIN_NO_STORE_HEADERS });
+      if (outcome.code === 'R2_CLEANUP_FAILED') {
+        return Response.json({ error: 'Delete failed: storage cleanup could not be completed. Movie was not removed. You can retry.', code: outcome.code, asset: outcome.failure?.category ?? 'storage' }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
+      }
+      if (outcome.code === 'REVISION_CONFLICT_AFTER_CLEANUP') {
+        return Response.json({ error: 'Storage cleanup completed, but the movie changed before removal. Refresh and retry Delete.', code: outcome.code }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
+      }
+      if (outcome.code === 'REVISION_CONFLICT') {
+        return Response.json({ error: 'This record changed in another session. Refresh and try again.', code: outcome.code }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
+      }
+      return Response.json({ error: 'Only archived movies can be permanently deleted.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
+    }
+    const changed = await archiveAdminMovie(id, revision, authorization.user);
+    if (!changed) return Response.json({ error: 'This record changed in another session. Refresh and try again.' }, { status: 409, headers: ADMIN_NO_STORE_HEADERS });
+    return Response.json({ archived: true }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch {
-    return Response.json({ error: 'The database is temporarily unavailable.' }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
+    return Response.json({ error: action === 'delete' ? 'Delete failed: storage cleanup could not be completed. Movie was not removed. You can retry.' : 'The database is temporarily unavailable.' }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
   }
 }

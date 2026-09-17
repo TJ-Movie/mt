@@ -785,7 +785,7 @@ export function MovieStudio({
                       <AlertDialog>
                         <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}><Trash2 /> Delete</AlertDialogTrigger>
                         <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
-                          <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This cannot be undone. Archived records are the only records eligible for deletion.</AlertDialogDescription></AlertDialogHeader>
+                          <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This permanently removes the movie and its unshared stored media and assets. Shared stored objects are retained.</AlertDialogDescription></AlertDialogHeader>
                           <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={permanentlyDelete} className="bg-[#b43a2e] text-white">Delete permanently</AlertDialogAction></AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
@@ -861,7 +861,7 @@ export function MovieStudio({
                           <AlertDialog>
                             <AlertDialogTrigger render={<Button disabled={busy} variant="destructive" className="h-10 rounded-full px-4" />}><Trash2 /> Delete</AlertDialogTrigger>
                             <AlertDialogContent className="border border-white/10 bg-[#f2efe9] text-[#181916]">
-                              <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This cannot be undone. Archived records are the only records eligible for deletion.</AlertDialogDescription></AlertDialogHeader>
+                              <AlertDialogHeader><AlertDialogTitle>Delete archived movie permanently?</AlertDialogTitle><AlertDialogDescription>This permanently removes the movie and its unshared stored media and assets. Shared stored objects are retained.</AlertDialogDescription></AlertDialogHeader>
                               <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={permanentlyDelete} className="bg-[#b43a2e] text-white">Delete permanently</AlertDialogAction></AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>

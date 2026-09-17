@@ -8,6 +8,7 @@ import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { logSecurityEvent } from '../lib/security/security-events';
 import { assertLegalTransition } from '../scripts/ingest-state.mjs';
 import { parseCastJson } from '../lib/cast.ts';
+import { performPermanentMovieDelete, type MovieDeleteRow, type MovieMediaReferenceRow } from '../lib/admin/movie-delete.ts';
 
 type Bindings = { DB?: D1Database; MEDIA?: R2Bucket };
 type StoredDownloadSource = NonNullable<Movie['downloadSources']>[number] & {
@@ -105,49 +106,7 @@ export function getMediaBucket(): R2Bucket {
   return bucket;
 }
 
-type MovieMediaRow = {
-  poster: string;
-  backdrop: string;
-  subtitle_url: string | null;
-  cast_json: string;
-  episodes_json: string;
-  download_sources_json: string;
-  streaming_sources_json: string;
-  storage_key: string | null;
-  r2_storage_key: string | null;
-};
-
-const SAFE_R2_CLEANUP_KEY = /^(?:artworks\/\d+\/(?:poster|backdrop)\.jpg|assets\/[a-f0-9-]{36}\/(?:data\.bin|720p\.mp4|1080p\.mp4)|movie-art\/[a-f0-9-]{36}\.(?:jpg|png)|(?:posters|backdrops)\/tt\d{7,10}\.(?:jpg|png)|cast\/tt\d{7,10}-[1-6]\.(?:jpg|png)|subtitles\/[a-f0-9-]{36}\.(?:srt|vtt|zip|7z)|descriptors\/tt\d{7,10}-(?:720p|1080p)\.torrent)$/;
-
-function addR2CleanupKey(keys: Set<string>, value: unknown): void {
-  if (typeof value !== 'string') return;
-  const candidate = value.startsWith('/media/') ? value.slice('/media/'.length) : value.startsWith('https://flixlyra.com/media/') ? value.slice('https://flixlyra.com/media/'.length) : value;
-  if (SAFE_R2_CLEANUP_KEY.test(candidate)) keys.add(candidate);
-}
-
-function collectNestedR2Keys(keys: Set<string>, value: unknown, depth = 0): void {
-  if (depth > 8 || value === null || value === undefined) return;
-  if (typeof value === 'string') {
-    addR2CleanupKey(keys, value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value.slice(0, 500)) collectNestedR2Keys(keys, item, depth + 1);
-    return;
-  }
-  if (typeof value === 'object') {
-    for (const item of Object.values(value as Record<string, unknown>).slice(0, 100)) collectNestedR2Keys(keys, item, depth + 1);
-  }
-}
-
-export function collectMovieR2Keys(row: MovieMediaRow): string[] {
-  const keys = new Set<string>();
-  for (const value of [row.poster, row.backdrop, row.subtitle_url, row.storage_key, row.r2_storage_key]) addR2CleanupKey(keys, value);
-  for (const json of [row.cast_json, row.episodes_json, row.download_sources_json, row.streaming_sources_json]) {
-    try { collectNestedR2Keys(keys, JSON.parse(json || 'null')); } catch { /* Ignore malformed legacy JSON. */ }
-  }
-  return [...keys];
-}
+export { collectMovieR2Keys } from '../lib/admin/movie-delete.ts';
 
 function safeStringArray(json: string): string[] {
   try {
@@ -610,43 +569,35 @@ export async function archiveAdminMovie(id: number, revision: number, user: Chat
   return true;
 }
 
-export async function deleteArchivedAdminMovie(id: number, revision: number, user: ChatGPTUser): Promise<boolean> {
+export async function deleteArchivedAdminMovie(id: number, revision: number, user: ChatGPTUser) {
   const database = getDatabase();
-  const current = await database.prepare(`SELECT slug, poster, backdrop, subtitle_url, cast_json, episodes_json,
-    download_sources_json, streaming_sources_json, storage_key, r2_storage_key
-    FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived' LIMIT 1`).bind(id, revision).first<MovieMediaRow & { slug: string }>();
-  if (!current) return false;
-
-  const keys = collectMovieR2Keys(current);
-  const references = keys.length ? await database.batch(keys.map((key) => database.prepare(`SELECT 1 AS referenced FROM movies
-    WHERE id <> ? AND (r2_storage_key = ? OR storage_key = ? OR poster = ? OR backdrop = ? OR subtitle_url = ?
-      OR cast_json LIKE ? OR episodes_json LIKE ? OR download_sources_json LIKE ? OR streaming_sources_json LIKE ?)
-    LIMIT 1`).bind(id, key, key, `/media/${key}`, `/media/${key}`, `/media/${key}`, `%${key}%`, `%${key}%`, `%${key}%`, `%${key}%`))) : [];
-  const deletable = keys.filter((_, index) => !references[index]?.results?.length);
-  let deletedR2Objects = 0;
-  if (deletable.length) {
-    try {
-      const bucket = getMediaBucket();
-      for (const key of deletable) {
-        try {
-          await bucket.delete(key);
-          deletedR2Objects += 1;
-        } catch (error) {
-          console.warn(JSON.stringify({ event: 'r2_movie_cleanup_failed', movieId: id, key, error: error instanceof Error ? error.message : String(error) }));
-        }
-      }
-    } catch (error) {
-      console.warn(JSON.stringify({ event: 'r2_movie_cleanup_unavailable', movieId: id, error: error instanceof Error ? error.message : String(error) }));
-    }
+  const current = await database.prepare("SELECT id, slug, revision, publication_status, poster, backdrop, subtitle_url, cast_json, episodes_json, download_sources_json, streaming_sources_json, storage_key, r2_storage_key FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived' LIMIT 1").bind(id, revision).first<MovieDeleteRow>();
+  const otherMovies = await database.prepare("SELECT poster, backdrop, subtitle_url, cast_json, episodes_json, download_sources_json, streaming_sources_json, storage_key, r2_storage_key FROM movies WHERE id <> ?").bind(id).all<MovieMediaReferenceRow>();
+  const outcome = await performPermanentMovieDelete({
+    current,
+    expectedRevision: revision,
+    otherMovies: otherMovies.results,
+    bucket: getMediaBucket(),
+    deleteMovie: async () => {
+      const result = await database.prepare("DELETE FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived'").bind(id, revision).run();
+      return result.meta.changes === 1;
+    },
+  });
+  if (!outcome.ok) {
+    logSecurityEvent('admin_request_rejected', 'warn', {
+      action: 'delete',
+      movieId: id,
+      reason: outcome.code,
+      asset: outcome.failure?.category ?? null,
+    });
+    return outcome;
   }
-
-  const result = await database.prepare("DELETE FROM movies WHERE id = ? AND revision = ? AND publication_status = 'archived'").bind(id, revision).run();
-  if (result.meta.changes !== 1) return false;
-  await auditStatement(database, user, 'movie_deleted', id, current.slug, ['movie_record', ...(deletedR2Objects ? ['r2_media'] : [])], new Date().toISOString()).run();
-  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current.slug, r2ObjectsDeleted: deletedR2Objects, r2ObjectsAttempted: deletable.length });
-  return true;
+  const deletedR2Objects = outcome.removedKeys.length;
+  const r2ObjectsAttempted = outcome.removedKeys.length + outcome.alreadyAbsentKeys.length;
+  await auditStatement(database, user, 'movie_deleted', id, current?.slug ?? null, ['movie_record', ...(deletedR2Objects ? ['r2_media'] : [])], new Date().toISOString()).run();
+  logSecurityEvent('admin_movie_changed', 'info', { action: 'deleted', slug: current?.slug ?? null, r2ObjectsDeleted: deletedR2Objects, r2ObjectsAttempted });
+  return outcome;
 }
-
 export async function listApprovedDomains(): Promise<ApprovedDomain[]> {
   const result = await getDatabase().prepare('SELECT id, domain, active, created_at FROM approved_domains ORDER BY domain').all<{id:number;domain:string;active:number;created_at:string}>();
   return result.results.map((row) => ({ id: row.id, domain: row.domain, active: row.active === 1, createdAt: row.created_at }));
