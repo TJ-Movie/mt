@@ -73,6 +73,7 @@ import {
 } from '../ui/alert-dialog';
 import { EpisodeBuilder } from './episode-builder';
 import { CastBuilder } from './cast-builder';
+import { applyRightsStatusChange } from '../../lib/admin/rights-dates';
 
 type EditorContext = {
   contentType: 'movie' | 'series';
@@ -260,8 +261,8 @@ const emptyMovie: DraftMovie = {
   featured: false,
   publicationStatus: 'draft',
   rightsStatus: 'pending',
-  rightsVerifiedAt: '2026-09-10T00:00:00.000Z',
-  rightsExpiresAt: '2035-02-02T12:00:00.000Z',
+  rightsVerifiedAt: undefined,
+  rightsExpiresAt: undefined,
   rightsReviewer: 'Tj@gmail.com',
   rightsReference: 'good',
   officialWatchUrl: undefined,
@@ -797,7 +798,15 @@ export function MovieStudio({
                     </NativeSelect>
                   </Field>
                   <Field label="Rights status">
-                    <NativeSelect aria-label="Rights status" value={draft.rightsStatus} onChange={e => update('rightsStatus', e.target.value as DraftMovie['rightsStatus'])} className="w-full">
+                    <NativeSelect
+                      aria-label="Rights status"
+                      value={draft.rightsStatus}
+                      onChange={e => {
+                        const nextStatus = e.target.value as DraftMovie['rightsStatus'];
+                        setDraft(current => applyRightsStatusChange(current, nextStatus));
+                      }}
+                      className="w-full"
+                    >
                       <NativeSelectOption value="pending">Pending review</NativeSelectOption>
                       <NativeSelectOption value="verified">Verified</NativeSelectOption>
                       <NativeSelectOption value="blocked">Blocked</NativeSelectOption>
