@@ -36,6 +36,11 @@ function isManagedArtworkUrl(value, id, kind) {
   }
 }
 
+function hasArtworkVersion(value) {
+  if (typeof value !== 'string') return false;
+  try { return new URL(value, siteOrigin).searchParams.has('v'); }
+  catch { return false; }
+}
 function sourceReason(current, selected) {
   if (!current) return 'missing or invalid current artwork';
   if (selected.provider === 'tmdb') return 'superior trusted TMDB landscape/portrait candidate';
@@ -121,7 +126,12 @@ async function repairRow(ctx, row) {
       selected: selected ? { source: selected.provider, width: selected.quality.width, height: selected.quality.height, bytes: selected.quality.bytes, score: selected.quality.score } : null,
       reason: selected && selected.provider !== 'existing-r2' ? sourceReason(current, selected) : classification,
     });
-    if (!needsRepair || !selected || selected.provider === 'existing-r2') continue;
+    if (!needsRepair || !selected || selected.provider === 'existing-r2') {
+      if (execute && current?.quality?.valid && selected?.provider === 'existing-r2' && isManagedArtworkUrl(row[kind], row.id, kind) && !hasArtworkVersion(row[kind])) {
+        changes.push({ kind, before: current, after: current, uploaded: false, reference: publicArtworkUrl(row.id, kind, artworkVersion(current.bytes)) });
+      }
+      continue;
+    }
     if (!execute) {
       changes.push({ kind, before: current, after: selected, uploaded: false });
       continue;
