@@ -193,7 +193,7 @@ function WheelItem({
         >
           {movie.title}
         </a>
-        <span className='mt-1 block text-[11px] text-white/55'>{movie.year} / {movie.rating.toFixed(1)}</span>
+        <span className='mt-1 block text-[11px] text-white/55'>{movie.year} / <span className='text-[#f4c95d]'>★ {movie.rating.toFixed(1)}</span></span>
       </span>
     </div>
   );
@@ -329,7 +329,7 @@ function QuickSearchOverlay({
                     <span className='mt-1 block truncate text-xs text-stone-500'>{movie.year} · {primaryGenre(movie)}</span>
                   </span>
                   <span className='ml-auto flex shrink-0 items-center gap-2 text-xs text-white/55'>
-                    {movie.rating ? <span className='inline-flex items-center gap-1'><Star size={12} className='fill-current text-[#e0796d]' aria-hidden='true' />{movie.rating}</span> : null}
+                    {movie.rating ? <span className='inline-flex items-center gap-1'><Star size={12} className='fill-current text-[#f4c95d]' aria-hidden='true' />{movie.rating}</span> : null}
                     <ChevronRight size={16} aria-hidden='true' />
                   </span>
                 </a>
@@ -612,7 +612,7 @@ export function WheelPrototype({ movies, adsEnabled = false }: WheelPrototypePro
                 <a key={movie.slug} href={contentHref(movie)} onClick={closeSearch} className='flex min-h-[68px] items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#ef796d]'>
                   <img src={movie.poster} alt='' className='h-12 w-9 shrink-0 rounded-md object-cover' loading='lazy' decoding='async' />
                   <span className='min-w-0 flex-1'><span className='block truncate text-sm font-semibold'>{movie.title}</span><span className='mt-1 block truncate text-xs text-white/55'>{movie.year} � {primaryGenre(movie)}</span></span>
-                  <span className='flex shrink-0 items-center gap-2 text-xs text-white/55'>{movie.rating ? <span className='inline-flex items-center gap-1'><Star size={12} className='fill-current text-[#e0796d]' aria-hidden='true' />{movie.rating}</span> : null}<ChevronRight size={16} aria-hidden='true' /></span>
+                  <span className='flex shrink-0 items-center gap-2 text-xs text-white/55'>{movie.rating ? <span className='inline-flex items-center gap-1'><Star size={12} className='fill-current text-[#f4c95d]' aria-hidden='true' />{movie.rating}</span> : null}<ChevronRight size={16} aria-hidden='true' /></span>
                 </a>
               ))}
             </div>
@@ -642,7 +642,7 @@ export function WheelPrototype({ movies, adsEnabled = false }: WheelPrototypePro
             </a>
             <p className='mt-4 max-w-xl font-serif text-xl italic leading-7 text-white/70 sm:text-2xl'>{heroMovie.tagline}</p>
             <div className='mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-white/75'>
-              <span className='inline-flex items-center gap-1.5'><Star size={15} className='fill-[#ef796d] text-[#ef796d]' /> {heroMovie.rating.toFixed(1)}</span>
+              <span className='inline-flex items-center gap-1.5 text-[#f4c95d]'><Star size={15} className='fill-[#f4c95d] text-[#f4c95d]' /> {heroMovie.rating.toFixed(1)}</span>
               <span>{heroMovie.year}</span>
               <span>{heroMovie.runtime}</span>
               <span>{heroMovie.genre}</span>

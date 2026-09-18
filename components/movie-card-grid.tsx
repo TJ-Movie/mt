@@ -25,7 +25,7 @@ export function MovieCardGrid({ movies }: { movies: readonly MovieCardGridItem[]
               decoding='async'
             />
             <div className='absolute inset-0 bg-stone-900/0 transition group-hover:bg-stone-900/10' />
-            <span className='absolute right-1.5 top-1.5 rounded-sm border border-stone-300/80 bg-white/85 px-1.5 py-1 text-[10px] font-bold text-stone-900 sm:right-3 sm:top-3 sm:px-2 sm:text-xs'>
+            <span className='absolute right-1.5 top-1.5 rounded-sm border border-[#f4c95d]/45 bg-black/70 px-1.5 py-1 text-[10px] font-bold text-[#f4c95d] shadow-[0_4px_14px_rgba(0,0,0,.25)] sm:right-3 sm:top-3 sm:px-2 sm:text-xs'>
               ★ {movie.rating.toFixed(1)}
             </span>
             <span className='absolute bottom-3 right-3 grid size-11 place-items-center rounded-full bg-[#de5d4f] text-white opacity-100 transition sm:translate-y-2 sm:opacity-0 sm:group-hover:translate-y-0 sm:group-hover:opacity-100'>
