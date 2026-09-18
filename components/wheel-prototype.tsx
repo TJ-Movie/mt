@@ -752,7 +752,7 @@ export function WheelPrototype({ movies, adsEnabled = false }: WheelPrototypePro
             <a href='/movies' className='inline-flex items-center gap-2 text-sm font-semibold text-[#8f392f] transition hover:text-[#181916]'>View all films <ArrowRight size={16} /></a>
           </div>
           <div id='movie-grid'>
-            <MovieCardGrid movies={boundedMovies} />
+            <MovieCardGrid movies={movies} />
             {adsEnabled ? (
               <aside aria-label='Advertisement' className='mt-10 grid min-h-28 place-items-center border border-dashed border-black/20 bg-white/20 px-6 text-center'>
                 <div>
