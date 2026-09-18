@@ -39,7 +39,6 @@ function filtersFromLocation(): CatalogueFilters {
 
 function filtersQueryString(filters: CatalogueFilters): string {
   const params = new URLSearchParams();
-  if (filters.query.trim()) params.set('q', filters.query.trim());
   if (filters.genre !== DEFAULT_FILTERS.genre) params.set('genre', filters.genre);
   if (filters.language !== DEFAULT_FILTERS.language) params.set('language', filters.language);
   if (filters.contentType !== DEFAULT_FILTERS.contentType) params.set('type', filters.contentType);
@@ -86,8 +85,7 @@ export function MovieCatalogue({ movies: initialMovies, adsEnabled, initialFilte
       setHasNext(false);
     }
     const params = new URLSearchParams({ page: String(nextPage), limit: String(PAGE_SIZE) });
-    if (filters.query.trim()) params.set('q', filters.query.trim());
-    if (filters.genre !== DEFAULT_FILTERS.genre) params.set('genre', filters.genre);
+      if (filters.genre !== DEFAULT_FILTERS.genre) params.set('genre', filters.genre);
     if (filters.language !== DEFAULT_FILTERS.language) params.set('language', filters.language);
     if (filters.contentType !== DEFAULT_FILTERS.contentType) params.set('type', filters.contentType);
     try {
@@ -172,10 +170,13 @@ export function MovieCatalogue({ movies: initialMovies, adsEnabled, initialFilte
   const currentFilters = { query, genre, language, contentType };
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[#0a0a09] text-white">
+    <main className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_18%_0%,rgba(239,121,109,.16),transparent_34%),radial-gradient(circle_at_88%_28%,rgba(28,43,72,.34),transparent_42%),linear-gradient(180deg,#101014_0%,#0a0a09_48%,#08090d_100%)] text-white">
       <header className="flixlyra-glass fixed inset-x-0 top-0 z-50 text-white">
         <div className="mx-auto flex h-[58px] max-w-[1480px] items-center px-4 sm:h-20 sm:px-8 lg:px-12">
-          {searchOpen ? <div className="flex min-w-0 flex-1 items-center gap-2 sm:hidden"><label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3 text-white"><Search size={17} className="shrink-0 text-white/60" aria-hidden="true" /><input ref={quickInputRef} value={quickQuery} onChange={(event) => updateQuickQuery(event.target.value)} placeholder="Search movies, actors..." className="min-w-0 flex-1 bg-transparent text-sm leading-normal outline-none placeholder:text-white/45" aria-label="Search movies, actors, or directors" />{quickQuery ? <button type="button" onClick={() => updateQuickQuery('')} className="grid size-8 shrink-0 place-items-center rounded-full text-white/65 hover:bg-white/10" aria-label="Clear search"><X size={17} /></button> : null}</label><button type="button" onClick={closeSearch} className="grid size-11 shrink-0 place-items-center rounded-full text-white/75 hover:bg-white/10" aria-label="Close search"><X size={19} /></button></div> : <>
+                    {searchOpen ? <>
+            <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 sm:flex"><label className="flex h-11 w-[min(360px,42vw)] items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3 text-white shadow-[0_8px_24px_rgba(0,0,0,.18)]"><Search size={17} className="shrink-0 text-white/60" aria-hidden="true" /><input ref={quickInputRef} value={quickQuery} onChange={(event) => updateQuickQuery(event.target.value)} placeholder="Search movies, actors..." className="min-w-0 flex-1 bg-transparent text-sm leading-normal outline-none placeholder:text-white/45" aria-label="Search movies, actors, or directors" />{quickQuery ? <button type="button" onClick={() => updateQuickQuery('')} className="grid size-8 shrink-0 place-items-center rounded-full text-white/65 hover:bg-white/10" aria-label="Clear search"><X size={17} /></button> : null}</label><button type="button" onClick={closeSearch} className="grid size-11 shrink-0 place-items-center rounded-full text-white/75 hover:bg-white/10" aria-label="Close search"><X size={19} /></button></div>
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:hidden"><label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3 text-white"><Search size={17} className="shrink-0 text-white/60" aria-hidden="true" /><input ref={quickInputRef} value={quickQuery} onChange={(event) => updateQuickQuery(event.target.value)} placeholder="Search movies, actors..." className="min-w-0 flex-1 bg-transparent text-sm leading-normal outline-none placeholder:text-white/45" aria-label="Search movies, actors, or directors" />{quickQuery ? <button type="button" onClick={() => updateQuickQuery('')} className="grid size-8 shrink-0 place-items-center rounded-full text-white/65 hover:bg-white/10" aria-label="Clear search"><X size={17} /></button> : null}</label><button type="button" onClick={closeSearch} className="grid size-11 shrink-0 place-items-center rounded-full text-white/75 hover:bg-white/10" aria-label="Close search"><X size={19} /></button></div>
+          </> : <>
             <a href="/" className="font-serif text-xl font-semibold tracking-[-.04em] sm:text-2xl">Flixlyra<span className="text-[#ef796d]">.</span></a>
             <nav className="ml-10 hidden items-center gap-8 text-sm font-medium text-white/70 lg:flex"><a href="/" className="transition-colors hover:text-[#ef796d]">Discover</a><a className="relative text-white after:absolute after:-bottom-2 after:left-0 after:h-0.5 after:w-full after:rounded-full after:bg-[#ef796d]" href="#movie-grid">Movies</a></nav>
             <button type="button" onClick={openSearch} className="ml-auto hidden items-center gap-2 rounded-full border border-white/20 px-4 py-2 text-sm font-medium text-white/85 transition hover:bg-white/10 sm:flex"><Search size={15} /> Search</button>
