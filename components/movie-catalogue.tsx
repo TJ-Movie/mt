@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, ChevronDown, ChevronRight, Menu, Play, Search, Sparkles, Star, X } from 'lucide-react';
+import { ArrowRight, ChevronRight, Menu, Play, Search, Sparkles, Star, X } from 'lucide-react';
 import type { PublicMovie } from '../lib/public-movie';
 import { allLanguages, contentTypes, genres } from '../lib/catalogue-options';
 
@@ -195,12 +195,14 @@ export function MovieCatalogue({ movies: initialMovies, adsEnabled, initialFilte
       </header>
 
       <section id="discover" className="mx-auto max-w-[1480px] px-4 pb-8 pt-28 sm:px-8 sm:pb-12 sm:pt-36 lg:px-12">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between"><div><p className="section-kicker">The full collection</p><h1 className="mt-3 max-w-2xl font-serif text-5xl leading-[.95] tracking-[-.05em] sm:text-7xl">Find your next story.</h1></div></div>
-        <div className="mt-8 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_210px_150px] sm:gap-3">
-          <label className="flex min-h-12 items-center gap-3 rounded-xl border border-white/15 bg-white/[.06] px-4 py-3 text-white transition-colors focus-within:border-stone-500 focus-within:bg-white"><Search size={18} className="shrink-0 text-white/55" /><input value={query} maxLength={80} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, director or cast" className="min-w-0 w-full bg-transparent text-sm outline-none placeholder:text-white/55" /></label>
-          <FilterSelect label="Genre" value={genre} options={genres} onChange={setGenre} />
-          <FilterSelect label="Subtitle" value={language} options={['All languages', ...allLanguages]} onChange={setLanguage} />
-          <FilterSelect label="Type" value={contentType} options={['all', ...contentTypes]} onChange={setContentType} />
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between"><div><p className="section-kicker">The full collection</p><h1 className="mt-3 max-w-2xl font-serif text-5xl leading-[.95] tracking-[-.05em] sm:text-7xl">Find your next story.</h1></div><p className="max-w-md text-sm leading-6 text-white/55">Browse every published title. Results arrive in focused batches so the catalogue stays quick as it grows.</p></div>
+        <div className="mt-8 space-y-4">
+          <label className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-white/15 bg-black/20 px-4 py-3 text-white transition-colors focus-within:border-[#ef796d] focus-within:bg-black/30 focus-within:shadow-[0_0_0_3px_rgba(239,121,109,.12)]"><Search size={18} className="shrink-0 text-white/55" /><input value={query} maxLength={80} onChange={(event) => setQuery(event.target.value)} placeholder="Search by movie title, director or cast member..." className="min-w-0 w-full bg-transparent text-sm text-white caret-[#ef796d] outline-none selection:bg-[#ef796d]/30 selection:text-white placeholder:text-white/55 [&:-webkit-autofill]:[-webkit-text-fill-color:#fff] [&:-webkit-autofill]:[transition:background-color_9999s_ease-out_0s]" /></label>
+          <div className="grid gap-3">
+            <FilterReel label="Genre" value={genre} options={genres} onChange={setGenre} />
+            <FilterReel label="Subtitle" value={language} options={['All languages', ...allLanguages]} onChange={setLanguage} />
+            <FilterReel label="Type" value={contentType} options={['all', ...contentTypes]} onChange={setContentType} />
+          </div>
         </div>
       </section>
 
@@ -219,6 +221,23 @@ export function MovieCatalogue({ movies: initialMovies, adsEnabled, initialFilte
   );
 }
 
-function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (value: string) => void }) {
-  return <label className="relative flex min-h-12 min-w-0 items-center rounded-xl border border-white/15 bg-white/[.06] px-4 text-white transition-colors hover:border-stone-400 focus-within:border-stone-500 focus-within:bg-white/[.06]"><span className="sr-only">{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full appearance-none bg-transparent py-3 text-sm outline-none"><option value={options[0]}>{label}: {options[0]}</option>{options.slice(1).map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown size={15} className="pointer-events-none absolute right-4 text-white/55" /></label>;
+function FilterReel({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (value: string) => void }) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const selectedIndex = Math.max(0, options.indexOf(value));
+
+  useEffect(() => {
+    const track = trackRef.current;
+    const selected = optionRefs.current[value];
+    if (!track || !selected) return;
+    const target = selected.offsetLeft - (track.clientWidth - selected.offsetWidth) / 2;
+    track.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+  }, [value]);
+
+  const move = (direction: -1 | 1) => {
+    const nextIndex = Math.min(options.length - 1, Math.max(0, selectedIndex + direction));
+    if (nextIndex !== selectedIndex) onChange(options[nextIndex]);
+  };
+
+  return <div className="min-w-0"><div className="mb-1.5 flex items-center justify-between"><span className="text-[10px] font-semibold uppercase tracking-[.22em] text-white/50">{label}</span><span className="text-[10px] text-white/30">{selectedIndex + 1} / {options.length}</span></div><div className="flex min-w-0 items-center gap-2 rounded-2xl border border-white/10 bg-black/20 p-2"><button type="button" onClick={() => move(-1)} disabled={selectedIndex === 0} className="grid size-9 shrink-0 place-items-center rounded-full border border-white/10 text-white/60 transition hover:border-[#ef796d] hover:text-white disabled:cursor-not-allowed disabled:opacity-30" aria-label={'Previous ' + label.toLowerCase()}><ChevronRight size={17} className="rotate-180" /></button><div ref={trackRef} onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) event.currentTarget.scrollLeft += event.deltaY; }} className="flex min-w-0 flex-1 gap-2 overflow-x-auto overscroll-x-contain scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><div className="flex gap-2"><span className="w-0 shrink-0" aria-hidden="true" />{options.map((option) => { const selected = option === value; return <button key={option} ref={(element) => { optionRefs.current[option] = element; }} type="button" onClick={() => onChange(option)} aria-pressed={selected} className={'min-h-9 shrink-0 rounded-full border px-4 py-2 text-xs font-medium whitespace-nowrap transition-all duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#ef796d] ' + (selected ? 'border-[#ef796d] bg-[#ef796d]/15 text-white shadow-[0_0_18px_rgba(239,121,109,.18)]' : 'border-white/10 bg-white/[.04] text-white/60 hover:border-white/25 hover:text-white')}>{option === 'all' ? 'All' : option}</button>; })}<span className="w-0 shrink-0" aria-hidden="true" /></div></div><button type="button" onClick={() => move(1)} disabled={selectedIndex === options.length - 1} className="grid size-9 shrink-0 place-items-center rounded-full border border-white/10 text-white/60 transition hover:border-[#ef796d] hover:text-white disabled:cursor-not-allowed disabled:opacity-30" aria-label={'Next ' + label.toLowerCase()}><ChevronRight size={17} /></button></div></div>;
 }
