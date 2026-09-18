@@ -49,10 +49,54 @@ main details.group > div > a { display:flex; align-items:center; gap:.6rem; bord
 main details.group > div > a:hover { background:rgba(239,121,109,.18); color:#fff; transform:translateX(2px); }
 @keyframes download-menu-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
 ::selection { background:#de5d4f; color:#fff; }
+.no-scrollbar { scrollbar-width:none; -ms-overflow-style:none; }
+.no-scrollbar::-webkit-scrollbar { display:none; }
+
+.search-glass-surface { background:rgba(16,17,15,.94); }
+.search-glass-surface .text-stone-500 { color:rgba(255,255,255,.55); }
+@supports ((backdrop-filter:blur(22px)) or (-webkit-backdrop-filter:blur(22px))) {
+  .search-glass-surface { background:rgba(16,17,15,.7); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); }
+}
+.search-overlay-motion { animation:search-overlay-in 180ms ease-out both; }
+.search-panel-motion { animation:search-panel-in 200ms ease-out both; }
+.search-panel-closing { animation:search-panel-out 180ms ease-in both; }
+@keyframes search-overlay-in {
+  from { opacity:0; }
+  to { opacity:1; }
+}
+@keyframes search-panel-in {
+  from { opacity:0; transform:translateY(8px) scale(.985); }
+  to { opacity:1; transform:translateY(0) scale(1); }
+}
+@keyframes search-panel-out {
+  from { opacity:1; transform:translateY(0) scale(1); }
+  to { opacity:0; transform:translateY(8px) scale(.985); }
+}
+@media (prefers-reduced-motion:reduce) {
+  .search-overlay-motion, .search-panel-motion, .search-panel-closing { animation:none; }
+}
 ::-webkit-scrollbar { width:10px; height:5px; }
 ::-webkit-scrollbar-track { background:#f2efe9; }
 ::-webkit-scrollbar-thumb { background:#aaa69d; border-radius:99px; }
 @media (max-width:640px) {
   .info-content > section + section { margin-top:2rem; padding-top:2rem; }
   main { overflow-wrap:anywhere; }
+}
+
+
+/* Deterministic desktop wheel slots: stylesheet geometry remains valid under CSP style-src-attr restrictions. */
+@media (min-width: 768px) {
+  .wheel-orbit-item { transform: translate(-50%, -50%) scale(.82); opacity: .78; }
+  .wheel-orbit-item.wheel-slot-active { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  .wheel-orbit-item.wheel-slot-0 { left: 50%; top: 5.5%; }
+  .wheel-orbit-item.wheel-slot-1 { left: 36.6%; top: 16.6%; }
+  .wheel-orbit-item.wheel-slot-2 { left: 28%; top: 31.6%; }
+  .wheel-orbit-item.wheel-slot-3 { left: 25%; top: 48.75%; }
+  .wheel-orbit-item.wheel-slot-4 { left: 28%; top: 65.9%; }
+  .wheel-orbit-item.wheel-slot-5 { left: 36.6%; top: 81%; }
+  .wheel-orbit-item.wheel-slot-6 { left: 50%; top: 92.5%; }
+}
+
+@media (min-width: 768px) {
+  .wheel-orbit-item { transition: left 560ms cubic-bezier(.22,1,.36,1), top 560ms cubic-bezier(.22,1,.36,1), transform 560ms cubic-bezier(.22,1,.36,1), opacity 560ms cubic-bezier(.22,1,.36,1); }
 }

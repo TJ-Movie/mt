@@ -1,4 +1,4 @@
-import { MovieBrowser } from '../components/movie-browser';
+import { WheelPrototype as MovieBrowser } from '../components/wheel-prototype';
 import { headers } from 'next/headers';
 import { toPublicMovie } from '../lib/public-movie';
 import { serializeJsonLd } from '../lib/security/json-ld';
